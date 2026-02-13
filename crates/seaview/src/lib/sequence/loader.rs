@@ -442,9 +442,9 @@ fn track_asset_loading(
 
 /// System that updates the displayed mesh when the frame changes
 fn update_mesh_display(
-    mut commands: Commands,
     mut sequence_assets: ResMut<SequenceAssets>,
     sequence_manager: Res<SequenceManager>,
+    mut visibility_query: Query<&mut Visibility, With<SequenceMeshDisplay>>,
 ) {
     // Only update if we have frames
     if sequence_assets.frame_handles.is_empty() {
@@ -463,24 +463,28 @@ fn update_mesh_display(
     // Hide the old frame entity if it exists
     if let Some(old_idx) = old_frame {
         if let Some(Some(old_entity)) = sequence_assets.frame_entities.get(old_idx) {
-            commands.entity(*old_entity).insert(Visibility::Hidden);
+            if let Ok(mut visibility) = visibility_query.get_mut(*old_entity) {
+                *visibility = Visibility::Hidden;
+            }
         }
     }
 
     // Show the new frame entity if it exists
     if let Some(Some(new_entity)) = sequence_assets.frame_entities.get(current_frame) {
-        commands.entity(*new_entity).insert(Visibility::Visible);
-        sequence_assets.displayed_frame = Some(current_frame);
-        debug!("Switched visibility: frame {} hidden, frame {} visible",
-               old_frame.map_or(-1, |i| i as i32), current_frame);
+        if let Ok(mut visibility) = visibility_query.get_mut(*new_entity) {
+            *visibility = Visibility::Visible;
+            sequence_assets.displayed_frame = Some(current_frame);
+            debug!("Switched visibility: frame {} hidden, frame {} visible",
+                   old_frame.map_or(-1, |i| i as i32), current_frame);
+        }
     }
 }
 
 /// System that responds to frame change events and updates the mesh
 fn handle_frame_changes(
-    mut commands: Commands,
     mut sequence_events: MessageReader<SequenceEvent>,
     mut sequence_assets: ResMut<SequenceAssets>,
+    mut visibility_query: Query<&mut Visibility, With<SequenceMeshDisplay>>,
 ) {
     for event in sequence_events.read() {
         match event {
@@ -497,16 +501,20 @@ fn handle_frame_changes(
                 // Hide the old frame entity if it exists
                 if let Some(old_idx) = old_frame {
                     if let Some(Some(old_entity)) = sequence_assets.frame_entities.get(old_idx) {
-                        commands.entity(*old_entity).insert(Visibility::Hidden);
+                        if let Ok(mut visibility) = visibility_query.get_mut(*old_entity) {
+                            *visibility = Visibility::Hidden;
+                        }
                     }
                 }
 
                 // Show the new frame entity if it exists
                 if let Some(Some(new_entity)) = sequence_assets.frame_entities.get(current_frame) {
-                    commands.entity(*new_entity).insert(Visibility::Visible);
-                    sequence_assets.displayed_frame = Some(current_frame);
-                    trace!("Event-driven switch: frame {} hidden, frame {} visible",
-                           old_frame.map_or(-1, |i| i as i32), current_frame);
+                    if let Ok(mut visibility) = visibility_query.get_mut(*new_entity) {
+                        *visibility = Visibility::Visible;
+                        sequence_assets.displayed_frame = Some(current_frame);
+                        trace!("Event-driven switch: frame {} hidden, frame {} visible",
+                               old_frame.map_or(-1, |i| i as i32), current_frame);
+                    }
                 }
             }
             _ => {}
