@@ -5,7 +5,7 @@ use bevy::prelude::*;
 use std::time::Duration;
 
 /// Resource to track rendering statistics
-#[derive(Resource, Default, Debug)]
+#[derive(Resource, Debug)]
 pub struct RenderingStats {
     /// Total number of vertices being rendered
     pub total_vertices: usize,
@@ -25,14 +25,22 @@ pub struct RenderingStats {
     pub last_update: Duration,
 }
 
-impl RenderingStats {
-    #[allow(dead_code)]
-    pub fn new() -> Self {
+impl Default for RenderingStats {
+    fn default() -> Self {
         Self {
+            total_vertices: 0,
+            total_triangles: 0,
+            mesh_count: 0,
+            visible_mesh_count: 0,
+            largest_mesh_vertices: 0,
+            frame_time_history: Vec::new(),
             max_history: 300, // 5 seconds at 60fps
-            ..default()
+            last_update: Duration::ZERO,
         }
     }
+}
+
+impl RenderingStats {
 
     /// Add a frame time to history
     pub fn record_frame_time(&mut self, time_ms: f32) {
