@@ -59,11 +59,10 @@ impl Plugin for SequenceLoaderPlugin {
             .add_systems(
                 Update,
                 (
-                    handle_load_requests,
-                    track_asset_loading,
+                    (handle_load_requests, track_asset_loading).chain(),
                     manage_frame_window,
-                    update_mesh_display,
-                    handle_frame_changes,
+                    ApplyDeferred,
+                    (update_mesh_display, handle_frame_changes),
                 )
                     .chain(),
             );
@@ -445,12 +444,17 @@ fn track_asset_loading(
 /// Keeps at most `RenderConfig::frame_window_size` entities spawned, centred on
 /// the current frame. Entities outside the window are despawned; entities inside
 /// the window that aren't spawned yet (and whose asset is loaded) are spawned.
-/// Only the current frame gets `Visibility::Visible`; the rest are `Hidden`.
+///
+/// Also sets visibility on **all** already-spawned entities in the window via
+/// direct query so that the current frame is `Visible` and the rest are `Hidden`.
+/// This avoids a one-frame flicker when the visibility systems run before
+/// deferred `Commands` from spawn/despawn have been applied.
 fn manage_frame_window(
     mut commands: Commands,
     mut sequence_assets: ResMut<SequenceAssets>,
     sequence_manager: Res<SequenceManager>,
     render_config: Res<RenderConfig>,
+    mut visibility_query: Query<&mut Visibility, With<SequenceMeshDisplay>>,
 ) {
     if sequence_assets.total_frames == 0 {
         return;
@@ -507,6 +511,25 @@ fn manage_frame_window(
         sequence_assets.frame_entities[idx] = Some(entity);
         trace!("Spawned frame {} entity {:?} (window [{}, {}))", idx, entity, win_lo, win_hi);
     }
+
+    // 3. Set visibility on all already-spawned entities in the window.
+    //    This handles the common case (stepping within the window) without
+    //    waiting for deferred Commands, eliminating flicker.
+    for idx in win_lo..win_hi {
+        if let Some(Some(entity)) = sequence_assets.frame_entities.get(idx) {
+            if let Ok(mut vis) = visibility_query.get_mut(*entity) {
+                let desired = if idx == current {
+                    Visibility::Visible
+                } else {
+                    Visibility::Hidden
+                };
+                if *vis != desired {
+                    *vis = desired;
+                }
+            }
+        }
+    }
+    sequence_assets.displayed_frame = Some(current);
 }
 
 /// System that updates the displayed mesh when the frame changes.
