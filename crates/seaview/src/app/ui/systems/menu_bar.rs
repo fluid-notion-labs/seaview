@@ -1,17 +1,16 @@
 //! Menu bar system for Seaview
 //!
-//! This module implements the top menu bar with File, Session, View, Network, and Help menus.
+//! This module implements the top menu bar with File, View, and Help menus.
 
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 
-use crate::app::ui::state::{CreateSessionEvent, SessionSourceType, UiState};
+use crate::app::ui::state::UiState;
 
 /// System that renders the top menu bar
 pub fn menu_bar_system(
     mut contexts: EguiContexts,
     mut ui_state: ResMut<UiState>,
-    mut create_session_events: MessageWriter<CreateSessionEvent>,
     mut exit: MessageWriter<AppExit>,
 ) {
     let ctx = contexts.ctx_mut().unwrap();
@@ -42,54 +41,10 @@ pub fn menu_bar_system(
                     }
                 });
 
-                // Session menu
-                ui.menu_button("Session", |ui| {
-                    if ui.button("New Session...").clicked() {
-                        ui_state.temp_state.show_new_session_dialog = true;
-                        ui.close();
-                    }
-
-                    ui.separator();
-
-                    if ui.button("New Network Session").clicked() {
-                        create_session_events.write(CreateSessionEvent {
-                            name: format!(
-                                "Network Session {}",
-                                chrono::Local::now().format("%Y-%m-%d %H:%M")
-                            ),
-                            source_type: SessionSourceType::Network { port: 9877 },
-                        });
-                        ui.close();
-                    }
-
-                    ui.separator();
-
-                    ui.add_enabled_ui(ui_state.active_session.is_some(), |ui| {
-                        if ui.button("Save Session").clicked() {
-                            // TODO: Implement session saving
-                            ui_state.show_info("Session saving not yet implemented");
-                            ui.close();
-                        }
-
-                        if ui.button("Export Session...").clicked() {
-                            // TODO: Implement session export
-                            ui_state.show_info("Session export not yet implemented");
-                            ui.close();
-                        }
-                    });
-                });
-
                 // View menu
                 ui.menu_button("View", |ui| {
                     if ui
-                        .checkbox(&mut ui_state.show_session_panel, "Session Panel")
-                        .clicked()
-                    {
-                        ui.close();
-                    }
-
-                    if ui
-                        .checkbox(&mut ui_state.show_network_panel, "Network Panel")
+                        .checkbox(&mut ui_state.show_session_panel, "Inspector")
                         .clicked()
                     {
                         ui.close();
@@ -102,43 +57,12 @@ pub fn menu_bar_system(
                         ui.close();
                     }
 
-                    if ui
-                        .checkbox(&mut ui_state.show_perf_panel, "Performance")
-                        .clicked()
-                    {
-                        ui.close();
-                    }
-
                     ui.separator();
 
                     if ui.button("Reset Layout").clicked() {
                         ui_state.panel_sizes = Default::default();
                         ui_state.show_session_panel = true;
-                        ui_state.show_network_panel = true;
                         ui_state.show_playback_controls = true;
-                        ui.close();
-                    }
-                });
-
-                // Network menu
-                ui.menu_button("Network", |ui| {
-                    if ui.button("Start Network Receiver...").clicked() {
-                        // TODO: Show network configuration dialog
-                        ui_state.show_info("Network configuration dialog not yet implemented");
-                        ui.close();
-                    }
-
-                    if ui.button("Stop All Receivers").clicked() {
-                        // TODO: Implement stopping all network receivers
-                        ui_state.show_info("Stop receivers not yet implemented");
-                        ui.close();
-                    }
-
-                    ui.separator();
-
-                    if ui.button("Network Statistics").clicked() {
-                        // TODO: Show network statistics window
-                        ui_state.show_info("Network statistics not yet implemented");
                         ui.close();
                     }
                 });
@@ -175,67 +99,11 @@ pub fn menu_bar_system(
 
 /// System that shows the new session dialog
 pub fn new_session_dialog_system(
-    mut contexts: EguiContexts,
-    mut ui_state: ResMut<UiState>,
-    mut create_session_events: MessageWriter<CreateSessionEvent>,
+    mut _contexts: EguiContexts,
+    mut _ui_state: ResMut<UiState>,
 ) {
-    if !ui_state.temp_state.show_new_session_dialog {
-        return;
-    }
-
-    let ctx = contexts.ctx_mut().unwrap();
-
-    let mut show_dialog = ui_state.temp_state.show_new_session_dialog;
-    let mut session_name = String::from("New Session");
-    let mut selected_source = 0; // 0: Network, 1: File, 2: Data Lake
-
-    egui::Window::new("New Session")
-        .collapsible(false)
-        .resizable(false)
-        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-        .show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.label("Session Name:");
-                ui.text_edit_singleline(&mut session_name);
-            });
-
-            ui.add_space(10.0);
-
-            ui.label("Source Type:");
-            ui.radio_value(&mut selected_source, 0, "Network");
-            ui.radio_value(&mut selected_source, 1, "File");
-            ui.radio_value(&mut selected_source, 2, "Data Lake");
-
-            ui.add_space(20.0);
-
-            ui.horizontal(|ui| {
-                if ui.button("Create").clicked() {
-                    let source_type = match selected_source {
-                        0 => SessionSourceType::Network { port: 9877 },
-                        1 => SessionSourceType::File {
-                            path: std::path::PathBuf::new(),
-                        },
-                        2 => SessionSourceType::DataLake {
-                            connection_string: String::new(),
-                        },
-                        _ => unreachable!(),
-                    };
-
-                    create_session_events.write(CreateSessionEvent {
-                        name: session_name.clone(),
-                        source_type,
-                    });
-
-                    show_dialog = false;
-                }
-
-                if ui.button("Cancel").clicked() {
-                    show_dialog = false;
-                }
-            });
-        });
-
-    ui_state.temp_state.show_new_session_dialog = show_dialog;
+    // Stub — session creation is no longer exposed in the UI.
+    // Kept as a no-op to satisfy the system registration in UiSystemsPlugin.
 }
 
 /// System that displays error and info messages
