@@ -399,9 +399,16 @@ fn track_asset_loading(
     // Check if loading is complete
     if sequence_assets.is_fully_loaded() && sequence_assets.loading {
         sequence_assets.loading = false;
-        debug!(
-            "Sequence loading complete: {} frames loaded",
-            sequence_assets.loaded_count
+        info!(
+            "════════════════════════════════════════════════════════════════"
+        );
+        info!(
+            "✓ SEQUENCE LOADING COMPLETE: {} frames, {} entities spawned",
+            sequence_assets.loaded_count,
+            sequence_assets.frame_entities.iter().filter(|e| e.is_some()).count()
+        );
+        info!(
+            "════════════════════════════════════════════════════════════════"
         );
     }
 
