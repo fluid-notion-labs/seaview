@@ -1,5 +1,5 @@
 use bevy::asset::io::AssetSourceBuilder;
-use bevy::diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin};
+use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
 use bevy::pbr::{DefaultOpaqueRendererMethod, ScreenSpaceReflections};
 use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
@@ -132,7 +132,6 @@ fn main() {
         .add_plugins(DefaultPlugins)
         .add_plugins(AssetLoadersPlugin)
         .add_plugins(FrameTimeDiagnosticsPlugin::default())
-        .add_plugins(LogDiagnosticsPlugin::default())
         .add_plugins(RenderingDiagnosticsPlugin)
         .add_plugins(SequencePlugin)
         // .add_plugins(BrpExtrasPlugin)

@@ -9,10 +9,11 @@ use bevy_egui::{egui, EguiContexts};
 use uuid::Uuid;
 
 use crate::app::systems::diagnostics::RenderingStats;
-use crate::app::ui::state::{AlphaModeConfig, DeleteSessionEvent, MaterialConfig, SwitchSessionEvent, UiState};
+use crate::app::ui::state::{AlphaModeConfig, DeleteSessionEvent, MaterialConfig, RenderConfig, SwitchSessionEvent, UiState};
 use crate::app::ui::systems::perf_panel::render_perf_section;
 use crate::lib::lighting::{NightLightingConfig, PlacementAlgorithm};
 use crate::lib::mesh_info::{MeshDimensions, RecomputeMeshBounds};
+use crate::lib::sequence::SequenceAssets;
 use crate::lib::session::SessionManager;
 
 /// System that renders the session management panel
@@ -24,7 +25,9 @@ pub fn session_panel_system(
     session_manager: Res<SessionManager>,
     mut lighting_config: ResMut<NightLightingConfig>,
     mut material_config: ResMut<MaterialConfig>,
+    mut render_config: ResMut<RenderConfig>,
     mesh_dims: Res<MeshDimensions>,
+    sequence_assets: Res<SequenceAssets>,
     mut recompute_events: MessageWriter<RecomputeMeshBounds>,
     diagnostics: Res<DiagnosticsStore>,
     rendering_stats: Res<RenderingStats>,
@@ -216,6 +219,11 @@ pub fn session_panel_system(
 
                             render_material_controls(ui, &mut material_config);
                         });
+
+                    ui.add_space(5.0);
+
+                    // Rendering Section (Collapsible)
+                    render_rendering_section(ui, &mut ui_state, &mut render_config, &sequence_assets);
 
                     ui.add_space(5.0);
 
@@ -742,4 +750,66 @@ pub fn delete_confirmation_dialog_system(
             ui_state.temp_state.show_delete_confirmation = None;
         }
     }
+}
+
+/// Renders the "Rendering" collapsible section with frame window controls.
+fn render_rendering_section(
+    ui: &mut egui::Ui,
+    ui_state: &mut UiState,
+    render_config: &mut RenderConfig,
+    sequence_assets: &SequenceAssets,
+) {
+    egui::CollapsingHeader::new("🖥 Rendering")
+        .default_open(ui_state.collapsible.rendering_open)
+        .show(ui, |ui| {
+            ui_state.collapsible.rendering_open = true;
+
+            // Frame window size slider
+            ui.heading("Frame Window");
+            ui.add_space(2.0);
+            ui.label("Spawned entities around current frame:");
+            ui.add_space(2.0);
+
+            let max_window = sequence_assets.total_frames.max(1);
+            ui.add(
+                egui::Slider::new(&mut render_config.frame_window_size, 1..=max_window.min(100))
+                    .text("frames")
+                    .logarithmic(true),
+            );
+
+            ui.add_space(4.0);
+
+            // Show current window stats
+            let spawned = sequence_assets.frame_entities.iter().filter(|e| e.is_some()).count();
+            let total = sequence_assets.total_frames;
+
+            egui::Grid::new("render_window_grid")
+                .num_columns(2)
+                .spacing([12.0, 4.0])
+                .show(ui, |ui| {
+                    ui.label("Spawned:");
+                    ui.label(format!("{} / {}", spawned, total));
+                    ui.end_row();
+
+                    ui.label("Displayed:");
+                    ui.label(
+                        sequence_assets
+                            .displayed_frame
+                            .map(|f| format!("Frame {}", f))
+                            .unwrap_or_else(|| "—".to_string()),
+                    );
+                    ui.end_row();
+
+                    if total > 0 {
+                        let current = sequence_assets.displayed_frame.unwrap_or(0);
+                        let (lo, hi) = sequence_assets.window_range(
+                            current,
+                            render_config.frame_window_size,
+                        );
+                        ui.label("Window:");
+                        ui.label(format!("[{}, {})", lo, hi));
+                        ui.end_row();
+                    }
+                });
+        });
 }

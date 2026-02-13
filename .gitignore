@@ -6,3 +6,4 @@ output
 vendor
 bin
 runs
+trace-*.json

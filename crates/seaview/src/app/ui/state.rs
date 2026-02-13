@@ -8,6 +8,27 @@ use uuid::Uuid;
 
 use crate::lib::sequence::SequenceAssets;
 
+/// Configuration for the rendering frame window (ring buffer).
+///
+/// Controls how many mesh entities are kept spawned around the current frame.
+/// Only entities within the window have `Mesh3d` components; the rest are
+/// despawned to avoid Bevy per-entity CPU overhead (`calculate_bounds`, etc.).
+#[derive(Resource, Debug, Clone)]
+pub struct RenderConfig {
+    /// Number of frames to keep spawned around the current frame.
+    /// The window spans `[current - window/2, current + window/2]`.
+    /// A value of 1 means only the current frame is spawned (original behaviour).
+    pub frame_window_size: usize,
+}
+
+impl Default for RenderConfig {
+    fn default() -> Self {
+        Self {
+            frame_window_size: 5,
+        }
+    }
+}
+
 /// Global UI state resource
 #[derive(Resource, Default)]
 pub struct UiState {
@@ -156,6 +177,9 @@ pub struct CollapsibleState {
 
     /// Whether the performance section is open
     pub perf_open: bool,
+
+    /// Whether the rendering section is open
+    pub rendering_open: bool,
 }
 
 impl Default for CollapsibleState {
@@ -166,6 +190,7 @@ impl Default for CollapsibleState {
             lighting_rig_open: true,
             material_open: true,
             perf_open: false,
+            rendering_open: true,
         }
     }
 }
@@ -375,6 +400,7 @@ pub struct UiStatePlugin;
 impl Plugin for UiStatePlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(UiState::new())
+            .init_resource::<RenderConfig>()
             .add_plugins(MaterialConfigPlugin)
             .add_message::<CreateSessionEvent>()
             .add_message::<DeleteSessionEvent>()

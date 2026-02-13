@@ -18,6 +18,7 @@ use bevy::prelude::*;
 use std::path::PathBuf;
 
 use super::{SequenceEvent, SequenceManager};
+use crate::app::ui::state::RenderConfig;
 
 /// Recognised mesh file formats for sequence loading.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,9 +61,11 @@ impl Plugin for SequenceLoaderPlugin {
                 (
                     handle_load_requests,
                     track_asset_loading,
+                    manage_frame_window,
                     update_mesh_display,
                     handle_frame_changes,
-                ),
+                )
+                    .chain(),
             );
     }
 }
@@ -70,8 +73,10 @@ impl Plugin for SequenceLoaderPlugin {
 /// Resource that holds all loaded mesh handles for the current sequence
 #[derive(Resource, Default)]
 pub struct SequenceAssets {
-    /// Handles to all loaded mesh frames
+    /// Handles to all loaded mesh frames (indexed by frame number)
     pub frame_handles: Vec<Handle<Mesh>>,
+    /// Which frames have finished loading (asset ready)
+    pub loaded_frames: Vec<bool>,
     /// Number of frames that have finished loading
     pub loaded_count: usize,
     /// Total frames expected
@@ -80,24 +85,31 @@ pub struct SequenceAssets {
     pub base_path: Option<PathBuf>,
     /// Whether loading is in progress
     pub loading: bool,
-    /// Entity for each frame (spawned when frame loads, hidden by default)
+    /// Spawned entity per frame index (`None` = not currently spawned)
     pub frame_entities: Vec<Option<Entity>>,
-    /// Currently displayed frame index
+    /// Currently displayed (visible) frame index
     pub displayed_frame: Option<usize>,
     /// Detected file format for this sequence (set on first load request)
     pub format: Option<MeshFileFormat>,
+    /// Shared material handle (created once, cloned to each entity)
+    pub shared_material: Option<Handle<StandardMaterial>>,
+    /// Cached coordinate transform (set once when sequence loads)
+    pub coord_transform: Transform,
 }
 
 impl SequenceAssets {
     /// Reset the sequence assets for a new sequence
     pub fn reset(&mut self) {
         self.frame_handles.clear();
+        self.loaded_frames.clear();
         self.loaded_count = 0;
         self.total_frames = 0;
         self.loading = false;
         self.displayed_frame = None;
         self.format = None;
         self.frame_entities.clear();
+        self.shared_material = None;
+        self.coord_transform = Transform::default();
     }
 
     /// Check if all frames are loaded
@@ -119,11 +131,25 @@ impl SequenceAssets {
         self.frame_handles.get(index)
     }
 
+    /// Check if a specific frame's asset has finished loading
+    pub fn is_frame_loaded(&self, index: usize) -> bool {
+        self.loaded_frames.get(index).copied().unwrap_or(false)
+    }
+
     /// Get the entity for the currently displayed frame
     pub fn displayed_entity(&self) -> Option<Entity> {
         self.displayed_frame
             .and_then(|idx| self.frame_entities.get(idx))
             .and_then(|opt| *opt)
+    }
+
+    /// Compute the window range `[lo, hi)` centered on `center` with the given
+    /// half-width, clamped to `[0, total_frames)`.
+    pub fn window_range(&self, center: usize, window_size: usize) -> (usize, usize) {
+        let half = window_size / 2;
+        let lo = center.saturating_sub(half);
+        let hi = (center + half + 1).min(self.total_frames);
+        (lo, hi)
     }
 }
 
@@ -251,11 +277,13 @@ fn handle_load_requests(
 
         // Reset assets for new sequence
         sequence_assets.reset();
-        sequence_assets.total_frames = request.frame_paths.len();
+        let n = request.frame_paths.len();
+        sequence_assets.total_frames = n;
         sequence_assets.loading = true;
         sequence_assets.format = Some(format);
-        // Pre-allocate the frame_entities vec
-        sequence_assets.frame_entities = vec![None; request.frame_paths.len()];
+        // Pre-allocate vecs
+        sequence_assets.frame_entities = vec![None; n];
+        sequence_assets.loaded_frames = vec![false; n];
 
         // Store base path from first frame
         if let Some(first_path) = request.frame_paths.first() {
@@ -288,9 +316,11 @@ fn handle_load_requests(
     }
 }
 
-/// System that tracks asset loading progress and spawns mesh entity when first frame loads
+/// System that tracks asset loading progress.
+///
+/// Does NOT spawn entities — that is handled by `manage_frame_window`.
+/// This system only marks frames as loaded and creates the shared material.
 fn track_asset_loading(
-    mut commands: Commands,
     mut events: MessageReader<AssetEvent<Mesh>>,
     mut sequence_assets: ResMut<SequenceAssets>,
     mut frame_loaded_events: MessageWriter<FrameLoadedEvent>,
@@ -302,28 +332,23 @@ fn track_asset_loading(
         return;
     }
 
-    // Create shared material once (lazy init)
-    let mut shared_material: Option<Handle<StandardMaterial>> = None;
-
     for event in events.read() {
         match event {
             AssetEvent::LoadedWithDependencies { id } => {
                 // Find which frame this corresponds to
                 for (index, handle) in sequence_assets.frame_handles.iter().enumerate() {
                     if handle.id() == *id {
-                        // Clone handle before mutable operations
-                        let handle_clone = handle.clone();
-
                         sequence_assets.loaded_count += 1;
+                        sequence_assets.loaded_frames[index] = true;
 
                         frame_loaded_events.write(FrameLoadedEvent {
                             frame_index: index,
                             success: true,
                         });
 
-                        // Create shared material if not already created
-                        if shared_material.is_none() {
-                            shared_material = Some(materials.add(StandardMaterial {
+                        // Create shared material on first loaded frame
+                        if sequence_assets.shared_material.is_none() {
+                            sequence_assets.shared_material = Some(materials.add(StandardMaterial {
                                 base_color: Color::srgb(0.3, 0.5, 0.8),
                                 perceptual_roughness: 0.4,
                                 metallic: 0.1,
@@ -332,47 +357,16 @@ fn track_asset_loading(
                             }));
                         }
 
-                        // Get coordinate transformation (same for all frames)
-                        let transform = if let Some(sequence) =
-                            sequence_manager.current_sequence()
-                        {
-                            let coord_transform = sequence.source_orientation.to_transform();
-                            if index == 0 {
+                        // Cache coordinate transform on first loaded frame
+                        if index == 0 {
+                            if let Some(sequence) = sequence_manager.current_sequence() {
+                                sequence_assets.coord_transform =
+                                    sequence.source_orientation.to_transform();
                                 debug!(
                                     "Applying coordinate transformation: {}",
                                     sequence.source_orientation.description()
                                 );
                             }
-                            coord_transform
-                        } else {
-                            Transform::default()
-                        };
-
-                        // Spawn entity for this frame
-                        // Frame 0 is visible, all others start hidden
-                        let visibility = if index == 0 {
-                            Visibility::Visible
-                        } else {
-                            Visibility::Hidden
-                        };
-
-                        let entity = commands
-                            .spawn((
-                                Mesh3d(handle_clone),
-                                MeshMaterial3d(shared_material.as_ref().unwrap().clone()),
-                                transform,
-                                SequenceMeshDisplay,
-                                visibility,
-                                Name::new(format!("Frame {}", index)),
-                            ))
-                            .id();
-
-                        sequence_assets.frame_entities[index] = Some(entity);
-
-                        // Mark frame 0 as displayed
-                        if index == 0 {
-                            sequence_assets.displayed_frame = Some(0);
-                            debug!("Spawned and displayed frame 0 entity: {:?}", entity);
                         }
 
                         // Log progress at intervals
@@ -403,9 +397,8 @@ fn track_asset_loading(
             "════════════════════════════════════════════════════════════════"
         );
         info!(
-            "✓ SEQUENCE LOADING COMPLETE: {} frames, {} entities spawned",
+            "✓ SEQUENCE LOADING COMPLETE: {} frames loaded",
             sequence_assets.loaded_count,
-            sequence_assets.frame_entities.iter().filter(|e| e.is_some()).count()
         );
         info!(
             "════════════════════════════════════════════════════════════════"
@@ -447,14 +440,85 @@ fn track_asset_loading(
     }
 }
 
-/// System that updates the displayed mesh when the frame changes
+/// System that manages the ring-buffer of spawned frame entities.
+///
+/// Keeps at most `RenderConfig::frame_window_size` entities spawned, centred on
+/// the current frame. Entities outside the window are despawned; entities inside
+/// the window that aren't spawned yet (and whose asset is loaded) are spawned.
+/// Only the current frame gets `Visibility::Visible`; the rest are `Hidden`.
+fn manage_frame_window(
+    mut commands: Commands,
+    mut sequence_assets: ResMut<SequenceAssets>,
+    sequence_manager: Res<SequenceManager>,
+    render_config: Res<RenderConfig>,
+) {
+    if sequence_assets.total_frames == 0 {
+        return;
+    }
+    // Need shared material before we can spawn anything
+    let Some(material) = sequence_assets.shared_material.clone() else {
+        return;
+    };
+
+    let current = sequence_manager.current_frame;
+    let window = render_config.frame_window_size;
+    let (win_lo, win_hi) = sequence_assets.window_range(current, window);
+    let transform = sequence_assets.coord_transform;
+
+    // 1. Despawn entities outside the window
+    for idx in 0..sequence_assets.total_frames {
+        if idx >= win_lo && idx < win_hi {
+            continue; // inside window, keep
+        }
+        if let Some(entity) = sequence_assets.frame_entities[idx].take() {
+            commands.entity(entity).despawn();
+        }
+    }
+
+    // 2. Spawn entities inside the window that are loaded but not yet spawned
+    for idx in win_lo..win_hi {
+        if sequence_assets.frame_entities[idx].is_some() {
+            continue; // already spawned
+        }
+        if !sequence_assets.is_frame_loaded(idx) {
+            continue; // asset not ready yet
+        }
+        let Some(handle) = sequence_assets.get_frame(idx).cloned() else {
+            continue;
+        };
+
+        let visibility = if idx == current {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
+
+        let entity = commands
+            .spawn((
+                Mesh3d(handle),
+                MeshMaterial3d(material.clone()),
+                transform,
+                SequenceMeshDisplay,
+                visibility,
+                Name::new(format!("Frame {}", idx)),
+            ))
+            .id();
+
+        sequence_assets.frame_entities[idx] = Some(entity);
+        trace!("Spawned frame {} entity {:?} (window [{}, {}))", idx, entity, win_lo, win_hi);
+    }
+}
+
+/// System that updates the displayed mesh when the frame changes.
+///
+/// Toggles `Visibility` on the old and new frame entities.  Entity
+/// spawn/despawn is handled by `manage_frame_window`.
 fn update_mesh_display(
     mut sequence_assets: ResMut<SequenceAssets>,
     sequence_manager: Res<SequenceManager>,
     mut visibility_query: Query<&mut Visibility, With<SequenceMeshDisplay>>,
 ) {
-    // Only update if we have frames
-    if sequence_assets.frame_handles.is_empty() {
+    if sequence_assets.total_frames == 0 {
         return;
     }
 
@@ -476,12 +540,12 @@ fn update_mesh_display(
         }
     }
 
-    // Show the new frame entity if it exists
+    // Show the new frame entity if it exists and is spawned
     if let Some(Some(new_entity)) = sequence_assets.frame_entities.get(current_frame) {
         if let Ok(mut visibility) = visibility_query.get_mut(*new_entity) {
             *visibility = Visibility::Visible;
             sequence_assets.displayed_frame = Some(current_frame);
-            debug!("Switched visibility: frame {} hidden, frame {} visible",
+            trace!("Switched visibility: frame {} hidden, frame {} visible",
                    old_frame.map_or(-1, |i| i as i32), current_frame);
         }
     }
@@ -514,7 +578,7 @@ fn handle_frame_changes(
                     }
                 }
 
-                // Show the new frame entity if it exists
+                // Show the new frame entity if it exists and is spawned
                 if let Some(Some(new_entity)) = sequence_assets.frame_entities.get(current_frame) {
                     if let Ok(mut visibility) = visibility_query.get_mut(*new_entity) {
                         *visibility = Visibility::Visible;
