@@ -48,19 +48,19 @@ pub fn handle_center_on_mesh(
         // TODO: Reimplement mesh centering logic
         /*
         if let Some((path, mesh_handle)) = mesh_cache.cache.iter().next() {
-                        info!("📁 Using mesh from path: {:?}", path);
-                        info!("🔗 Mesh handle: {:?}", mesh_handle);
+                        debug!("📁 Using mesh from path: {:?}", path);
+                        trace!("🔗 Mesh handle: {:?}", mesh_handle);
 
                         match meshes.get(mesh_handle) {
                             Some(mesh) => {
-                                info!("✅ Mesh found in assets");
+                                debug!("✅ Mesh found in assets");
 
                                 // Calculate mesh centroid using 5% random sampling for performance
                                 let centroid = calculate_mesh_centroid(mesh);
-                                info!("📊 Calculated centroid: {:?}", centroid);
+                                debug!("📊 Calculated centroid: {:?}", centroid);
 
                                 let bounds_radius = calculate_mesh_bounds_radius(mesh, centroid);
-                                info!("📏 Mesh bounds radius: {:.2}", bounds_radius);
+                                debug!("📏 Mesh bounds radius: {:.2}", bounds_radius);
 
                                 // Position camera at a good viewing distance (2.5x the mesh bounds radius)
                                 let camera_distance = bounds_radius * 2.5;
@@ -71,8 +71,8 @@ pub fn handle_center_on_mesh(
                                         camera_distance,
                                     );
 
-                                info!("📹 Moving camera to: {:?}", camera_position);
-                                info!("🎯 Looking at: {:?}", centroid);
+                                debug!("📹 Moving camera to: {:?}", camera_position);
+                                debug!("🎯 Looking at: {:?}", centroid);
 
                                 // Update camera transform
                                 transform.translation = camera_position;
@@ -80,9 +80,9 @@ pub fn handle_center_on_mesh(
 
                                 // Disable escape mode to allow immediate camera control
                                 fps_camera.escape_mode = false;
-                                info!("🔓 Disabled escape mode");
+                                debug!("🔓 Disabled escape mode");
 
-                                info!("🎉 Camera centering completed successfully!");
+                                debug!("🎉 Camera centering completed successfully!");
                             }
                             None => {
                                 error!("❌ Mesh not found in assets for handle: {:?}", mesh_handle);
@@ -96,10 +96,10 @@ pub fn handle_center_on_mesh(
 
                     // Try anyway if we have meshes in cache
                     if !mesh_cache.cache.is_empty() {
-                        info!("🔄 Trying to center on first mesh in cache anyway...");
+                        debug!("🔄 Trying to center on first mesh in cache anyway...");
 
                         if let Some((path, mesh_handle)) = mesh_cache.cache.iter().next() {
-                            info!("📁 Using mesh from path: {:?}", path);
+                            debug!("📁 Using mesh from path: {:?}", path);
 
                             if let Some(mesh) = meshes.get(mesh_handle) {
                                 let centroid = calculate_mesh_centroid(mesh);
@@ -116,7 +116,7 @@ pub fn handle_center_on_mesh(
                                 transform.look_at(centroid, Vec3::Y);
                                 fps_camera.escape_mode = false;
 
-                                info!("🎉 Fallback camera centering completed!");
+                                debug!("🎉 Fallback camera centering completed!");
                             }
                         }
                     }

@@ -163,7 +163,7 @@ pub unsafe extern "C" fn seaview_network_create_sender_with_config(
     };
 
     let addr = format!("{host_str}:{port}");
-    info!("Creating sender to {}", addr);
+    debug!("Creating sender to {}", addr);
 
     match MeshSender::connect_with_config(&addr, sender_config) {
         Ok(sender) => {
@@ -371,7 +371,7 @@ pub unsafe extern "C" fn seaview_network_destroy_sender(sender: *mut NetworkSend
         return;
     }
 
-    info!("Destroying network sender");
+    debug!("Destroying network sender");
 
     // Take ownership and drop
     let sender = Box::from_raw(sender);

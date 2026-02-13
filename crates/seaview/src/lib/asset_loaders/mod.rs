@@ -35,6 +35,6 @@ pub struct AssetLoadersPlugin;
 impl Plugin for AssetLoadersPlugin {
     fn build(&self, app: &mut App) {
         app.register_asset_loader(StlLoader);
-        info!("Registered custom asset loaders: STL");
+        debug!("Registered custom asset loaders: STL");
     }
 }

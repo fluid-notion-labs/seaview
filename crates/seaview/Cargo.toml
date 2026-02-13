@@ -28,7 +28,7 @@ bevy_egui = { workspace = true }
 uuid = { version = "1.0", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 
-log = "0.4"                                       # Still needed for binary tools
+log = { version = "0.4", features = [] }          # Still needed for binary tools
 env_logger = "0.10"                               # Still needed for binary tools
 crossbeam-channel = "0.5"
 meshopt = "0.3"
@@ -40,6 +40,13 @@ threadpool = "1.8"
 [dev-dependencies]
 tempfile = "3.8"
 
+[features]
+default = []
+# Maximum performance: disable all logging at compile time
+max-perf = [
+    "log/max_level_off",
+    "log/release_max_level_off",
+]
 
 
 # [[bin]]

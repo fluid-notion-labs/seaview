@@ -130,7 +130,7 @@ impl Settings {
                 path: path.clone(),
                 source: e,
             })?;
-        info!("Loaded settings from {:?}", path);
+        debug!("Loaded settings from {:?}", path);
         Ok(Some(settings))
     }
 
@@ -176,7 +176,7 @@ impl Settings {
             path: path.clone(),
             source: e,
         })?;
-        info!("Saved settings to {:?}", path);
+        debug!("Saved settings to {:?}", path);
         Ok(())
     }
 

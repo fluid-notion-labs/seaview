@@ -67,7 +67,7 @@ fn handle_create_session_requests(
             crate::app::ui::state::SessionSourceType::Network { port } => {
                 match session_manager.create_network_session(&event.name, *port) {
                     Ok(session_id) => {
-                        info!("Created network session '{}' on port {}", event.name, port);
+                        debug!("Created network session '{}' on port {}", event.name, port);
                         created_events.write(SessionCreatedEvent { session_id });
                     }
                     Err(e) => {
@@ -78,7 +78,7 @@ fn handle_create_session_requests(
             crate::app::ui::state::SessionSourceType::File { path } => {
                 match session_manager.create_file_session(&event.name, path.clone()) {
                     Ok(session_id) => {
-                        info!("Created file session '{}' for path {:?}", event.name, path);
+                        debug!("Created file session '{}' for path {:?}", event.name, path);
                         created_events.write(SessionCreatedEvent { session_id });
                     }
                     Err(e) => {

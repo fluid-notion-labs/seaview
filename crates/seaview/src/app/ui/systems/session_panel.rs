@@ -135,10 +135,10 @@ pub fn session_panel_system(
 
                                 ui.horizontal(|ui| {
                                     if ui.button("Start").clicked() {
-                                        info!("Starting network receiver");
+                                        debug!("Starting network receiver");
                                     }
                                     if ui.button("Stop").clicked() {
-                                        info!("Stopping network receiver");
+                                        debug!("Stopping network receiver");
                                     }
                                 });
                             });

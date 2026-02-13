@@ -115,9 +115,9 @@ pub fn playback_controls_system(
                         .on_hover_text("Center camera on mesh")
                         .clicked()
                     {
-                        info!("🎯 Center camera button clicked!");
+                        debug!("🎯 Center camera button clicked!");
                         center_events.write(CenterOnMeshEvent);
-                        info!("CenterOnMeshEvent sent");
+                        debug!("CenterOnMeshEvent sent");
                     }
 
                     // Save View button
@@ -126,7 +126,7 @@ pub fn playback_controls_system(
                         .on_hover_text("Save view (camera + playback) to seaview.toml")
                         .clicked()
                     {
-                        info!("💾 Save view button clicked!");
+                        debug!("💾 Save view button clicked!");
                         save_view_events.write(SaveViewEvent);
                     }
 

@@ -212,12 +212,12 @@ fn handle_load_requests(
     asset_server: Res<AssetServer>,
 ) {
     for request in load_requests.read() {
-        info!("Loading sequence with {} frames", request.frame_paths.len());
+        debug!("Loading sequence with {} frames", request.frame_paths.len());
 
         // Detect file format from the first frame.
         let format = match detect_sequence_format(&request.frame_paths) {
             Some(fmt) => {
-                info!("Detected sequence format: {:?}", fmt);
+                debug!("Detected sequence format: {:?}", fmt);
                 fmt
             }
             None => {
@@ -253,7 +253,7 @@ fn handle_load_requests(
                 .and_then(|n| n.to_str())
                 .unwrap_or("unknown");
 
-            info!(
+            trace!(
                 "Frame {}: Loading '{}' as {:?} from path {:?}",
                 idx, filename, format, path
             );
@@ -262,9 +262,9 @@ fn handle_load_requests(
             sequence_assets.frame_handles.push(handle);
         }
 
-        info!("Mesh display entity will be created when first frame loads");
+        debug!("Mesh display entity will be created when first frame loads");
 
-        info!(
+        debug!(
             "Started loading {} {:?} frames from {:?}",
             sequence_assets.total_frames, format, sequence_assets.base_path
         );
@@ -317,10 +317,10 @@ fn track_asset_loading(
                                 sequence_manager.current_sequence()
                             {
                                 let coord_transform = sequence.source_orientation.to_transform();
-                                info!(
-                                    "Applying coordinate transformation: {}",
-                                    sequence.source_orientation.description()
-                                );
+                                debug!(
+                                        "Applying coordinate transformation: {}",
+                                        sequence.source_orientation.description()
+                                    );
                                 coord_transform
                             } else {
                                 Transform::default()
@@ -338,7 +338,7 @@ fn track_asset_loading(
 
                             sequence_assets.mesh_entity = Some(entity);
                             sequence_assets.displayed_frame = Some(0);
-                            info!("Spawned mesh display entity with first frame: {:?}", entity);
+                            debug!("Spawned mesh display entity with first frame: {:?}", entity);
                         }
 
                         // Log progress at intervals
@@ -346,7 +346,7 @@ fn track_asset_loading(
                         if sequence_assets.loaded_count % 10 == 0
                             || sequence_assets.loaded_count == sequence_assets.total_frames
                         {
-                            info!(
+                            debug!(
                                 "Loading progress: {}/{} ({:.1}%)",
                                 sequence_assets.loaded_count,
                                 sequence_assets.total_frames,
@@ -365,7 +365,7 @@ fn track_asset_loading(
     // Check if loading is complete
     if sequence_assets.is_fully_loaded() && sequence_assets.loading {
         sequence_assets.loading = false;
-        info!(
+        debug!(
             "Sequence loading complete: {} frames loaded",
             sequence_assets.loaded_count
         );
@@ -451,7 +451,7 @@ fn handle_frame_changes(
                     if let Ok(mut mesh_handle) = mesh_query.single_mut() {
                         mesh_handle.0 = handle.clone();
                         sequence_assets.displayed_frame = Some(*frame_index);
-                        info!("Switched to frame {}", frame_index);
+                        trace!("Switched to frame {}", frame_index);
                     }
                 }
             }
@@ -473,7 +473,7 @@ pub fn load_discovered_sequence(
         return;
     }
 
-    info!(
+    debug!(
         "Requesting load of sequence '{}' with {} frames",
         sequence.name,
         frame_paths.len()

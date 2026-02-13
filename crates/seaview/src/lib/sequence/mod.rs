@@ -44,11 +44,11 @@ fn sync_sequence_manager_with_events(
             }
             SequenceEvent::PlaybackStarted => {
                 sequence_manager.is_playing = true;
-                info!("SequenceManager playback started");
+                debug!("SequenceManager playback started");
             }
             SequenceEvent::PlaybackStopped => {
                 sequence_manager.is_playing = false;
-                info!("SequenceManager playback stopped");
+                debug!("SequenceManager playback stopped");
             }
             _ => {}
         }

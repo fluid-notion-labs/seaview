@@ -92,3 +92,21 @@ opt-level = 1
 
 [profile.dev.package."*"]
 opt-level = 3
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+
+# Performance-optimized release profile with maximum optimizations
+# To disable logging at compile time, build with: cargo build --profile release-perf --features max-perf
+[profile.release-perf]
+inherits = "release"
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
+
+[profile.release-perf.package."*"]
+opt-level = 3

@@ -157,7 +157,7 @@ fn log_rendering_diagnostics(
 
         let frame_stats = stats.frame_stats();
 
-        info!(
+        debug!(
             "Rendering Stats - Meshes: {} (visible: {}), Vertices: {}M, Triangles: {}M, Largest: {}k verts",
             stats.mesh_count,
             stats.visible_mesh_count,
@@ -166,7 +166,7 @@ fn log_rendering_diagnostics(
             stats.largest_mesh_vertices as f32 / 1000.0,
         );
 
-        info!(
+        debug!(
             "Frame Times - Avg: {:.1}ms, Min: {:.1}ms, Max: {:.1}ms, P95: {:.1}ms, P99: {:.1}ms, Spikes: {}",
             frame_stats.avg,
             frame_stats.min,
@@ -179,7 +179,7 @@ fn log_rendering_diagnostics(
         // Calculate GPU memory estimate (rough)
         let bytes_per_vertex = 12 + 12 + 8; // position + normal + uv
         let gpu_memory_mb = (stats.total_vertices * bytes_per_vertex) as f32 / 1_048_576.0;
-        info!("Estimated GPU memory usage: {:.1} MB", gpu_memory_mb);
+        debug!("Estimated GPU memory usage: {:.1} MB", gpu_memory_mb);
     }
 }
 
@@ -232,11 +232,11 @@ fn detect_performance_issues(
 
         // Suggest optimizations based on stats
         if stats.total_vertices > 50_000_000 && stats.visible_mesh_count > 1 {
-            info!("Consider implementing:");
-            info!("  - Frustum culling (only render visible meshes)");
-            info!("  - Level of Detail (LOD) system");
-            info!("  - Mesh instancing for repeated geometry");
-            info!("  - Occlusion culling");
+            debug!("Consider implementing:");
+            debug!("  - Frustum culling (only render visible meshes)");
+            debug!("  - Level of Detail (LOD) system");
+            debug!("  - Mesh instancing for repeated geometry");
+            debug!("  - Occlusion culling");
         }
     }
 }

@@ -45,35 +45,9 @@ fn handle_playback_input(
     time: Res<Time>,
     mut key_timer: ResMut<KeyHoldTimer>,
 ) {
-    // Debug: Log all pressed keys
+    // Log all pressed keys
     for key in keyboard.get_just_pressed() {
-        info!("Key pressed: {:?}", key);
-    }
-
-    // Debug: Log current keyboard state every second
-    static mut LAST_DEBUG: f64 = 0.0;
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs_f64();
-    unsafe {
-        if now - LAST_DEBUG > 1.0 {
-            LAST_DEBUG = now;
-            let pressed_keys: Vec<_> = keyboard.get_pressed().collect();
-            info!("Debug: Currently pressed keys: {:?}", pressed_keys);
-            info!(
-                "Debug: Sequence loaded: {}",
-                sequence_manager.current_sequence.is_some()
-            );
-            if let Some(seq) = &sequence_manager.current_sequence {
-                info!(
-                    "Debug: Current frame: {}/{}, Playing: {}",
-                    sequence_manager.current_frame,
-                    seq.frame_count(),
-                    sequence_manager.is_playing
-                );
-            }
-        }
+        trace!("Key pressed: {:?}", key);
     }
 
     // Only process input if we have a sequence loaded
@@ -84,13 +58,13 @@ fn handle_playback_input(
 
     // Space bar - toggle play/pause
     if keyboard.just_pressed(KeyCode::Space) {
-        info!("Space pressed - toggling playback");
+        debug!("Space pressed - toggling playback");
         sequence_manager.toggle_playback();
         if sequence_manager.is_playing {
-            info!("Starting playback");
+            debug!("Starting playback");
             events.write(SequenceEvent::PlaybackStarted);
         } else {
-            info!("Stopping playback");
+            debug!("Stopping playback");
             events.write(SequenceEvent::PlaybackStopped);
         }
     }
@@ -113,20 +87,20 @@ fn handle_playback_input(
 
             // Immediate frame change
             if arrow_right_held {
-                info!("Right arrow pressed - advancing frame");
+                trace!("Right arrow pressed - advancing frame");
                 if sequence_manager.next_frame() {
-                    info!("Advanced to frame {}", sequence_manager.current_frame);
+                    trace!("Advanced to frame {}", sequence_manager.current_frame);
                     events.write(SequenceEvent::FrameChanged(sequence_manager.current_frame));
                 } else {
-                    info!("Cannot advance further - at end of sequence");
+                    trace!("Cannot advance further - at end of sequence");
                 }
             } else {
-                info!("Left arrow pressed - going to previous frame");
+                trace!("Left arrow pressed - going to previous frame");
                 if sequence_manager.previous_frame() {
-                    info!("Went back to frame {}", sequence_manager.current_frame);
+                    trace!("Went back to frame {}", sequence_manager.current_frame);
                     events.write(SequenceEvent::FrameChanged(sequence_manager.current_frame));
                 } else {
-                    info!("Cannot go back further - at beginning of sequence");
+                    trace!("Cannot go back further - at beginning of sequence");
                 }
             }
         } else {
@@ -189,13 +163,13 @@ fn handle_playback_input(
     if keyboard.just_pressed(KeyCode::Equal) || keyboard.just_pressed(KeyCode::NumpadAdd) {
         let new_fps = (sequence_manager.playback_fps * 1.5).min(120.0);
         sequence_manager.set_playback_fps(new_fps);
-        info!("Playback speed: {:.1} fps", new_fps);
+        debug!("Playback speed: {:.1} fps", new_fps);
     }
 
     if keyboard.just_pressed(KeyCode::Minus) || keyboard.just_pressed(KeyCode::NumpadSubtract) {
         let new_fps = (sequence_manager.playback_fps / 1.5).max(1.0);
         sequence_manager.set_playback_fps(new_fps);
-        info!("Playback speed: {:.1} fps", new_fps);
+        debug!("Playback speed: {:.1} fps", new_fps);
     }
 
     // Number keys - jump to percentage of sequence

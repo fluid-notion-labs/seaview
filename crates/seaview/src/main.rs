@@ -25,9 +25,9 @@ fn main() {
     let args = Args::parse_args();
 
     if args.verbose {
-        info!("Starting Seaview mesh viewer...");
+        debug!("Starting Seaview mesh viewer...");
         if let Some(ref path) = args.path {
-            info!("Path provided: {:?}", path);
+            debug!("Path provided: {:?}", path);
         }
     }
 
@@ -37,11 +37,11 @@ fn main() {
         .as_ref()
         .and_then(|dir| match Settings::load_from_dir(dir) {
             Ok(Some(s)) => {
-                info!("Loaded seaview.toml from {:?}", dir);
+                debug!("Loaded seaview.toml from {:?}", dir);
                 Some(s)
             }
             Ok(None) => {
-                info!("No seaview.toml found in {:?}, using defaults", dir);
+                debug!("No seaview.toml found in {:?}, using defaults", dir);
                 None
             }
             Err(e) => {
@@ -70,7 +70,7 @@ fn main() {
     let source_orientation = match SourceOrientation::from_str(&coord_string) {
         Ok(orientation) => {
             if args.verbose {
-                info!("Using coordinate system: {}", orientation.description());
+                debug!("Using coordinate system: {}", orientation.description());
             }
             orientation
         }
@@ -95,27 +95,27 @@ fn main() {
 
         if canonical_path.is_dir() {
             let path_str = canonical_path.to_string_lossy().to_string();
-            info!(
+            debug!(
                 "Registering asset source 'seq' for sequence directory: {:?}",
                 canonical_path
             );
-            info!("Asset source path: {}", path_str);
+            debug!("Asset source path: {}", path_str);
             app.register_asset_source("seq", AssetSourceBuilder::platform_default(&path_str, None));
-            info!("Asset source 'seq' registered successfully");
+            debug!("Asset source 'seq' registered successfully");
         } else if canonical_path.is_file() {
             // Register parent directory for single file loads
             if let Some(parent) = canonical_path.parent() {
                 let parent_str = parent.to_string_lossy().to_string();
-                info!(
+                debug!(
                     "Registering asset source 'seq' for file directory: {:?}",
                     parent
                 );
-                info!("Asset source path: {}", parent_str);
+                debug!("Asset source path: {}", parent_str);
                 app.register_asset_source(
                     "seq",
                     AssetSourceBuilder::platform_default(&parent_str, None),
                 );
-                info!("Asset source 'seq' registered successfully");
+                debug!("Asset source 'seq' registered successfully");
             } else {
                 error!(
                     "Could not get parent directory for file: {:?}",
@@ -172,7 +172,7 @@ fn setup(
         .camera
         .as_ref()
         .map(|cam| {
-            info!(
+            debug!(
                 "Applying camera from seaview.toml: pos={:?} rot={:?}",
                 cam.position, cam.rotation
             );
@@ -195,7 +195,7 @@ fn setup(
     // Apply cached mesh bounds from seaview.toml
     if let Some(ref mesh_bounds) = settings_res.settings.mesh {
         let mut dims = MeshDimensions::from_settings(mesh_bounds);
-        info!(
+        debug!(
             "Loaded cached mesh bounds from seaview.toml: {:.2} × {:.2} × {:.2} m",
             dims.dimensions.unwrap().x,
             dims.dimensions.unwrap().y,
@@ -210,11 +210,11 @@ fn setup(
     if let Some(ref pb) = settings_res.settings.playback {
         if let Some(speed) = pb.speed {
             ui_state.playback.speed = speed;
-            info!("Applied playback speed from seaview.toml: {}", speed);
+            debug!("Applied playback speed from seaview.toml: {}", speed);
         }
         if let Some(loop_enabled) = pb.loop_enabled {
             ui_state.playback.loop_enabled = loop_enabled;
-            info!("Applied loop setting from seaview.toml: {}", loop_enabled);
+            debug!("Applied loop setting from seaview.toml: {}", loop_enabled);
         }
     }
 
@@ -293,7 +293,7 @@ fn handle_save_view(
 
             match settings_res.save() {
                 Ok(()) => {
-                    info!("💾 View saved to seaview.toml");
+                    debug!("💾 View saved to seaview.toml");
                 }
                 Err(e) => {
                     error!("Failed to save view: {}", e);
@@ -316,7 +316,7 @@ fn handle_input_path(
     if let Some(path) = &args.path {
         if path.is_dir() {
             // It's a directory - trigger sequence discovery
-            info!("Discovering sequences in directory: {:?}", path);
+            debug!("Discovering sequences in directory: {:?}", path);
             commands.spawn(DiscoverSequenceRequest {
                 directory: path.clone(),
                 recursive: false,
@@ -332,7 +332,7 @@ fn handle_input_path(
 
             match ext.as_str() {
                 "glb" | "gltf" | "stl" => {
-                    info!("Loading single mesh file: {:?}", path);
+                    debug!("Loading single mesh file: {:?}", path);
 
                     // Create a minimal sequence so coordinate transform is applied
                     let filename = path.file_name()
@@ -349,7 +349,7 @@ fn handle_input_path(
                     );
                     sequence.add_frame(seaview::sequence::FrameInfo::new(path.clone(), 0));
 
-                    info!("Using coordinate system: {}", source_orientation.description());
+                    debug!("Using coordinate system: {}", source_orientation.description());
                     sequence_manager.load_sequence(sequence);
 
                     // Load as a single-frame "sequence"

@@ -321,7 +321,7 @@ impl UiState {
     /// Show an info message
     pub fn show_info(&mut self, message: impl Into<String>) {
         self.temp_state.info_message = Some(message.into());
-        info!(
+        debug!(
             "UI Info: {}",
             self.temp_state.info_message.as_ref().unwrap()
         );

@@ -26,7 +26,7 @@ pub fn test_panel_system(mut contexts: EguiContexts) {
 
             // Test button with logging
             if ui.button("Click Me!").clicked() {
-                info!("Test button clicked! Egui integration is working.");
+                debug!("Test button clicked! Egui integration is working.");
             }
 
             ui.add_space(10.0);

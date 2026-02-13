@@ -42,13 +42,13 @@ fn setup_network_receiver(
     mut network_receiver: ResMut<NetworkReceiver>,
 ) {
     if !config.enabled {
-        info!("Network mesh receiving is disabled");
+        debug!("Network mesh receiving is disabled");
         return;
     }
 
     match NonBlockingMeshReceiver::new(config.port, config.max_message_size_mb) {
         Ok(receiver) => {
-            info!("Network mesh receiver listening on port {}", config.port);
+            debug!("Network mesh receiver listening on port {}", config.port);
             network_receiver.receiver = Some(Arc::new(Mutex::new(receiver)));
         }
         Err(e) => {
@@ -74,7 +74,7 @@ fn poll_network_meshes(
             loop {
                 match receiver_guard.try_receive() {
                     Ok(Some(received_mesh)) => {
-                        info!(
+                        debug!(
                             "Received mesh via network: {} triangles for simulation {} frame {}",
                             received_mesh.triangle_count,
                             received_mesh.simulation_uuid,

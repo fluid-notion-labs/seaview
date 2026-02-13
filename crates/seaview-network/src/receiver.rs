@@ -97,7 +97,7 @@ impl MeshReceiver {
             .map_err(|e| ReceiveError::Bind(format!("Failed to bind: {e}")))?;
 
         let local_addr = listener.local_addr()?;
-        info!("Mesh receiver listening on {}", local_addr);
+        debug!("Mesh receiver listening on {}", local_addr);
 
         // Set non-blocking mode if accept timeout is specified
         if config.accept_timeout.is_some() {
@@ -145,7 +145,7 @@ impl MeshReceiver {
             self.listener.accept()?
         };
 
-        info!("Accepted connection from {}", addr);
+        debug!("Accepted connection from {}", addr);
 
         // Configure the stream
         stream.set_nodelay(self.config.tcp_nodelay)?;
@@ -202,7 +202,7 @@ impl MeshReceiver {
                     continue;
                 }
                 MessageType::EndOfStream => {
-                    info!("Received end-of-stream marker from {}", source_addr);
+                    debug!("Received end-of-stream marker from {}", source_addr);
                     return Err(ReceiveError::Io(std::io::Error::new(
                         std::io::ErrorKind::UnexpectedEof,
                         "End of stream",
@@ -221,13 +221,13 @@ impl MeshReceiver {
     where
         F: FnMut(ReceivedMesh) -> bool,
     {
-        info!("Starting mesh receiver loop");
+        debug!("Starting mesh receiver loop");
 
         loop {
             match self.receive_one() {
                 Ok(mesh) => {
                     if !callback(mesh) {
-                        info!("Callback requested stop");
+                        debug!("Callback requested stop");
                         break;
                     }
                 }
@@ -245,7 +245,7 @@ impl MeshReceiver {
             }
         }
 
-        info!(
+        debug!(
             "Mesh receiver stopped. Received {} frames, {} bytes",
             self.frames_received, self.bytes_received
         );
@@ -295,7 +295,7 @@ impl NonBlockingMeshReceiver {
             .map_err(|e| ReceiveError::Bind(format!("Failed to bind: {e}")))?;
 
         let local_addr = listener.local_addr()?;
-        info!("Non-blocking mesh receiver listening on {}", local_addr);
+        debug!("Non-blocking mesh receiver listening on {}", local_addr);
 
         // Always set non-blocking for this receiver type
         listener.set_nonblocking(true)?;
@@ -374,7 +374,7 @@ impl NonBlockingMeshReceiver {
                     continue;
                 }
                 MessageType::EndOfStream => {
-                    info!("Received end-of-stream marker from {}", source_addr);
+                    debug!("Received end-of-stream marker from {}", source_addr);
                     return Err(ReceiveError::Io(std::io::Error::new(
                         std::io::ErrorKind::UnexpectedEof,
                         "End of stream",

@@ -77,7 +77,7 @@ impl MeshSender {
         addr: A,
         config: SenderConfig,
     ) -> Result<Self, NetworkError> {
-        info!("Connecting to mesh receiver...");
+        debug!("Connecting to mesh receiver...");
 
         let stream = if let Some(timeout) = config.connect_timeout {
             // Convert address to SocketAddr for timeout connection
@@ -91,7 +91,7 @@ impl MeshSender {
             TcpStream::connect(addr)?
         };
 
-        info!("Connected to {}", stream.peer_addr()?);
+        debug!("Connected to {}", stream.peer_addr()?);
 
         // Configure the stream
         stream.set_nodelay(config.tcp_nodelay)?;
@@ -158,7 +158,7 @@ impl MeshSender {
 
     /// Send end-of-stream marker
     pub fn send_end_of_stream(&mut self) -> Result<(), NetworkError> {
-        info!("Sending end-of-stream marker");
+        debug!("Sending end-of-stream marker");
         let message = self.protocol.create_end_of_stream();
         self.protocol.write_message(&mut self.stream, &message)?;
         Ok(())
@@ -207,7 +207,7 @@ impl MeshSender {
         // Shutdown the TCP connection
         self.stream.shutdown(std::net::Shutdown::Both)?;
 
-        info!(
+        debug!(
             "Mesh sender shutdown complete. Sent {} frames, {} bytes",
             self.frames_sent, self.bytes_sent
         );

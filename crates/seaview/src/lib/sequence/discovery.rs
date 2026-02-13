@@ -92,7 +92,7 @@ fn handle_discovery_requests(
     let patterns = patterns.as_deref().unwrap_or(&default_patterns);
 
     for (entity, request) in query.iter() {
-        info!("Discovering sequences in: {:?}", request.directory);
+        debug!("Discovering sequences in: {:?}", request.directory);
         events.write(SequenceEvent::DiscoveryStarted(request.directory.clone()));
 
         match discover_sequences(
@@ -102,7 +102,7 @@ fn handle_discovery_requests(
             request.source_orientation,
         ) {
             Ok(sequences) => {
-                info!("Found {} sequences", sequences.len());
+                debug!("Found {} sequences", sequences.len());
 
                 // For now, load the first sequence if any found
                 if let Some(sequence) = sequences.into_iter().next() {
@@ -113,7 +113,7 @@ fn handle_discovery_requests(
                     let frame_paths: Vec<_> =
                         sequence.frames.iter().map(|f| f.path.clone()).collect();
                     if !frame_paths.is_empty() {
-                        info!(
+                        debug!(
                             "Triggering load of {} mesh frames for sequence '{}'",
                             frame_paths.len(),
                             sequence_name

@@ -48,7 +48,7 @@ impl SessionManager {
         self.sessions.insert(id, session);
         self.port_to_session.insert(port, id);
 
-        info!(
+        debug!(
             "Created network session '{}' (ID: {}) on port {}",
             name, id, port
         );
@@ -62,7 +62,7 @@ impl SessionManager {
         let id = session.id;
         self.sessions.insert(id, session);
 
-        info!(
+        debug!(
             "Created file session '{}' (ID: {}) for path {:?}",
             name, id, path
         );
@@ -82,7 +82,7 @@ impl SessionManager {
             self.active_receivers.remove(port);
         }
 
-        info!("Deleted session '{}' (ID: {})", session.name, id);
+        debug!("Deleted session '{}' (ID: {})", session.name, id);
         Ok(())
     }
 
@@ -188,7 +188,7 @@ impl SessionManager {
         session.frames.clear();
         session.metadata.frames_received = 0;
 
-        info!("Cleared all frames from session '{}'", session.name);
+        debug!("Cleared all frames from session '{}'", session.name);
         Ok(())
     }
 }

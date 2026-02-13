@@ -104,7 +104,7 @@ fn compute_bounds_on_first_load(
 
     if let Some((mn, mx)) = compute_aabb(mesh) {
         let d = mx - mn;
-        info!(
+        debug!(
             "Mesh AABB computed — min: ({:.2}, {:.2}, {:.2}), max: ({:.2}, {:.2}, {:.2}), dims: {:.2} × {:.2} × {:.2} m",
             mn.x, mn.y, mn.z, mx.x, mx.y, mx.z, d.x, d.y, d.z
         );
@@ -147,7 +147,7 @@ fn handle_recompute_request(
 
     if let Some((mn, mx)) = compute_aabb(mesh) {
         let d = mx - mn;
-        info!(
+        debug!(
             "Mesh AABB recomputed — dims: {:.2} × {:.2} × {:.2} m",
             d.x, d.y, d.z
         );
@@ -195,7 +195,7 @@ fn save_bounds_to_settings(dims: &MeshDimensions, settings_res: &mut SettingsRes
         if let Err(e) = settings_res.save() {
             warn!("Failed to save mesh bounds to seaview.toml: {}", e);
         } else {
-            info!("Mesh bounds cached to seaview.toml");
+            debug!("Mesh bounds cached to seaview.toml");
         }
     }
 }
