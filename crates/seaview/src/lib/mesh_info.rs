@@ -86,7 +86,7 @@ impl MeshDimensions {
 /// appears and we haven't computed yet.
 fn compute_bounds_on_first_load(
     mut dims: ResMut<MeshDimensions>,
-    mesh_query: Query<&Mesh3d, With<SequenceMeshDisplay>>,
+    mesh_query: Query<(&Mesh3d, &Visibility), With<SequenceMeshDisplay>>,
     meshes: Res<Assets<Mesh>>,
     mut settings_res: ResMut<SettingsResource>,
 ) {
@@ -94,7 +94,16 @@ fn compute_bounds_on_first_load(
         return;
     }
 
-    let Ok(mesh_handle) = mesh_query.single() else {
+    // Find the visible mesh entity
+    let mut visible_mesh = None;
+    for (mesh_handle, visibility) in mesh_query.iter() {
+        if *visibility == Visibility::Visible {
+            visible_mesh = Some(mesh_handle);
+            break;
+        }
+    }
+
+    let Some(mesh_handle) = visible_mesh else {
         return;
     };
 
@@ -122,7 +131,7 @@ fn compute_bounds_on_first_load(
 fn handle_recompute_request(
     mut events: MessageReader<RecomputeMeshBounds>,
     mut dims: ResMut<MeshDimensions>,
-    mesh_query: Query<&Mesh3d, With<SequenceMeshDisplay>>,
+    mesh_query: Query<(&Mesh3d, &Visibility), With<SequenceMeshDisplay>>,
     meshes: Res<Assets<Mesh>>,
     mut settings_res: ResMut<SettingsResource>,
 ) {
@@ -135,8 +144,17 @@ fn handle_recompute_request(
         return;
     }
 
-    let Ok(mesh_handle) = mesh_query.single() else {
-        warn!("Recompute requested but no mesh entity found");
+    // Find the visible mesh entity
+    let mut visible_mesh = None;
+    for (mesh_handle, visibility) in mesh_query.iter() {
+        if *visibility == Visibility::Visible {
+            visible_mesh = Some(mesh_handle);
+            break;
+        }
+    }
+
+    let Some(mesh_handle) = visible_mesh else {
+        warn!("Recompute requested but no visible mesh entity found");
         return;
     };
 

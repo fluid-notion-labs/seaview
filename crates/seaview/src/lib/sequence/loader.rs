@@ -80,8 +80,8 @@ pub struct SequenceAssets {
     pub base_path: Option<PathBuf>,
     /// Whether loading is in progress
     pub loading: bool,
-    /// Entity displaying the current mesh
-    pub mesh_entity: Option<Entity>,
+    /// Entity for each frame (spawned when frame loads, hidden by default)
+    pub frame_entities: Vec<Option<Entity>>,
     /// Currently displayed frame index
     pub displayed_frame: Option<usize>,
     /// Detected file format for this sequence (set on first load request)
@@ -97,7 +97,7 @@ impl SequenceAssets {
         self.loading = false;
         self.displayed_frame = None;
         self.format = None;
-        // Don't reset mesh_entity - we'll reuse it
+        self.frame_entities.clear();
     }
 
     /// Check if all frames are loaded
@@ -117,6 +117,13 @@ impl SequenceAssets {
     /// Get the mesh handle for a specific frame
     pub fn get_frame(&self, index: usize) -> Option<&Handle<Mesh>> {
         self.frame_handles.get(index)
+    }
+
+    /// Get the entity for the currently displayed frame
+    pub fn displayed_entity(&self) -> Option<Entity> {
+        self.displayed_frame
+            .and_then(|idx| self.frame_entities.get(idx))
+            .and_then(|opt| *opt)
     }
 }
 
@@ -207,6 +214,7 @@ fn detect_sequence_format(paths: &[PathBuf]) -> Option<MeshFileFormat> {
 
 /// System that handles sequence load requests
 fn handle_load_requests(
+    mut commands: Commands,
     mut load_requests: MessageReader<LoadSequenceRequest>,
     mut sequence_assets: ResMut<SequenceAssets>,
     asset_server: Res<AssetServer>,
@@ -234,11 +242,20 @@ fn handle_load_requests(
             }
         };
 
+        // Cleanup old sequence entities before resetting
+        for entity_opt in sequence_assets.frame_entities.iter() {
+            if let Some(entity) = entity_opt {
+                commands.entity(*entity).despawn();
+            }
+        }
+
         // Reset assets for new sequence
         sequence_assets.reset();
         sequence_assets.total_frames = request.frame_paths.len();
         sequence_assets.loading = true;
         sequence_assets.format = Some(format);
+        // Pre-allocate the frame_entities vec
+        sequence_assets.frame_entities = vec![None; request.frame_paths.len()];
 
         // Store base path from first frame
         if let Some(first_path) = request.frame_paths.first() {
@@ -285,6 +302,9 @@ fn track_asset_loading(
         return;
     }
 
+    // Create shared material once (lazy init)
+    let mut shared_material: Option<Handle<StandardMaterial>> = None;
+
     for event in events.read() {
         match event {
             AssetEvent::LoadedWithDependencies { id } => {
@@ -301,44 +321,58 @@ fn track_asset_loading(
                             success: true,
                         });
 
-                        // Spawn entity when first frame (index 0) loads
-                        if index == 0 && sequence_assets.mesh_entity.is_none() {
-                            // Create material
-                            let material = materials.add(StandardMaterial {
+                        // Create shared material if not already created
+                        if shared_material.is_none() {
+                            shared_material = Some(materials.add(StandardMaterial {
                                 base_color: Color::srgb(0.3, 0.5, 0.8),
                                 perceptual_roughness: 0.4,
                                 metallic: 0.1,
                                 cull_mode: None, // Double-sided rendering
                                 ..default()
-                            });
+                            }));
+                        }
 
-                            // Get coordinate transformation
-                            let transform = if let Some(sequence) =
-                                sequence_manager.current_sequence()
-                            {
-                                let coord_transform = sequence.source_orientation.to_transform();
+                        // Get coordinate transformation (same for all frames)
+                        let transform = if let Some(sequence) =
+                            sequence_manager.current_sequence()
+                        {
+                            let coord_transform = sequence.source_orientation.to_transform();
+                            if index == 0 {
                                 debug!(
-                                        "Applying coordinate transformation: {}",
-                                        sequence.source_orientation.description()
-                                    );
-                                coord_transform
-                            } else {
-                                Transform::default()
-                            };
+                                    "Applying coordinate transformation: {}",
+                                    sequence.source_orientation.description()
+                                );
+                            }
+                            coord_transform
+                        } else {
+                            Transform::default()
+                        };
 
-                            let entity = commands
-                                .spawn((
-                                    Mesh3d(handle_clone),
-                                    MeshMaterial3d(material),
-                                    transform,
-                                    SequenceMeshDisplay,
-                                    Name::new("Sequence Mesh"),
-                                ))
-                                .id();
+                        // Spawn entity for this frame
+                        // Frame 0 is visible, all others start hidden
+                        let visibility = if index == 0 {
+                            Visibility::Visible
+                        } else {
+                            Visibility::Hidden
+                        };
 
-                            sequence_assets.mesh_entity = Some(entity);
+                        let entity = commands
+                            .spawn((
+                                Mesh3d(handle_clone),
+                                MeshMaterial3d(shared_material.as_ref().unwrap().clone()),
+                                transform,
+                                SequenceMeshDisplay,
+                                visibility,
+                                Name::new(format!("Frame {}", index)),
+                            ))
+                            .id();
+
+                        sequence_assets.frame_entities[index] = Some(entity);
+
+                        // Mark frame 0 as displayed
+                        if index == 0 {
                             sequence_assets.displayed_frame = Some(0);
-                            debug!("Spawned mesh display entity with first frame: {:?}", entity);
+                            debug!("Spawned and displayed frame 0 entity: {:?}", entity);
                         }
 
                         // Log progress at intervals
@@ -408,13 +442,12 @@ fn track_asset_loading(
 
 /// System that updates the displayed mesh when the frame changes
 fn update_mesh_display(
+    mut commands: Commands,
     mut sequence_assets: ResMut<SequenceAssets>,
     sequence_manager: Res<SequenceManager>,
-    mut mesh_query: Query<&mut Mesh3d, With<SequenceMeshDisplay>>,
 ) {
-    // Only update if we have frames and the display entity
+    // Only update if we have frames
     if sequence_assets.frame_handles.is_empty() {
-        debug!("update_mesh_display: No frame handles");
         return;
     }
 
@@ -425,34 +458,55 @@ fn update_mesh_display(
         return;
     }
 
-    // Get the mesh handle for the current frame
-    if let Some(handle) = sequence_assets.get_frame(current_frame) {
-        // Update the mesh on the display entity
-        for mut mesh_handle in mesh_query.iter_mut() {
-            mesh_handle.0 = handle.clone();
+    let old_frame = sequence_assets.displayed_frame;
+
+    // Hide the old frame entity if it exists
+    if let Some(old_idx) = old_frame {
+        if let Some(Some(old_entity)) = sequence_assets.frame_entities.get(old_idx) {
+            commands.entity(*old_entity).insert(Visibility::Hidden);
         }
-        // Track which frame is now displayed
+    }
+
+    // Show the new frame entity if it exists
+    if let Some(Some(new_entity)) = sequence_assets.frame_entities.get(current_frame) {
+        commands.entity(*new_entity).insert(Visibility::Visible);
         sequence_assets.displayed_frame = Some(current_frame);
-        debug!("Updated display to frame {}", current_frame);
+        debug!("Switched visibility: frame {} hidden, frame {} visible",
+               old_frame.map_or(-1, |i| i as i32), current_frame);
     }
 }
 
 /// System that responds to frame change events and updates the mesh
 fn handle_frame_changes(
+    mut commands: Commands,
     mut sequence_events: MessageReader<SequenceEvent>,
     mut sequence_assets: ResMut<SequenceAssets>,
-    mut mesh_query: Query<&mut Mesh3d, With<SequenceMeshDisplay>>,
 ) {
     for event in sequence_events.read() {
         match event {
             SequenceEvent::FrameChanged(frame_index) => {
-                // Update displayed frame
-                if let Some(handle) = sequence_assets.get_frame(*frame_index) {
-                    if let Ok(mut mesh_handle) = mesh_query.single_mut() {
-                        mesh_handle.0 = handle.clone();
-                        sequence_assets.displayed_frame = Some(*frame_index);
-                        trace!("Switched to frame {}", frame_index);
+                let current_frame = *frame_index;
+
+                // Check if we need to update (frame changed)
+                if sequence_assets.displayed_frame == Some(current_frame) {
+                    continue;
+                }
+
+                let old_frame = sequence_assets.displayed_frame;
+
+                // Hide the old frame entity if it exists
+                if let Some(old_idx) = old_frame {
+                    if let Some(Some(old_entity)) = sequence_assets.frame_entities.get(old_idx) {
+                        commands.entity(*old_entity).insert(Visibility::Hidden);
                     }
+                }
+
+                // Show the new frame entity if it exists
+                if let Some(Some(new_entity)) = sequence_assets.frame_entities.get(current_frame) {
+                    commands.entity(*new_entity).insert(Visibility::Visible);
+                    sequence_assets.displayed_frame = Some(current_frame);
+                    trace!("Event-driven switch: frame {} hidden, frame {} visible",
+                           old_frame.map_or(-1, |i| i as i32), current_frame);
                 }
             }
             _ => {}
