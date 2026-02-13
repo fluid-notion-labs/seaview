@@ -81,6 +81,11 @@ fn render_lighting_rig_controls(
     lighting_config: &mut NightLightingConfig,
     mesh_dims: &MeshDimensions,
 ) {
+    // Light map visualization — always visible at top
+    render_light_map(ui, lighting_config, mesh_dims);
+
+    ui.add_space(5.0);
+
     // Enable/disable toggle
     ui.horizontal(|ui| {
         ui.checkbox(&mut lighting_config.enabled, "Enabled");
@@ -209,10 +214,6 @@ fn render_lighting_rig_controls(
         );
     }
 
-    ui.add_space(5.0);
-
-    // Light map visualization
-    render_light_map(ui, lighting_config, mesh_dims);
 }
 
 fn render_light_map(
@@ -220,10 +221,7 @@ fn render_light_map(
     lighting_config: &NightLightingConfig,
     mesh_dims: &MeshDimensions,
 ) {
-    egui::CollapsingHeader::new("Light Map Preview")
-        .default_open(false)
-        .show(ui, |ui| {
-            let (min_bounds, max_bounds) = if let (Some(mn), Some(mx)) = (mesh_dims.min, mesh_dims.max) {
+    let (min_bounds, max_bounds) = if let (Some(mn), Some(mx)) = (mesh_dims.min, mesh_dims.max) {
                 let coverage_scale = lighting_config.coverage_pct / 100.0;
                 let center_x = (mn.x + mx.x) / 2.0;
                 let center_z = (mn.z + mx.z) / 2.0;
@@ -241,106 +239,100 @@ fn render_light_map(
                 )
             };
 
-            let positions = lighting_config.placement_algorithm.calculate_positions(
+    let positions = lighting_config.placement_algorithm.calculate_positions(
                 lighting_config.num_lights,
-                min_bounds,
-                max_bounds,
-            );
+        min_bounds,
+        max_bounds,
+    );
 
-            let map_size = 180.0_f32;
-            let (rect, _response) =
-                ui.allocate_exact_size(egui::Vec2::splat(map_size), egui::Sense::hover());
+    // Use full available width for the map
+    let map_size = ui.available_width().min(280.0);
+    let (rect, _response) =
+        ui.allocate_exact_size(egui::Vec2::splat(map_size), egui::Sense::hover());
 
-            if ui.is_rect_visible(rect) {
-                let painter = ui.painter_at(rect);
+    if ui.is_rect_visible(rect) {
+        let painter = ui.painter_at(rect);
 
-                // Background
-                painter.rect_filled(rect, 4.0, egui::Color32::from_gray(30));
+        // Background
+        painter.rect_filled(rect, 4.0, egui::Color32::from_gray(30));
 
-                // Mesh outline (in map space)
-                if let (Some(mn), Some(mx)) = (mesh_dims.min, mesh_dims.max) {
-                    let world_w = max_bounds.x - min_bounds.x;
-                    let world_h = max_bounds.y - min_bounds.y;
+        // Mesh outline (in map space)
+        if let (Some(mn), Some(mx)) = (mesh_dims.min, mesh_dims.max) {
+            let world_w = max_bounds.x - min_bounds.x;
+            let world_h = max_bounds.y - min_bounds.y;
 
-                    if world_w > 0.0 && world_h > 0.0 {
-                        let mesh_min_x =
-                            rect.min.x + ((mn.x - min_bounds.x) / world_w) * map_size;
-                        let mesh_min_y =
-                            rect.min.y + ((mn.z - min_bounds.y) / world_h) * map_size;
-                        let mesh_max_x =
-                            rect.min.x + ((mx.x - min_bounds.x) / world_w) * map_size;
-                        let mesh_max_y =
-                            rect.min.y + ((mx.z - min_bounds.y) / world_h) * map_size;
+            if world_w > 0.0 && world_h > 0.0 {
+                let mesh_min_x = rect.min.x + ((mn.x - min_bounds.x) / world_w) * map_size;
+                let mesh_min_y = rect.min.y + ((mn.z - min_bounds.y) / world_h) * map_size;
+                let mesh_max_x = rect.min.x + ((mx.x - min_bounds.x) / world_w) * map_size;
+                let mesh_max_y = rect.min.y + ((mx.z - min_bounds.y) / world_h) * map_size;
 
-                        let mesh_rect = egui::Rect::from_min_max(
-                            egui::pos2(mesh_min_x, mesh_min_y),
-                            egui::pos2(mesh_max_x, mesh_max_y),
-                        );
-                        painter.rect_stroke(
-                            mesh_rect,
-                            2.0,
-                            egui::Stroke::new(1.0, egui::Color32::from_gray(80)),
-                            egui::StrokeKind::Outside,
-                        );
-                    }
-                }
-
-                // Light positions
-                let world_w = max_bounds.x - min_bounds.x;
-                let world_h = max_bounds.y - min_bounds.y;
-
-                if world_w > 0.0 && world_h > 0.0 {
-                    let srgba = lighting_config.color.to_srgba();
-                    let light_color = egui::Color32::from_rgb(
-                        (srgba.red * 255.0) as u8,
-                        (srgba.green * 255.0) as u8,
-                        (srgba.blue * 255.0) as u8,
-                    );
-
-                    for pos in &positions {
-                        let px =
-                            rect.min.x + ((pos.x - min_bounds.x) / world_w) * map_size;
-                        let py =
-                            rect.min.y + ((pos.y - min_bounds.y) / world_h) * map_size;
-
-                        // Glow circle (represents cone coverage area)
-                        let cone_radius = (lighting_config.height
-                            * (lighting_config.cone_angle / 2.0).to_radians().tan())
-                            / world_w
-                            * map_size;
-                        let glow_color = egui::Color32::from_rgba_unmultiplied(
-                            (srgba.red * 255.0) as u8,
-                            (srgba.green * 255.0) as u8,
-                            (srgba.blue * 255.0) as u8,
-                            30,
-                        );
-                        painter.circle_filled(
-                            egui::pos2(px, py),
-                            cone_radius.min(map_size * 0.3),
-                            glow_color,
-                        );
-
-                        // Light dot
-                        painter.circle_filled(egui::pos2(px, py), 3.0, light_color);
-                    }
-                }
-
-                // Border
+                let mesh_rect = egui::Rect::from_min_max(
+                    egui::pos2(mesh_min_x, mesh_min_y),
+                    egui::pos2(mesh_max_x, mesh_max_y),
+                );
                 painter.rect_stroke(
-                    rect,
-                    4.0,
-                    egui::Stroke::new(1.0, egui::Color32::from_gray(60)),
+                    mesh_rect,
+                    2.0,
+                    egui::Stroke::new(1.0, egui::Color32::from_gray(80)),
                     egui::StrokeKind::Outside,
                 );
             }
+        }
 
-            ui.add_space(4.0);
-            ui.label(format!(
-                "{} lights, {:.0}m high",
-                positions.len(),
-                lighting_config.height
-            ));
-        });
+        // Light positions
+        let world_w = max_bounds.x - min_bounds.x;
+        let world_h = max_bounds.y - min_bounds.y;
+
+        if world_w > 0.0 && world_h > 0.0 {
+            let srgba = lighting_config.color.to_srgba();
+            let light_color = egui::Color32::from_rgb(
+                (srgba.red * 255.0) as u8,
+                (srgba.green * 255.0) as u8,
+                (srgba.blue * 255.0) as u8,
+            );
+
+            for pos in &positions {
+                let px = rect.min.x + ((pos.x - min_bounds.x) / world_w) * map_size;
+                let py = rect.min.y + ((pos.y - min_bounds.y) / world_h) * map_size;
+
+                // Glow circle (represents cone coverage area)
+                let cone_radius = (lighting_config.height
+                    * (lighting_config.cone_angle / 2.0).to_radians().tan())
+                    / world_w
+                    * map_size;
+                let glow_color = egui::Color32::from_rgba_unmultiplied(
+                    (srgba.red * 255.0) as u8,
+                    (srgba.green * 255.0) as u8,
+                    (srgba.blue * 255.0) as u8,
+                    30,
+                );
+                painter.circle_filled(
+                    egui::pos2(px, py),
+                    cone_radius.min(map_size * 0.3),
+                    glow_color,
+                );
+
+                // Light dot
+                painter.circle_filled(egui::pos2(px, py), 3.0, light_color);
+            }
+        }
+
+        // Border
+        painter.rect_stroke(
+            rect,
+            4.0,
+            egui::Stroke::new(1.0, egui::Color32::from_gray(60)),
+            egui::StrokeKind::Outside,
+        );
+    }
+
+    ui.add_space(4.0);
+    ui.label(format!(
+        "{} lights, {:.0}m high",
+        positions.len(),
+        lighting_config.height
+    ));
 }
 
 fn render_material_controls(ui: &mut egui::Ui, material_config: &mut MaterialConfig) {
