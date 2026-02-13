@@ -23,6 +23,9 @@ pub struct UiState {
     /// Whether the playback controls are visible
     pub show_playback_controls: bool,
 
+    /// Whether the performance panel is visible
+    pub show_perf_panel: bool,
+
     /// Current playback state
     pub playback: PlaybackState,
 
@@ -150,6 +153,9 @@ pub struct CollapsibleState {
 
     /// Whether the material section is open
     pub material_open: bool,
+
+    /// Whether the performance section is open
+    pub perf_open: bool,
 }
 
 impl Default for CollapsibleState {
@@ -159,6 +165,7 @@ impl Default for CollapsibleState {
             network_status_open: true,
             lighting_rig_open: true,
             material_open: true,
+            perf_open: false,
         }
     }
 }
@@ -261,6 +268,7 @@ impl UiState {
             show_session_panel: true,
             show_network_panel: true,
             show_playback_controls: true,
+            show_perf_panel: true,
             playback: PlaybackState {
                 speed: 1.0,
                 total_frames: 0,

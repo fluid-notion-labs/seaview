@@ -47,6 +47,16 @@ max-perf = [
     "log/max_level_off",
     "log/release_max_level_off",
 ]
+# Performance profiling: Chrome trace output (open in chrome://tracing or Perfetto)
+trace_chrome = ["bevy/trace_chrome"]
+# Performance profiling: Tracy profiler integration
+trace_tracy = ["bevy/trace_tracy"]
+# System information diagnostics (CPU/memory usage)
+sysinfo_plugin = ["bevy/sysinfo_plugin"]
+# Dev tools (FPS overlay, frame time graph, etc.)
+bevy_dev_tools = ["bevy/bevy_dev_tools"]
+# Convenience: enable all perf debugging features (except tracy)
+perf = ["trace_chrome", "sysinfo_plugin"]
 
 
 # [[bin]]

@@ -8,12 +8,14 @@ use bevy_egui::EguiPrimaryContextPass;
 mod event_handlers;
 mod material_system;
 mod menu_bar;
+pub mod perf_panel;
 mod playback_controls;
 mod session_panel;
 
 pub use event_handlers::*;
 pub use material_system::*;
 pub use menu_bar::*;
+pub use perf_panel::*;
 pub use playback_controls::*;
 pub use session_panel::*;
 

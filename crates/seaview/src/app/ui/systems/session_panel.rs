@@ -3,11 +3,14 @@
 //! This module implements the left side panel that displays and manages sessions,
 //! network status, and lighting rig configuration using an accordion-style UI.
 
+use bevy::diagnostic::DiagnosticsStore;
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 use uuid::Uuid;
 
+use crate::app::systems::diagnostics::RenderingStats;
 use crate::app::ui::state::{AlphaModeConfig, DeleteSessionEvent, MaterialConfig, SwitchSessionEvent, UiState};
+use crate::app::ui::systems::perf_panel::render_perf_section;
 use crate::lib::lighting::{NightLightingConfig, PlacementAlgorithm};
 use crate::lib::mesh_info::{MeshDimensions, RecomputeMeshBounds};
 use crate::lib::session::SessionManager;
@@ -23,6 +26,8 @@ pub fn session_panel_system(
     mut material_config: ResMut<MaterialConfig>,
     mesh_dims: Res<MeshDimensions>,
     mut recompute_events: MessageWriter<RecomputeMeshBounds>,
+    diagnostics: Res<DiagnosticsStore>,
+    rendering_stats: Res<RenderingStats>,
 ) {
     if !ui_state.show_session_panel {
         debug!("Session panel is hidden");
@@ -211,6 +216,11 @@ pub fn session_panel_system(
 
                             render_material_controls(ui, &mut material_config);
                         });
+
+                    ui.add_space(5.0);
+
+                    // Performance Section (Collapsible)
+                    render_perf_section(ui, &mut ui_state, &diagnostics, &rendering_stats);
                 });
         });
 }

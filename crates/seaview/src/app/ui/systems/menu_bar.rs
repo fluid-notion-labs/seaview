@@ -102,6 +102,13 @@ pub fn menu_bar_system(
                         ui.close();
                     }
 
+                    if ui
+                        .checkbox(&mut ui_state.show_perf_panel, "Performance")
+                        .clicked()
+                    {
+                        ui.close();
+                    }
+
                     ui.separator();
 
                     if ui.button("Reset Layout").clicked() {
