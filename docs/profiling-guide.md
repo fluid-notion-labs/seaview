@@ -14,12 +14,29 @@ cargo build --release --features trace_chrome
 
 ### 2. Run the Application
 
+**Option A: Traces in /tmp (recommended)**
+```bash
+# Use the wrapper script that runs seaview from /tmp
+# (traces will be written to /tmp instead of project root)
+/tmp/seaview-trace.sh <path-to-sequence>
+```
+
+**Option B: Traces in project root**
 ```bash
 # The trace file is automatically generated when you run
 ./target/release/seaview
 
 # Trace files are saved in the project root as:
 # trace-<timestamp>.json
+```
+
+**With logging to file:**
+```bash
+# Capture logs for analysis
+RUST_LOG=info ./target/release/seaview | tee /tmp/seaview.log
+
+# After loading completes, view frame-change logs:
+grep -A 50 "LOADING COMPLETE" /tmp/seaview.log
 ```
 
 ### 3. Analyze the Trace
@@ -82,14 +99,17 @@ sudo apt install tracy
 ### Test 2: Identify Frame Time Spikes
 
 ```bash
-# Run with sequence loaded and playing
-./target/release/seaview --features trace_chrome
+# Run with sequence loaded and playing, capture logs
+RUST_LOG=info /tmp/seaview-trace.sh <path-to-sequence> | tee /tmp/seaview.log
 
 # Steps to reproduce:
-# 1. Load gold dataset
+# 1. Wait for "✓ SEQUENCE LOADING COMPLETE" message
 # 2. Start playback (spacebar)
 # 3. Let it run for ~30 seconds
-# 4. Exit and check trace
+# 4. Exit and check trace + logs
+
+# View frame switching logs:
+grep -A 100 "LOADING COMPLETE" /tmp/seaview.log | grep "Switched visibility"
 ```
 
 In the trace:
@@ -112,8 +132,21 @@ Look for these patterns in the trace:
 - Check `RenderingStats` logs every 5 seconds
 
 ### Console Logging
+- Info logs show loading complete: `"✓ SEQUENCE LOADING COMPLETE: N frames, N entities spawned"`
 - Debug logs show frame switches: `"Switched visibility: frame X hidden, frame Y visible"`
-- If you see `"Updated display to frame X"` frequently, visibility swap is working
+- If you see these messages frequently, visibility swap is working
+
+**Grep for important events:**
+```bash
+# Find when loading completed
+grep "LOADING COMPLETE" /tmp/seaview.log
+
+# View frame switches after loading
+grep -A 200 "LOADING COMPLETE" /tmp/seaview.log | grep "Switched visibility"
+
+# Count frame switches
+grep "Switched visibility" /tmp/seaview.log | wc -l
+```
 
 ### GPU Memory Monitoring (Linux)
 
