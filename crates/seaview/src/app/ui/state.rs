@@ -286,36 +286,6 @@ impl UiState {
         self.playback.is_playing = false;
     }
 
-    /// Toggle playback state
-    pub fn toggle_playback(&mut self) {
-        self.playback.is_playing = !self.playback.is_playing;
-    }
-
-    /// Advance to the next frame
-    pub fn next_frame(&mut self) {
-        if self.playback.current_frame < self.playback.total_frames.saturating_sub(1) {
-            self.playback.current_frame += 1;
-        } else if self.playback.loop_enabled {
-            self.playback.current_frame = 0;
-        } else {
-            self.playback.is_playing = false;
-        }
-    }
-
-    /// Go to the previous frame
-    pub fn previous_frame(&mut self) {
-        if self.playback.current_frame > 0 {
-            self.playback.current_frame -= 1;
-        } else if self.playback.loop_enabled && self.playback.total_frames > 0 {
-            self.playback.current_frame = self.playback.total_frames - 1;
-        }
-    }
-
-    /// Jump to a specific frame
-    pub fn seek_to_frame(&mut self, frame: usize) {
-        self.playback.current_frame = frame.min(self.playback.total_frames.saturating_sub(1));
-    }
-
     /// Show an error message
     pub fn show_error(&mut self, message: impl Into<String>) {
         self.temp_state.error_message = Some(message.into());

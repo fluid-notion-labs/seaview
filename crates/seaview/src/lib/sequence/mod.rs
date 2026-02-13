@@ -24,34 +24,7 @@ impl Plugin for SequencePlugin {
             loader::SequenceLoaderPlugin,
         ))
         .init_resource::<SequenceManager>()
-        .add_message::<SequenceEvent>()
-        .add_systems(Update, sync_sequence_manager_with_events);
-    }
-}
-
-/// System that syncs SequenceManager state when receiving SequenceEvents
-fn sync_sequence_manager_with_events(
-    mut sequence_manager: ResMut<SequenceManager>,
-    mut sequence_events: MessageReader<SequenceEvent>,
-) {
-    for event in sequence_events.read() {
-        match event {
-            SequenceEvent::FrameChanged(frame_index) => {
-                // Update the SequenceManager's current frame to match the event
-                if sequence_manager.jump_to_frame(*frame_index) {
-                    debug!("SequenceManager synced to frame {}", frame_index);
-                }
-            }
-            SequenceEvent::PlaybackStarted => {
-                sequence_manager.is_playing = true;
-                debug!("SequenceManager playback started");
-            }
-            SequenceEvent::PlaybackStopped => {
-                sequence_manager.is_playing = false;
-                debug!("SequenceManager playback stopped");
-            }
-            _ => {}
-        }
+        .add_message::<SequenceEvent>();
     }
 }
 
@@ -64,10 +37,6 @@ pub struct SequenceManager {
     pub current_frame: usize,
     /// Whether playback is active
     pub is_playing: bool,
-    /// Playback speed (frames per second)
-    pub playback_fps: f32,
-    /// Timer for frame advancement
-    pub frame_timer: f32,
 }
 
 impl SequenceManager {
@@ -77,8 +46,6 @@ impl SequenceManager {
             current_sequence: None,
             current_frame: 0,
             is_playing: false,
-            playback_fps: 30.0,
-            frame_timer: 0.0,
         }
     }
 }
@@ -89,8 +56,6 @@ impl Default for SequenceManager {
             current_sequence: None,
             current_frame: 0,
             is_playing: false,
-            playback_fps: 30.0,
-            frame_timer: 0.0,
         }
     }
 }
@@ -149,11 +114,6 @@ impl SequenceManager {
     /// Toggle playback
     pub fn toggle_playback(&mut self) {
         self.is_playing = !self.is_playing;
-    }
-
-    /// Set playback speed
-    pub fn set_playback_fps(&mut self, fps: f32) {
-        self.playback_fps = fps.max(0.1);
     }
 }
 

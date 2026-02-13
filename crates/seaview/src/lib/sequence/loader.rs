@@ -60,10 +60,6 @@ impl Plugin for SequenceLoaderPlugin {
             .add_systems(
                 Update,
                 (handle_load_requests, track_asset_loading).chain(),
-            )
-            .add_systems(
-                PostUpdate,
-                manage_frame_window,
             );
     }
 }

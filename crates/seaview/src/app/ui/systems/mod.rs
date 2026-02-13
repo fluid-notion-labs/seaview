@@ -44,7 +44,6 @@ impl Plugin for UiSystemsPlugin {
                 handle_switch_session_events,
                 handle_delete_session_events,
                 handle_create_session_events,
-                playback_update_system,
                 apply_material_config,
             ),
         );

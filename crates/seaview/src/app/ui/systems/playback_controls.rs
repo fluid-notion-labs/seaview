@@ -1,24 +1,29 @@
 //! Playback controls system for Seaview
 //!
 //! This module implements the bottom panel with timeline and playback controls.
+//!
+//! **GUTTED** — Commit 1 of playback rebuild. Buttons and sliders render but
+//! are inert (no state mutation, no events written). `playback_update_system`
+//! has been removed entirely.
 
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 
 use crate::app::systems::camera::CenterOnMeshEvent;
 use crate::app::ui::state::UiState;
-use crate::lib::sequence::{SequenceAssets, SequenceEvent, SequenceManager};
+use crate::lib::sequence::SequenceAssets;
 use crate::lib::settings::SaveViewEvent;
 
 /// System that renders the playback controls panel
+///
+/// Currently inert — UI elements render but clicking buttons does nothing.
+/// Will be rebuilt in commit 2 to write directly to `SequenceManager`.
 pub fn playback_controls_system(
     mut contexts: EguiContexts,
-    mut ui_state: ResMut<UiState>,
+    ui_state: Res<UiState>,
     mut center_events: MessageWriter<CenterOnMeshEvent>,
-    mut sequence_events: MessageWriter<SequenceEvent>,
     mut save_view_events: MessageWriter<SaveViewEvent>,
     time: Res<Time>,
-    mut sequence_manager: ResMut<SequenceManager>,
     sequence_assets: Res<SequenceAssets>,
 ) {
     if !ui_state.show_playback_controls {
@@ -27,29 +32,18 @@ pub fn playback_controls_system(
 
     let ctx = contexts.ctx_mut().unwrap();
 
-    // Sync UI state with SequenceManager
-    if let Some(sequence) = sequence_manager.current_sequence() {
-        ui_state.playback.total_frames = sequence.frame_count();
-        ui_state.playback.current_frame = sequence_manager.current_frame;
-        ui_state.playback.is_playing = sequence_manager.is_playing;
+    // NOTE: Sync block removed — no overwriting of ui_state from sequence_manager.
+    // NOTE: Speed sync hack removed — no bidirectional sync between SM and ui_state.
 
-        // Sync speed: keyboard +/- changes sequence_manager.playback_fps,
-        // UI slider changes ui_state.playback.speed.  Keep them in sync
-        // by treating sequence_manager as the source of truth for keyboard
-        // changes and ui_state as the source of truth for slider changes.
-        // We detect which one changed by comparing.
-        let sm_speed = sequence_manager.playback_fps / 30.0; // normalise to multiplier
-        if (sm_speed - ui_state.playback.speed).abs() > 0.001 {
-            // sequence_manager was changed (keyboard +/-), propagate to UI
-            ui_state.playback.speed = sm_speed;
-        } else {
-            // UI slider is authoritative, propagate to sequence_manager
-            sequence_manager.playback_fps = ui_state.playback.speed * 30.0;
-        }
-    }
-
-    // Update loading state from assets
-    ui_state.loading.update_from_assets(&sequence_assets);
+    // Update loading state from assets (read-only copy for display)
+    let loading_is_loading = sequence_assets.loading;
+    let loading_loaded_frames = sequence_assets.loaded_count;
+    let loading_total_frames = sequence_assets.total_frames;
+    let loading_progress = if loading_total_frames == 0 {
+        0.0
+    } else {
+        loading_loaded_frames as f32 / loading_total_frames as f32
+    };
 
     let panel_height = ui_state.panel_sizes.playback_panel_height;
 
@@ -62,17 +56,16 @@ pub fn playback_controls_system(
 
             ui.vertical(|ui| {
                 // Loading progress bar (shown when loading)
-                if ui_state.loading.is_loading {
+                if loading_is_loading {
                     ui.horizontal(|ui| {
                         ui.add_space(10.0);
 
-                        let progress = ui_state.loading.progress();
-                        let progress_bar = egui::ProgressBar::new(progress)
+                        let progress_bar = egui::ProgressBar::new(loading_progress)
                             .text(format!(
                                 "Loading: {}/{} frames ({:.0}%)",
-                                ui_state.loading.loaded_frames,
-                                ui_state.loading.total_frames,
-                                progress * 100.0
+                                loading_loaded_frames,
+                                loading_total_frames,
+                                loading_progress * 100.0
                             ))
                             .animate(true);
                         ui.add(progress_bar);
@@ -86,44 +79,29 @@ pub fn playback_controls_system(
                 ui.horizontal(|ui| {
                     ui.add_space(10.0);
 
-                    // Previous frame button
-                    if ui.button("⏮").on_hover_text("Previous frame").clicked() {
-                        ui_state.previous_frame();
-                        sequence_events.write(SequenceEvent::FrameChanged(ui_state.playback.current_frame));
-                    }
+                    // Previous frame button (INERT)
+                    let _prev = ui.button("⏮").on_hover_text("Previous frame (inert)");
 
-                    // Play/Pause button
+                    // Play/Pause button (INERT)
                     let play_pause_text = if ui_state.playback.is_playing {
                         "⏸"
                     } else {
                         "▶"
                     };
-                    if ui
+                    let _play = ui
                         .button(play_pause_text)
                         .on_hover_text(if ui_state.playback.is_playing {
-                            "Pause"
+                            "Pause (inert)"
                         } else {
-                            "Play"
-                        })
-                        .clicked()
-                    {
-                        ui_state.toggle_playback();
-                        if ui_state.playback.is_playing {
-                            sequence_events.write(SequenceEvent::PlaybackStarted);
-                        } else {
-                            sequence_events.write(SequenceEvent::PlaybackStopped);
-                        }
-                    }
+                            "Play (inert)"
+                        });
 
-                    // Next frame button
-                    if ui.button("⏭").on_hover_text("Next frame").clicked() {
-                        ui_state.next_frame();
-                        sequence_events.write(SequenceEvent::FrameChanged(ui_state.playback.current_frame));
-                    }
+                    // Next frame button (INERT)
+                    let _next = ui.button("⏭").on_hover_text("Next frame (inert)");
 
                     ui.separator();
 
-                    // Center camera button
+                    // Center camera button (still functional — not part of playback)
                     if ui
                         .button("🎯")
                         .on_hover_text("Center camera on mesh")
@@ -134,7 +112,7 @@ pub fn playback_controls_system(
                         debug!("CenterOnMeshEvent sent");
                     }
 
-                    // Save View button
+                    // Save View button (still functional — not part of playback)
                     if ui
                         .button("💾")
                         .on_hover_text("Save view (camera + playback) to seaview.toml")
@@ -146,7 +124,7 @@ pub fn playback_controls_system(
 
                     ui.separator();
 
-                    // Frame counter
+                    // Frame counter (display only)
                     ui.label(format!(
                         "Frame: {} / {}",
                         ui_state.playback.current_frame, ui_state.playback.total_frames
@@ -154,10 +132,11 @@ pub fn playback_controls_system(
 
                     ui.separator();
 
-                    // Speed control
+                    // Speed control (display only — slider renders but changes are not propagated)
                     ui.label("Speed:");
+                    let mut speed_display = ui_state.playback.speed;
                     ui.add(
-                        egui::Slider::new(&mut ui_state.playback.speed, 0.1..=5.0)
+                        egui::Slider::new(&mut speed_display, 0.1..=5.0)
                             .text("x")
                             .fixed_decimals(1)
                             .custom_formatter(|n, _| format!("{:.1}x", n))
@@ -166,8 +145,9 @@ pub fn playback_controls_system(
 
                     ui.separator();
 
-                    // Loop toggle
-                    ui.checkbox(&mut ui_state.playback.loop_enabled, "Loop");
+                    // Loop toggle (display only — checkbox renders but changes are not propagated)
+                    let mut loop_display = ui_state.playback.loop_enabled;
+                    ui.checkbox(&mut loop_display, "Loop");
 
                     // Add some spacing before the right side
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -178,7 +158,7 @@ pub fn playback_controls_system(
 
                         // Time display
                         if ui_state.playback.total_frames > 0 {
-                            let current_time = ui_state.playback.current_frame as f32 / 30.0; // Assuming 30 fps
+                            let current_time = ui_state.playback.current_frame as f32 / 30.0;
                             let total_time = ui_state.playback.total_frames as f32 / 30.0;
                             ui.label(format!("Time: {:.1}s / {:.1}s", current_time, total_time));
                         }
@@ -187,20 +167,15 @@ pub fn playback_controls_system(
 
                 ui.add_space(5.0);
 
-                // Timeline scrubber (full width)
+                // Timeline scrubber (display only — slider renders but changes are not propagated)
                 ui.horizontal(|ui| {
                     let total_frames = ui_state.playback.total_frames.saturating_sub(1);
-                    let timeline_response = ui.add_sized(
+                    let mut frame_display = ui_state.playback.current_frame;
+                    ui.add_sized(
                         [ui.available_width(), 20.0],
-                        egui::Slider::new(&mut ui_state.playback.current_frame, 0..=total_frames)
+                        egui::Slider::new(&mut frame_display, 0..=total_frames)
                             .show_value(false),
                     );
-
-                    if timeline_response.changed() {
-                        let current_frame = ui_state.playback.current_frame;
-                        ui_state.seek_to_frame(current_frame);
-                        sequence_events.write(SequenceEvent::FrameChanged(current_frame));
-                    }
                 });
 
                 // Progress bar visualization
@@ -252,32 +227,4 @@ pub fn playback_controls_system(
                 });
             });
         });
-}
-
-/// System that handles automatic playback advancement
-pub fn playback_update_system(
-    mut ui_state: ResMut<UiState>,
-    mut sequence_events: MessageWriter<SequenceEvent>,
-    time: Res<Time>,
-    mut last_update: Local<f32>,
-) {
-    if !ui_state.playback.is_playing || ui_state.playback.total_frames == 0 {
-        return;
-    }
-
-    // Calculate frame duration based on speed
-    let frame_duration = 1.0 / (30.0 * ui_state.playback.speed); // 30 FPS base rate
-
-    *last_update += time.delta_secs();
-
-    if *last_update >= frame_duration {
-        *last_update -= frame_duration;
-        ui_state.next_frame();
-        sequence_events.write(SequenceEvent::FrameChanged(ui_state.playback.current_frame));
-
-        // Stop playback if we reached the end and loop is disabled
-        if !ui_state.playback.is_playing {
-            sequence_events.write(SequenceEvent::PlaybackStopped);
-        }
-    }
 }
