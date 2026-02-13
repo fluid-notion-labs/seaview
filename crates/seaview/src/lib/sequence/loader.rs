@@ -60,6 +60,10 @@ impl Plugin for SequenceLoaderPlugin {
             .add_systems(
                 Update,
                 (handle_load_requests, track_asset_loading).chain(),
+            )
+            .add_systems(
+                PostUpdate,
+                manage_frame_window,
             );
     }
 }
@@ -437,12 +441,12 @@ fn track_asset_loading(
 /// System that manages the ring-buffer of spawned frame entities.
 ///
 /// This is the **sole owner of visibility** for sequence mesh entities.
-/// Runs explicitly `.after(handle_playback_input)` so that
-/// `sequence_manager.current_frame` is always up-to-date.
+/// Runs in `PostUpdate` so that `sequence_manager.current_frame` is finalised
+/// for this tick (all `Update` writers have run).
 ///
 /// Keeps at most `RenderConfig::frame_window_size` entities spawned, centred on
-/// the current frame. Entities outside the window are despawned; entities inside
-/// the window that aren't spawned yet (and whose asset is loaded) are spawned.
+/// the current frame. Uses O(delta) despawn/spawn by tracking the previous
+/// window range — only entities entering or leaving the window are touched.
 /// Sets visibility directly via query so changes take effect this frame.
 fn manage_frame_window(
     mut commands: Commands,
@@ -450,6 +454,7 @@ fn manage_frame_window(
     sequence_manager: Res<SequenceManager>,
     render_config: Res<RenderConfig>,
     mut visibility_query: Query<&mut Visibility, With<SequenceMeshDisplay>>,
+    mut prev_window: Local<(usize, usize)>,
 ) {
     if sequence_assets.total_frames == 0 {
         return;
@@ -464,16 +469,24 @@ fn manage_frame_window(
     let (win_lo, win_hi) = sequence_assets.window_range(current, window);
     let transform = sequence_assets.coord_transform;
 
-    // 1. Hide and despawn entities outside the window.
-    //    Setting Hidden BEFORE despawn ensures the render thread never
-    //    extracts a stale-visible entity while Commands are still pending.
-    for idx in 0..sequence_assets.total_frames {
-        if idx >= win_lo && idx < win_hi {
-            continue; // inside window, keep
-        }
+    let (old_lo, old_hi) = *prev_window;
+
+    // 1. Despawn entities that left the window (O(delta), not O(total_frames)).
+    //    Two ranges to check: old left side that fell off, old right side that fell off.
+    //    Left eviction: [old_lo, min(old_hi, win_lo))
+    //    Right eviction: [max(old_lo, win_hi), old_hi)
+    let evict_left_end = old_hi.min(win_lo);
+    for idx in old_lo..evict_left_end {
         if let Some(entity) = sequence_assets.frame_entities[idx].take() {
-            // Hide immediately so the entity is invisible this frame even
-            // though the despawn Command is deferred.
+            if let Ok(mut vis) = visibility_query.get_mut(entity) {
+                *vis = Visibility::Hidden;
+            }
+            commands.entity(entity).despawn();
+        }
+    }
+    let evict_right_start = old_lo.max(win_hi);
+    for idx in evict_right_start..old_hi {
+        if let Some(entity) = sequence_assets.frame_entities[idx].take() {
             if let Ok(mut vis) = visibility_query.get_mut(entity) {
                 *vis = Visibility::Hidden;
             }
@@ -533,7 +546,9 @@ fn manage_frame_window(
             }
         }
     }
+
     sequence_assets.displayed_frame = Some(current);
+    *prev_window = (win_lo, win_hi);
 }
 
 /// Helper function to trigger loading a sequence from discovered frames

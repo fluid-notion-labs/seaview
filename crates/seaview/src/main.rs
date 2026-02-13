@@ -163,7 +163,7 @@ fn setup(
     _meshes: ResMut<Assets<Mesh>>,
     _materials: ResMut<Assets<StandardMaterial>>,
     settings_res: Res<SettingsResource>,
-    mut ui_state: ResMut<seaview::app::ui::state::UiState>,
+    mut sequence_manager: ResMut<seaview::sequence::SequenceManager>,
 ) {
     // Determine initial camera transform: seaview.toml > hardcoded default
     let camera_transform = settings_res
@@ -205,14 +205,14 @@ fn setup(
         commands.insert_resource(dims);
     }
 
-    // Apply playback settings from seaview.toml
+    // Apply playback settings from seaview.toml → write to SequenceManager (single source of truth)
     if let Some(ref pb) = settings_res.settings.playback {
         if let Some(speed) = pb.speed {
-            ui_state.playback.speed = speed;
+            sequence_manager.speed = speed;
             debug!("Applied playback speed from seaview.toml: {}", speed);
         }
         if let Some(loop_enabled) = pb.loop_enabled {
-            ui_state.playback.loop_enabled = loop_enabled;
+            sequence_manager.loop_enabled = loop_enabled;
             debug!("Applied loop setting from seaview.toml: {}", loop_enabled);
         }
     }
@@ -273,7 +273,7 @@ fn handle_save_view(
     mut save_events: MessageReader<SaveViewEvent>,
     mut settings_res: ResMut<SettingsResource>,
     camera_query: Query<&Transform, (With<Camera3d>, With<FpsCamera>)>,
-    ui_state: Res<seaview::app::ui::state::UiState>,
+    sequence_manager: Res<seaview::sequence::SequenceManager>,
     source_orientation: Res<SourceOrientation>,
 ) {
     for _event in save_events.read() {
@@ -284,7 +284,7 @@ fn handle_save_view(
                 .set_camera_from_transform(transform);
             settings_res
                 .settings
-                .set_playback(ui_state.playback.speed, ui_state.playback.loop_enabled);
+                .set_playback(sequence_manager.speed, sequence_manager.loop_enabled);
             settings_res.settings.sequence =
                 Some(seaview::lib::settings::SequenceSettings {
                     source_coordinates: Some(source_orientation.to_string()),

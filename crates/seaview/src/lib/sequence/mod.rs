@@ -10,6 +10,8 @@ pub mod playback;
 use bevy::prelude::*;
 use std::path::PathBuf;
 
+use crate::app::ui::state::UiState;
+
 // Re-export commonly used types from loader
 pub use loader::{FrameLoadedEvent, LoadSequenceRequest, LoadingStats, SequenceAssets};
 
@@ -24,11 +26,21 @@ impl Plugin for SequencePlugin {
             loader::SequenceLoaderPlugin,
         ))
         .init_resource::<SequenceManager>()
-        .add_message::<SequenceEvent>();
+        .add_message::<SequenceEvent>()
+        .add_systems(
+            Update,
+            (advance_playback, playback::handle_keyboard_playback)
+                .before(sync_ui_from_sequence_manager),
+        )
+        .add_systems(Update, sync_ui_from_sequence_manager);
     }
 }
 
-/// Resource that manages the current sequence state
+/// Resource that manages the current sequence state.
+///
+/// **Single source of truth** for playback. All systems that need to change
+/// frame, speed, or play/pause write here. `UiState::PlaybackState` is a
+/// read-only mirror populated by `sync_ui_from_sequence_manager`.
 #[derive(Resource)]
 pub struct SequenceManager {
     /// Currently loaded sequence, if any
@@ -37,6 +49,10 @@ pub struct SequenceManager {
     pub current_frame: usize,
     /// Whether playback is active
     pub is_playing: bool,
+    /// Playback speed multiplier (1.0 = normal, 2.0 = double speed)
+    pub speed: f32,
+    /// Whether to loop at the end of the sequence
+    pub loop_enabled: bool,
 }
 
 impl SequenceManager {
@@ -46,6 +62,8 @@ impl SequenceManager {
             current_sequence: None,
             current_frame: 0,
             is_playing: false,
+            speed: 1.0,
+            loop_enabled: true,
         }
     }
 }
@@ -56,6 +74,8 @@ impl Default for SequenceManager {
             current_sequence: None,
             current_frame: 0,
             is_playing: false,
+            speed: 1.0,
+            loop_enabled: true,
         }
     }
 }
@@ -115,6 +135,67 @@ impl SequenceManager {
     pub fn toggle_playback(&mut self) {
         self.is_playing = !self.is_playing;
     }
+
+    /// Set playback speed (clamped to 0.1..=5.0)
+    pub fn set_speed(&mut self, speed: f32) {
+        self.speed = speed.clamp(0.1, 5.0);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Systems
+// ---------------------------------------------------------------------------
+
+/// Timer-based auto-advance. Reads `sequence_manager.speed` and
+/// `sequence_manager.loop_enabled`. Writes `sequence_manager.current_frame`.
+fn advance_playback(
+    mut sm: ResMut<SequenceManager>,
+    time: Res<Time>,
+    mut accumulator: Local<f32>,
+) {
+    if !sm.is_playing || sm.current_sequence.is_none() {
+        *accumulator = 0.0;
+        return;
+    }
+
+    let frame_duration = 1.0 / (30.0 * sm.speed);
+    *accumulator += time.delta_secs();
+
+    while *accumulator >= frame_duration {
+        *accumulator -= frame_duration;
+
+        let total = sm.current_sequence().map(|s| s.frame_count()).unwrap_or(0);
+        if sm.current_frame + 1 < total {
+            sm.current_frame += 1;
+        } else if sm.loop_enabled {
+            sm.current_frame = 0;
+        } else {
+            sm.is_playing = false;
+            *accumulator = 0.0;
+            break;
+        }
+    }
+}
+
+/// One-way sync: `SequenceManager` → `UiState::PlaybackState` for display.
+///
+/// Also syncs loading state from `SequenceAssets` so the UI panel has
+/// everything it needs without borrowing resources directly.
+fn sync_ui_from_sequence_manager(
+    sm: Res<SequenceManager>,
+    mut ui_state: ResMut<UiState>,
+    sequence_assets: Res<SequenceAssets>,
+) {
+    if let Some(seq) = sm.current_sequence() {
+        ui_state.playback.total_frames = seq.frame_count();
+    }
+    ui_state.playback.current_frame = sm.current_frame;
+    ui_state.playback.is_playing = sm.is_playing;
+    ui_state.playback.speed = sm.speed;
+    ui_state.playback.loop_enabled = sm.loop_enabled;
+
+    // Sync loading state
+    ui_state.loading.update_from_assets(&sequence_assets);
 }
 
 /// Represents a sequence of mesh files
