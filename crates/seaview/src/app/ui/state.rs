@@ -189,7 +189,7 @@ impl Default for CollapsibleState {
             network_status_open: true,
             lighting_rig_open: true,
             material_open: true,
-            perf_open: false,
+            perf_open: true,
             rendering_open: true,
         }
     }

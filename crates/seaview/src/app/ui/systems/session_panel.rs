@@ -56,13 +56,18 @@ pub fn session_panel_system(
             ui_state.panel_sizes.session_panel_width = ui.available_width();
 
             // Main scroll area for all accordion sections
-            egui::ScrollArea::vertical()
-                .auto_shrink([false, false])
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            // Performance Section (Collapsible) — at top for visibility
+            render_perf_section(ui, &mut ui_state, &diagnostics, &rendering_stats);
+
+            ui.add_space(5.0);
+
+            // Sessions Section (Collapsible)
+            egui::CollapsingHeader::new("Sessions")
+                .default_open(ui_state.collapsible.sessions_open)
                 .show(ui, |ui| {
-                    // Sessions Section (Collapsible)
-                    egui::CollapsingHeader::new("Sessions")
-                        .default_open(ui_state.collapsible.sessions_open)
-                        .show(ui, |ui| {
                             ui_state.collapsible.sessions_open = true;
 
                             if sessions.is_empty() {
@@ -225,10 +230,7 @@ pub fn session_panel_system(
                     // Rendering Section (Collapsible)
                     render_rendering_section(ui, &mut ui_state, &mut render_config, &sequence_assets);
 
-                    ui.add_space(5.0);
 
-                    // Performance Section (Collapsible)
-                    render_perf_section(ui, &mut ui_state, &diagnostics, &rendering_stats);
                 });
         });
 }

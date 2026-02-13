@@ -15,7 +15,7 @@ impl Plugin for SequencePlaybackPlugin {
 
 /// Resource for tracking key hold timing
 #[derive(Resource)]
-struct KeyHoldTimer {
+pub(crate) struct KeyHoldTimer {
     /// Time since arrow key was first pressed
     arrow_hold_time: f32,
     /// Last frame change time
@@ -38,7 +38,7 @@ impl Default for KeyHoldTimer {
 }
 
 /// System that handles keyboard input for playback control
-fn handle_playback_input(
+pub(crate) fn handle_playback_input(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut sequence_manager: ResMut<SequenceManager>,
     mut events: MessageWriter<SequenceEvent>,

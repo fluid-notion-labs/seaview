@@ -17,7 +17,8 @@ use bevy::gltf::GltfAssetLabel;
 use bevy::prelude::*;
 use std::path::PathBuf;
 
-use super::{SequenceEvent, SequenceManager};
+use super::SequenceManager;
+
 use crate::app::ui::state::RenderConfig;
 
 /// Recognised mesh file formats for sequence loading.
@@ -58,13 +59,11 @@ impl Plugin for SequenceLoaderPlugin {
             .add_message::<LoadSequenceRequest>()
             .add_systems(
                 Update,
-                (
-                    (handle_load_requests, track_asset_loading).chain(),
-                    manage_frame_window,
-                    ApplyDeferred,
-                    (update_mesh_display, handle_frame_changes),
-                )
-                    .chain(),
+                (handle_load_requests, track_asset_loading).chain(),
+            )
+            .add_systems(
+                PostUpdate,
+                manage_frame_window,
             );
     }
 }
@@ -441,14 +440,14 @@ fn track_asset_loading(
 
 /// System that manages the ring-buffer of spawned frame entities.
 ///
+/// This is the **sole owner of visibility** for sequence mesh entities.
+/// Runs explicitly `.after(handle_playback_input)` so that
+/// `sequence_manager.current_frame` is always up-to-date.
+///
 /// Keeps at most `RenderConfig::frame_window_size` entities spawned, centred on
 /// the current frame. Entities outside the window are despawned; entities inside
 /// the window that aren't spawned yet (and whose asset is loaded) are spawned.
-///
-/// Also sets visibility on **all** already-spawned entities in the window via
-/// direct query so that the current frame is `Visible` and the rest are `Hidden`.
-/// This avoids a one-frame flicker when the visibility systems run before
-/// deferred `Commands` from spawn/despawn have been applied.
+/// Sets visibility directly via query so changes take effect this frame.
 fn manage_frame_window(
     mut commands: Commands,
     mut sequence_assets: ResMut<SequenceAssets>,
@@ -469,17 +468,26 @@ fn manage_frame_window(
     let (win_lo, win_hi) = sequence_assets.window_range(current, window);
     let transform = sequence_assets.coord_transform;
 
-    // 1. Despawn entities outside the window
+    // 1. Hide and despawn entities outside the window.
+    //    Setting Hidden BEFORE despawn ensures the render thread never
+    //    extracts a stale-visible entity while Commands are still pending.
     for idx in 0..sequence_assets.total_frames {
         if idx >= win_lo && idx < win_hi {
             continue; // inside window, keep
         }
         if let Some(entity) = sequence_assets.frame_entities[idx].take() {
+            // Hide immediately so the entity is invisible this frame even
+            // though the despawn Command is deferred.
+            if let Ok(mut vis) = visibility_query.get_mut(entity) {
+                *vis = Visibility::Hidden;
+            }
             commands.entity(entity).despawn();
         }
     }
 
-    // 2. Spawn entities inside the window that are loaded but not yet spawned
+    // 2. Spawn entities inside the window that are loaded but not yet spawned.
+    //    Newly-spawned entities won't be visible to queries until Commands are
+    //    applied, but they are spawned with the correct Visibility component.
     for idx in win_lo..win_hi {
         if sequence_assets.frame_entities[idx].is_some() {
             continue; // already spawned
@@ -512,9 +520,9 @@ fn manage_frame_window(
         trace!("Spawned frame {} entity {:?} (window [{}, {}))", idx, entity, win_lo, win_hi);
     }
 
-    // 3. Set visibility on all already-spawned entities in the window.
-    //    This handles the common case (stepping within the window) without
-    //    waiting for deferred Commands, eliminating flicker.
+    // 3. Set visibility on all already-existing entities in the window.
+    //    Only the current frame is Visible; everything else is Hidden.
+    //    This is a direct query mutation — takes effect this frame, no flicker.
     for idx in win_lo..win_hi {
         if let Some(Some(entity)) = sequence_assets.frame_entities.get(idx) {
             if let Ok(mut vis) = visibility_query.get_mut(*entity) {
@@ -530,90 +538,6 @@ fn manage_frame_window(
         }
     }
     sequence_assets.displayed_frame = Some(current);
-}
-
-/// System that updates the displayed mesh when the frame changes.
-///
-/// Toggles `Visibility` on the old and new frame entities.  Entity
-/// spawn/despawn is handled by `manage_frame_window`.
-fn update_mesh_display(
-    mut sequence_assets: ResMut<SequenceAssets>,
-    sequence_manager: Res<SequenceManager>,
-    mut visibility_query: Query<&mut Visibility, With<SequenceMeshDisplay>>,
-) {
-    if sequence_assets.total_frames == 0 {
-        return;
-    }
-
-    let current_frame = sequence_manager.current_frame;
-
-    // Check if we need to update (frame changed)
-    if sequence_assets.displayed_frame == Some(current_frame) {
-        return;
-    }
-
-    let old_frame = sequence_assets.displayed_frame;
-
-    // Hide the old frame entity if it exists
-    if let Some(old_idx) = old_frame {
-        if let Some(Some(old_entity)) = sequence_assets.frame_entities.get(old_idx) {
-            if let Ok(mut visibility) = visibility_query.get_mut(*old_entity) {
-                *visibility = Visibility::Hidden;
-            }
-        }
-    }
-
-    // Show the new frame entity if it exists and is spawned
-    if let Some(Some(new_entity)) = sequence_assets.frame_entities.get(current_frame) {
-        if let Ok(mut visibility) = visibility_query.get_mut(*new_entity) {
-            *visibility = Visibility::Visible;
-            sequence_assets.displayed_frame = Some(current_frame);
-            trace!("Switched visibility: frame {} hidden, frame {} visible",
-                   old_frame.map_or(-1, |i| i as i32), current_frame);
-        }
-    }
-}
-
-/// System that responds to frame change events and updates the mesh
-fn handle_frame_changes(
-    mut sequence_events: MessageReader<SequenceEvent>,
-    mut sequence_assets: ResMut<SequenceAssets>,
-    mut visibility_query: Query<&mut Visibility, With<SequenceMeshDisplay>>,
-) {
-    for event in sequence_events.read() {
-        match event {
-            SequenceEvent::FrameChanged(frame_index) => {
-                let current_frame = *frame_index;
-
-                // Check if we need to update (frame changed)
-                if sequence_assets.displayed_frame == Some(current_frame) {
-                    continue;
-                }
-
-                let old_frame = sequence_assets.displayed_frame;
-
-                // Hide the old frame entity if it exists
-                if let Some(old_idx) = old_frame {
-                    if let Some(Some(old_entity)) = sequence_assets.frame_entities.get(old_idx) {
-                        if let Ok(mut visibility) = visibility_query.get_mut(*old_entity) {
-                            *visibility = Visibility::Hidden;
-                        }
-                    }
-                }
-
-                // Show the new frame entity if it exists and is spawned
-                if let Some(Some(new_entity)) = sequence_assets.frame_entities.get(current_frame) {
-                    if let Ok(mut visibility) = visibility_query.get_mut(*new_entity) {
-                        *visibility = Visibility::Visible;
-                        sequence_assets.displayed_frame = Some(current_frame);
-                        trace!("Event-driven switch: frame {} hidden, frame {} visible",
-                               old_frame.map_or(-1, |i| i as i32), current_frame);
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
 }
 
 /// Helper function to trigger loading a sequence from discovered frames

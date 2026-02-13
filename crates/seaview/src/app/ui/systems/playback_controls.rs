@@ -18,7 +18,7 @@ pub fn playback_controls_system(
     mut sequence_events: MessageWriter<SequenceEvent>,
     mut save_view_events: MessageWriter<SaveViewEvent>,
     time: Res<Time>,
-    sequence_manager: Res<SequenceManager>,
+    mut sequence_manager: ResMut<SequenceManager>,
     sequence_assets: Res<SequenceAssets>,
 ) {
     if !ui_state.show_playback_controls {
@@ -32,6 +32,20 @@ pub fn playback_controls_system(
         ui_state.playback.total_frames = sequence.frame_count();
         ui_state.playback.current_frame = sequence_manager.current_frame;
         ui_state.playback.is_playing = sequence_manager.is_playing;
+
+        // Sync speed: keyboard +/- changes sequence_manager.playback_fps,
+        // UI slider changes ui_state.playback.speed.  Keep them in sync
+        // by treating sequence_manager as the source of truth for keyboard
+        // changes and ui_state as the source of truth for slider changes.
+        // We detect which one changed by comparing.
+        let sm_speed = sequence_manager.playback_fps / 30.0; // normalise to multiplier
+        if (sm_speed - ui_state.playback.speed).abs() > 0.001 {
+            // sequence_manager was changed (keyboard +/-), propagate to UI
+            ui_state.playback.speed = sm_speed;
+        } else {
+            // UI slider is authoritative, propagate to sequence_manager
+            sequence_manager.playback_fps = ui_state.playback.speed * 30.0;
+        }
     }
 
     // Update loading state from assets
