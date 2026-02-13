@@ -5,14 +5,17 @@
 //! **Rebuilt** — Commit 2 of playback rebuild. UI reads from `UiState` for
 //! display (one-way mirror of `SequenceManager`). Buttons, sliders, and
 //! checkboxes write directly to `SequenceManager` — no events, no indirection.
+//!
+//! **Phase 4** — Camera switching UI: dropdown of named cameras near the 💾
+//! button, click to switch, "Save as…" to name a new camera preset.
 
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 
-use crate::app::systems::camera::CenterOnMeshEvent;
+use crate::app::systems::camera::{CenterOnMeshEvent, FpsCamera};
 use crate::app::ui::state::UiState;
 use crate::lib::sequence::SequenceManager;
-use crate::lib::settings::SaveViewEvent;
+use crate::lib::settings::{CameraSettings, SaveViewEvent, SavedCameras};
 
 /// System that renders the playback controls panel.
 ///
@@ -26,6 +29,8 @@ pub fn playback_controls_system(
     mut save_view_events: MessageWriter<SaveViewEvent>,
     time: Res<Time>,
     mut sequence_manager: ResMut<SequenceManager>,
+    mut saved_cameras: Option<ResMut<SavedCameras>>,
+    mut camera_query: Query<&mut Transform, (With<Camera3d>, With<FpsCamera>)>,
 ) {
     if !ui_state.show_playback_controls {
         return;
@@ -46,6 +51,25 @@ pub fn playback_controls_system(
     let loading_progress = ui_state.loading.progress();
 
     let panel_height = ui_state.panel_sizes.playback_panel_height;
+
+    // Collect camera-switch actions to apply after the UI closure
+    let mut switch_to_camera: Option<String> = None;
+    let mut save_as_name: Option<String> = None;
+
+    // Build a sorted list of camera names for the dropdown
+    let camera_names: Vec<String> = saved_cameras
+        .as_ref()
+        .map(|sc| {
+            let mut names: Vec<String> = sc.cameras.keys().cloned().collect();
+            names.sort();
+            names
+        })
+        .unwrap_or_default();
+
+    let active_camera_name = saved_cameras
+        .as_ref()
+        .map(|sc| sc.active.clone())
+        .unwrap_or_else(|| "default".to_string());
 
     egui::TopBottomPanel::bottom("playback_panel")
         .resizable(false)
@@ -123,12 +147,80 @@ pub fn playback_controls_system(
                     // Save View button (not part of playback — still uses events)
                     if ui
                         .button("💾")
-                        .on_hover_text("Save view (camera + playback) to seaview.toml")
+                        .on_hover_text("Save view (camera + environment) to seaview.toml")
                         .clicked()
                     {
                         debug!("💾 Save view button clicked!");
                         save_view_events.write(SaveViewEvent);
                     }
+
+                    // -- Camera switching dropdown ---------------------------------
+                    if !camera_names.is_empty() {
+                        ui.separator();
+
+                        ui.label("📷");
+
+                        let mut selected = active_camera_name.clone();
+                        let combo = egui::ComboBox::from_id_salt("camera_selector")
+                            .selected_text(&selected)
+                            .width(100.0);
+
+                        combo.show_ui(ui, |ui| {
+                            for name in &camera_names {
+                                if ui
+                                    .selectable_value(&mut selected, name.clone(), name)
+                                    .clicked()
+                                {
+                                    switch_to_camera = Some(name.clone());
+                                }
+                            }
+                        });
+                    }
+
+                    // "Save camera as…" button — opens a tiny popup to name the preset
+                    let save_as_btn = ui
+                        .button("📷+")
+                        .on_hover_text("Save current camera as a named preset");
+
+                    // Popup for entering a new camera name (modern Popup API)
+                    egui::Popup::from_toggle_button_response(&save_as_btn)
+                        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                        .show(|ui| {
+                            ui.set_min_width(160.0);
+                            ui.label("Camera name:");
+
+                            // Use a temporary data store in egui memory for the text input
+                            let buf_id = ui.id().with("save_as_name_buf");
+                            let mut name_buf = ui
+                                .data_mut(|d| d.get_temp::<String>(buf_id))
+                                .unwrap_or_default();
+
+                            let response = ui.text_edit_singleline(&mut name_buf);
+
+                            // Store the buffer back
+                            ui.data_mut(|d| d.insert_temp(buf_id, name_buf.clone()));
+
+                            let enter_pressed = response.lost_focus()
+                                && ui.input(|i| i.key_pressed(egui::Key::Enter));
+
+                            ui.horizontal(|ui| {
+                                let popup_id = egui::Popup::default_response_id(&save_as_btn);
+                                let ctx = ui.ctx().clone();
+                                let save_clicked = ui.button("Save").clicked();
+                                if (save_clicked || enter_pressed) && !name_buf.trim().is_empty()
+                                {
+                                    let trimmed = name_buf.trim().to_string();
+                                    save_as_name = Some(trimmed);
+                                    // Clear the buffer and close popup
+                                    ui.data_mut(|d| d.insert_temp(buf_id, String::new()));
+                                    egui::Popup::close_id(&ctx, popup_id);
+                                }
+                                if ui.button("Cancel").clicked() {
+                                    ui.data_mut(|d| d.insert_temp(buf_id, String::new()));
+                                    egui::Popup::close_id(&ctx, popup_id);
+                                }
+                            });
+                        });
 
                     ui.separator();
 
@@ -236,4 +328,38 @@ pub fn playback_controls_system(
                 });
             });
         });
+
+    // -- Apply deferred camera actions (outside the UI closure) ----------------
+
+    // Switch to a named camera
+    if let Some(ref name) = switch_to_camera {
+        if let Some(ref mut sc) = saved_cameras {
+            if let Some(cam_settings) = sc.cameras.get(name) {
+                let new_transform = cam_settings.to_transform();
+                if let Ok(mut transform) = camera_query.single_mut() {
+                    *transform = new_transform;
+                    sc.active = name.clone();
+                    debug!("📷 Switched to camera '{}'", name);
+                }
+            } else {
+                warn!("Camera '{}' not found in saved cameras", name);
+            }
+        }
+    }
+
+    // "Save as…" — snapshot the current camera under a new name
+    if let Some(ref name) = save_as_name {
+        if let Ok(transform) = camera_query.single() {
+            let cam_settings = CameraSettings::from_transform(&transform);
+            if let Some(ref mut sc) = saved_cameras {
+                sc.cameras.insert(name.clone(), cam_settings);
+                sc.active = name.clone();
+                debug!("📷+ Saved current camera as '{}'", name);
+                // Also trigger a full save so it persists to disk
+                save_view_events.write(SaveViewEvent);
+            }
+        } else {
+            warn!("No camera found to save as '{}'", name);
+        }
+    }
 }

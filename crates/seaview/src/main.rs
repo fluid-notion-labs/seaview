@@ -4,13 +4,14 @@ use bevy::pbr::{DefaultOpaqueRendererMethod, ScreenSpaceReflections};
 use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 use seaview::lib::lighting::GlobalLight;
-use seaview::{AssetLoadersPlugin, MeshDimensions, MeshInfoPlugin, NightLightingPlugin, SeaviewUiPlugin, SessionPlugin};
+use seaview::{AssetLoadersPlugin, MeshDimensions, MeshInfoPlugin, NightLightingConfig, NightLightingPlugin, SeaviewUiPlugin, SessionPlugin};
 
 use seaview::app::cli::Args;
 use seaview::app::systems::camera::{
     camera_controller, cursor_grab_system, handle_center_on_mesh, CenterOnMeshEvent, FpsCamera,
 };
 use seaview::app::systems::diagnostics::RenderingDiagnosticsPlugin;
+use seaview::app::ui::state::MaterialConfig;
 
 use seaview::lib::coordinates::SourceOrientation;
 use seaview::lib::sequence::{
@@ -165,15 +166,16 @@ fn setup(
     settings_res: Res<SettingsResource>,
     mut sequence_manager: ResMut<seaview::sequence::SequenceManager>,
 ) {
-    // Determine initial camera transform: seaview.toml > hardcoded default
+    // -- Cameras: look up active_camera in the named map -----------------------
     let camera_transform = settings_res
         .settings
-        .camera
-        .as_ref()
+        .active_camera_settings()
         .map(|cam| {
             debug!(
-                "Applying camera from seaview.toml: pos={:?} rot={:?}",
-                cam.position, cam.rotation
+                "Applying camera '{}' from seaview.toml: pos={:?} rot={:?}",
+                settings_res.settings.active_camera_name(),
+                cam.position,
+                cam.rotation,
             );
             cam.to_transform()
         })
@@ -181,6 +183,9 @@ fn setup(
             Transform::from_xyz(100.0, 100.0, 100.0)
                 .looking_at(Vec3::new(37.0, 37.0, 27.5), Vec3::Y)
         });
+
+    // Store all named cameras for runtime switching (Phase 4 UI)
+    commands.insert_resource(settings_res.settings.to_saved_cameras());
 
     // Spawn the FPS camera with HDR, MSAA off, and SSR enabled (deferred rendering)
     commands.spawn((
@@ -258,6 +263,29 @@ fn setup(
         brightness: 500.0,
         ..default()
     });
+
+    // -- Environment: restore lighting + materials from seaview.toml -----------
+    if let Some(ref env) = settings_res.settings.environment {
+        // Lighting rig
+        if let Some(ref lighting_settings) = env.lighting {
+            let lighting_cfg = NightLightingConfig::from(lighting_settings);
+            debug!(
+                "Restored lighting from seaview.toml: {} lights, height={}, algo={}",
+                lighting_cfg.num_lights, lighting_cfg.height, lighting_settings.placement_algorithm,
+            );
+            commands.insert_resource(lighting_cfg);
+        }
+
+        // Material for the fluid mesh
+        if let Some(material_settings) = env.materials.get("fluid") {
+            let material_cfg = MaterialConfig::from(material_settings);
+            debug!(
+                "Restored material 'fluid' from seaview.toml: base_color={:?}, roughness={}",
+                material_settings.base_color, material_cfg.perceptual_roughness,
+            );
+            commands.insert_resource(material_cfg);
+        }
+    }
 }
 
 /// System to ensure cursor is visible on startup
@@ -268,20 +296,27 @@ fn setup_cursor(mut cursor_query: Query<&mut CursorOptions, With<PrimaryWindow>>
     }
 }
 
-/// System that handles save view requests
+/// System that handles save view requests.
+///
+/// Persists camera (under the active name), playback, coordinates,
+/// and environment (lighting + materials) to `seaview.toml`.
 fn handle_save_view(
     mut save_events: MessageReader<SaveViewEvent>,
     mut settings_res: ResMut<SettingsResource>,
     camera_query: Query<&Transform, (With<Camera3d>, With<FpsCamera>)>,
     sequence_manager: Res<seaview::sequence::SequenceManager>,
     source_orientation: Res<SourceOrientation>,
+    lighting_cfg: Res<NightLightingConfig>,
+    material_cfg: Res<MaterialConfig>,
 ) {
     for _event in save_events.read() {
         if let Ok(transform) = camera_query.single() {
-            // Update settings with current camera, playback, and coordinate state
+            // Camera — save under the active name (defaults to "default")
             settings_res
                 .settings
                 .set_camera_from_transform(transform);
+
+            // Playback + coordinates
             settings_res
                 .settings
                 .set_playback(sequence_manager.speed, sequence_manager.loop_enabled);
@@ -290,9 +325,15 @@ fn handle_save_view(
                     source_coordinates: Some(source_orientation.to_string()),
                 });
 
+            // Environment — lighting + material
+            settings_res
+                .settings
+                .set_environment(&lighting_cfg, &material_cfg);
+
             match settings_res.save() {
                 Ok(()) => {
-                    debug!("💾 View saved to seaview.toml");
+                    debug!("💾 View saved to seaview.toml (camera='{}', environment included)",
+                        settings_res.settings.active_camera_name());
                 }
                 Err(e) => {
                     error!("Failed to save view: {}", e);
