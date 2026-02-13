@@ -264,10 +264,10 @@ impl UiState {
     /// Create a new UI state with sensible defaults
     pub fn new() -> Self {
         Self {
-            show_session_panel: true,
-            show_network_panel: true,
+            show_session_panel: false,
+            show_network_panel: false,
             show_playback_controls: true,
-            show_perf_panel: true,
+            show_perf_panel: false,
             playback: PlaybackState {
                 speed: 1.0,
                 total_frames: 0,
