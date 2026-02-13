@@ -19,7 +19,10 @@ pub fn apply_material_config(
 
     for material_handle in mesh_query.iter() {
         if let Some(material) = materials.get_mut(&material_handle.0) {
-            material.base_color = config.base_color;
+            // Apply opacity to base color alpha
+            let mut color = config.base_color;
+            color.set_alpha(config.opacity);
+            material.base_color = color;
             material.perceptual_roughness = config.perceptual_roughness;
             material.metallic = config.metallic;
             material.reflectance = config.reflectance;
@@ -38,8 +41,12 @@ pub fn apply_material_config(
                 Some(bevy::render::render_resource::Face::Back)
             };
 
-            // Alpha mode
-            material.alpha_mode = config.alpha_mode.to_alpha_mode(config.alpha_cutoff);
+            // Auto-derive alpha mode from opacity
+            material.alpha_mode = if config.opacity < 1.0 {
+                AlphaMode::Blend
+            } else {
+                AlphaMode::Opaque
+            };
         }
     }
 }

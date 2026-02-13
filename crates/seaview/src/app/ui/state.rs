@@ -64,7 +64,7 @@ pub struct UiState {
 }
 
 /// Playback control state
-#[derive(Default, Debug, Clone)]
+#[derive(Debug, Clone)]
 pub struct PlaybackState {
     /// Whether playback is active
     pub is_playing: bool,
@@ -80,6 +80,18 @@ pub struct PlaybackState {
 
     /// Whether to loop at the end
     pub loop_enabled: bool,
+}
+
+impl Default for PlaybackState {
+    fn default() -> Self {
+        Self {
+            is_playing: false,
+            current_frame: 0,
+            total_frames: 0,
+            speed: 1.0,
+            loop_enabled: true,
+        }
+    }
 }
 
 /// Loading state for asset loading progress
@@ -201,6 +213,9 @@ pub struct MaterialConfig {
     /// Base color of the material
     pub base_color: Color,
 
+    /// Opacity (0.0 = fully transparent, 1.0 = fully opaque)
+    pub opacity: f32,
+
     /// Perceptual roughness (0.0 = mirror, 1.0 = fully rough)
     pub perceptual_roughness: f32,
 
@@ -218,60 +233,19 @@ pub struct MaterialConfig {
 
     /// Whether to render double-sided (no backface culling)
     pub double_sided: bool,
-
-    /// Alpha mode for transparency
-    pub alpha_mode: AlphaModeConfig,
-
-    /// Alpha cutoff (used with AlphaModeConfig::Mask)
-    pub alpha_cutoff: f32,
-}
-
-/// Simplified alpha mode for UI selection
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AlphaModeConfig {
-    Opaque,
-    Mask,
-    Blend,
-}
-
-impl AlphaModeConfig {
-    pub fn all() -> &'static [AlphaModeConfig] {
-        &[
-            AlphaModeConfig::Opaque,
-            AlphaModeConfig::Mask,
-            AlphaModeConfig::Blend,
-        ]
-    }
-
-    pub fn name(&self) -> &'static str {
-        match self {
-            AlphaModeConfig::Opaque => "Opaque",
-            AlphaModeConfig::Mask => "Mask",
-            AlphaModeConfig::Blend => "Blend",
-        }
-    }
-
-    pub fn to_alpha_mode(&self, cutoff: f32) -> AlphaMode {
-        match self {
-            AlphaModeConfig::Opaque => AlphaMode::Opaque,
-            AlphaModeConfig::Mask => AlphaMode::Mask(cutoff),
-            AlphaModeConfig::Blend => AlphaMode::Blend,
-        }
-    }
 }
 
 impl Default for MaterialConfig {
     fn default() -> Self {
         Self {
             base_color: Color::srgb(0.3, 0.5, 0.8),
+            opacity: 1.0,
             perceptual_roughness: 0.4,
             metallic: 0.1,
             reflectance: 0.5,
             emissive: Color::BLACK,
             emissive_intensity: 0.0,
             double_sided: true,
-            alpha_mode: AlphaModeConfig::Opaque,
-            alpha_cutoff: 0.5,
         }
     }
 }

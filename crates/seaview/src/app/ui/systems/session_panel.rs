@@ -9,7 +9,7 @@ use bevy_egui::{egui, EguiContexts};
 use uuid::Uuid;
 
 use crate::app::systems::diagnostics::RenderingStats;
-use crate::app::ui::state::{AlphaModeConfig, DeleteSessionEvent, MaterialConfig, RenderConfig, SwitchSessionEvent, UiState};
+use crate::app::ui::state::{DeleteSessionEvent, MaterialConfig, RenderConfig, SwitchSessionEvent, UiState};
 use crate::app::ui::systems::perf_panel::render_perf_section;
 use crate::lib::lighting::{NightLightingConfig, PlacementAlgorithm};
 use crate::lib::mesh_info::{MeshDimensions, RecomputeMeshBounds};
@@ -640,6 +640,17 @@ fn render_material_controls(ui: &mut egui::Ui, config: &mut MaterialConfig) {
 
     ui.add_space(5.0);
 
+    // Opacity slider
+    ui.horizontal(|ui| {
+        ui.label("Opacity:");
+    });
+    ui.add(
+        egui::Slider::new(&mut config.opacity, 0.0..=1.0)
+            .custom_formatter(|v, _| format!("{:.2}", v)),
+    );
+
+    ui.add_space(5.0);
+
     // Reflectance slider
     ui.horizontal(|ui| {
         ui.label("Reflectance:");
@@ -688,31 +699,7 @@ fn render_material_controls(ui: &mut egui::Ui, config: &mut MaterialConfig) {
         ui.checkbox(&mut config.double_sided, "");
     });
 
-    ui.add_space(5.0);
 
-    // Alpha mode
-    ui.horizontal(|ui| {
-        ui.label("Alpha Mode:");
-    });
-    egui::ComboBox::from_id_salt("alpha_mode")
-        .selected_text(config.alpha_mode.name())
-        .show_ui(ui, |ui| {
-            for mode in AlphaModeConfig::all() {
-                ui.selectable_value(&mut config.alpha_mode, *mode, mode.name());
-            }
-        });
-
-    // Alpha cutoff (only for Mask mode)
-    if config.alpha_mode == AlphaModeConfig::Mask {
-        ui.add_space(5.0);
-        ui.horizontal(|ui| {
-            ui.label("Alpha Cutoff:");
-        });
-        ui.add(
-            egui::Slider::new(&mut config.alpha_cutoff, 0.0..=1.0)
-                .custom_formatter(|v, _| format!("{:.2}", v)),
-        );
-    }
 }
 
 /// System that shows the delete confirmation dialog
