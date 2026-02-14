@@ -1,7 +1,7 @@
-//! Performance panel system for Seaview
+//! Performance section for the Environment Panel
 //!
-//! This module renders a collapsible performance section inside the left sidebar
-//! showing real-time FPS, frame time statistics, rendering stats (vertices,
+//! This module renders a collapsible performance section inside the environment
+//! panel showing real-time FPS, frame time statistics, rendering stats (vertices,
 //! triangles, mesh counts), and entity counts.
 
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
@@ -13,8 +13,8 @@ use crate::app::ui::state::UiState;
 
 /// Renders the performance section inside an existing egui `Ui` context.
 ///
-/// This is called from `session_panel_system` as another collapsible accordion
-/// entry so that it lives in the sidebar alongside sessions, lighting, etc.
+/// This is called from `environment_panel_system` as another collapsible accordion
+/// entry so that it lives in the environment panel alongside lighting, material, etc.
 pub fn render_perf_section(
     ui: &mut egui::Ui,
     ui_state: &mut UiState,

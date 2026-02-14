@@ -1,82 +1,20 @@
-//! Inspector panel system for Seaview
+//! Lighting section for the Environment Panel
 //!
-//! This module implements the left side panel that displays scene controls
-//! using an accordion-style UI: lighting rig, material, and rendering.
+//! This module renders the lighting rig controls and light map visualization
+//! inside the environment panel's accordion UI.
 
 use bevy::prelude::*;
-use bevy_egui::{egui, EguiContexts};
+use bevy_egui::egui;
 
-use crate::app::ui::state::{MaterialConfig, RenderConfig, UiState};
 use crate::lib::lighting::{LightIntensityUnit, NightLightingConfig, PlacementAlgorithm};
 use crate::lib::mesh_info::MeshDimensions;
-use crate::lib::sequence::SequenceAssets;
 
-/// System that renders the inspector panel (left sidebar).
+/// Renders the lighting rig controls inside an existing egui `Ui` context.
 ///
-/// Contains collapsible sections for Lighting Rig, Material, and Rendering.
-pub fn session_panel_system(
-    mut contexts: EguiContexts,
-    mut ui_state: ResMut<UiState>,
-    mut lighting_config: ResMut<NightLightingConfig>,
-    mut material_config: ResMut<MaterialConfig>,
-    mut render_config: ResMut<RenderConfig>,
-    mesh_dims: Res<MeshDimensions>,
-    sequence_assets: Res<SequenceAssets>,
-) {
-    if !ui_state.show_session_panel {
-        return;
-    }
-
-    let ctx = contexts.ctx_mut().unwrap();
-
-    let panel_width = ui_state.panel_sizes.session_panel_width;
-
-    egui::SidePanel::left("session_panel")
-        .resizable(true)
-        .default_width(panel_width)
-        .width_range(200.0..=500.0)
-        .show(ctx, |ui| {
-            // Update panel width if resized
-            ui_state.panel_sizes.session_panel_width = ui.available_width();
-
-            // Main scroll area for all accordion sections
-            egui::ScrollArea::vertical()
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    // Lighting Rig Section (Collapsible)
-                    egui::CollapsingHeader::new("Lighting Rig")
-                        .default_open(ui_state.collapsible.lighting_rig_open)
-                        .show(ui, |ui| {
-                            ui_state.collapsible.lighting_rig_open = true;
-
-                            render_lighting_rig_controls(ui, &mut lighting_config, &mesh_dims);
-                        });
-
-                    ui.add_space(5.0);
-
-                    // Material Section (Collapsible)
-                    egui::CollapsingHeader::new("Material")
-                        .default_open(ui_state.collapsible.material_open)
-                        .show(ui, |ui| {
-                            ui_state.collapsible.material_open = true;
-
-                            render_material_controls(ui, &mut material_config);
-                        });
-
-                    ui.add_space(5.0);
-
-                    // Rendering Section (Collapsible)
-                    render_rendering_section(
-                        ui,
-                        &mut ui_state,
-                        &mut render_config,
-                        &sequence_assets,
-                    );
-                });
-        });
-}
-
-fn render_lighting_rig_controls(
+/// Includes the light map visualization, enable/disable toggles, and all
+/// lighting parameters (count, height, cone angle, intensity, range, color,
+/// coverage, placement algorithm, debug markers).
+pub fn render_lighting_controls(
     ui: &mut egui::Ui,
     lighting_config: &mut NightLightingConfig,
     mesh_dims: &MeshDimensions,
@@ -275,9 +213,12 @@ fn render_lighting_rig_controls(
                 .logarithmic(true),
         );
     }
-
 }
 
+// ── Light Map Visualization ────────────────────────────────────────────────
+
+/// Renders a top-down light map showing the domain AABB, coverage boundary,
+/// cone footprints, and light positions.
 fn render_light_map(
     ui: &mut egui::Ui,
     lighting_config: &NightLightingConfig,
@@ -480,146 +421,4 @@ fn render_light_map(
             .color(egui::Color32::from_gray(160)),
         );
     });
-}
-
-fn render_material_controls(ui: &mut egui::Ui, material_config: &mut MaterialConfig) {
-    // Base color
-    ui.heading("Base Color");
-    ui.add_space(2.0);
-    let srgba = material_config.base_color.to_srgba();
-    let mut base_color = [srgba.red, srgba.green, srgba.blue];
-    if ui.color_edit_button_rgb(&mut base_color).changed() {
-        material_config.base_color = Color::srgb(base_color[0], base_color[1], base_color[2]);
-    }
-
-    ui.add_space(5.0);
-
-    // Opacity
-    ui.heading("Opacity");
-    ui.add_space(2.0);
-    ui.add(egui::Slider::new(&mut material_config.opacity, 0.0..=1.0).text("opacity"));
-
-    ui.add_space(5.0);
-
-    // Roughness
-    ui.heading("Roughness");
-    ui.add_space(2.0);
-    ui.add(
-        egui::Slider::new(&mut material_config.perceptual_roughness, 0.0..=1.0).text("roughness"),
-    );
-
-    ui.add_space(5.0);
-
-    // Metallic
-    ui.heading("Metallic");
-    ui.add_space(2.0);
-    ui.add(egui::Slider::new(&mut material_config.metallic, 0.0..=1.0).text("metallic"));
-
-    ui.add_space(5.0);
-
-    // Reflectance
-    ui.heading("Reflectance");
-    ui.add_space(2.0);
-    ui.add(egui::Slider::new(&mut material_config.reflectance, 0.0..=1.0).text("reflectance"));
-
-    ui.add_space(5.0);
-
-    // Emissive
-    ui.heading("Emissive");
-    ui.add_space(2.0);
-    let em_srgba = material_config.emissive.to_srgba();
-    let mut emissive_color = [em_srgba.red, em_srgba.green, em_srgba.blue];
-    if ui.color_edit_button_rgb(&mut emissive_color).changed() {
-        material_config.emissive =
-            Color::srgb(emissive_color[0], emissive_color[1], emissive_color[2]);
-    }
-    ui.add(
-        egui::Slider::new(&mut material_config.emissive_intensity, 0.0..=100.0)
-            .text("intensity")
-            .logarithmic(true),
-    );
-
-    ui.add_space(5.0);
-
-    // Double-sided
-    ui.checkbox(&mut material_config.double_sided, "Double Sided");
-
-    ui.add_space(5.0);
-
-    // Reset button
-    if ui.button("Reset to Defaults").clicked() {
-        *material_config = MaterialConfig::default();
-    }
-}
-
-pub fn delete_confirmation_dialog_system(
-    mut contexts: EguiContexts,
-    mut _ui_state: ResMut<UiState>,
-) {
-    // Stub — session deletion is no longer exposed in the UI.
-    // Kept as a no-op to satisfy the system registration in UiSystemsPlugin.
-    let _ctx = contexts.ctx_mut();
-}
-
-fn render_rendering_section(
-    ui: &mut egui::Ui,
-    ui_state: &mut UiState,
-    render_config: &mut RenderConfig,
-    sequence_assets: &SequenceAssets,
-) {
-    egui::CollapsingHeader::new("🖥 Rendering")
-        .default_open(ui_state.collapsible.rendering_open)
-        .show(ui, |ui| {
-            ui_state.collapsible.rendering_open = true;
-
-            // Frame window size slider
-            ui.heading("Frame Window");
-            ui.add_space(2.0);
-            ui.label("Spawned entities around current frame:");
-            ui.add_space(2.0);
-
-            let max_window = sequence_assets.total_frames.max(1);
-            ui.add(
-                egui::Slider::new(&mut render_config.frame_window_size, 1..=max_window.min(100))
-                    .text("frames")
-                    .logarithmic(true),
-            );
-
-            ui.add_space(4.0);
-
-            // Show current window stats
-            let spawned = sequence_assets
-                .frame_entities
-                .iter()
-                .filter(|e| e.is_some())
-                .count();
-            let total = sequence_assets.total_frames;
-
-            egui::Grid::new("render_window_grid")
-                .num_columns(2)
-                .spacing([12.0, 4.0])
-                .show(ui, |ui| {
-                    ui.label("Spawned:");
-                    ui.label(format!("{} / {}", spawned, total));
-                    ui.end_row();
-
-                    ui.label("Displayed:");
-                    ui.label(
-                        sequence_assets
-                            .displayed_frame
-                            .map(|f| format!("Frame {}", f))
-                            .unwrap_or_else(|| "—".to_string()),
-                    );
-                    ui.end_row();
-
-                    if total > 0 {
-                        let current = sequence_assets.displayed_frame.unwrap_or(0);
-                        let (lo, hi) =
-                            sequence_assets.window_range(current, render_config.frame_window_size);
-                        ui.label("Window:");
-                        ui.label(format!("[{}, {})", lo, hi));
-                        ui.end_row();
-                    }
-                });
-        });
 }

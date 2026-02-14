@@ -8,16 +8,14 @@ use bevy_egui::EguiPrimaryContextPass;
 mod event_handlers;
 mod material_system;
 mod menu_bar;
-pub mod perf_panel;
 mod playback_controls;
-mod session_panel;
+pub mod environment_panel;
 
 pub use event_handlers::*;
 pub use material_system::*;
 pub use menu_bar::*;
-pub use perf_panel::*;
 pub use playback_controls::*;
-pub use session_panel::*;
+pub use environment_panel::*;
 
 /// Plugin that registers all UI systems
 pub struct UiSystemsPlugin;
@@ -29,7 +27,7 @@ impl Plugin for UiSystemsPlugin {
             EguiPrimaryContextPass,
             (
                 menu_bar_system,
-                session_panel_system,
+                environment_panel_system,
                 new_session_dialog_system,
                 delete_confirmation_dialog_system,
                 message_display_system,

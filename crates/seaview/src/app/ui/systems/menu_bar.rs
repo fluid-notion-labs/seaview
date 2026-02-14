@@ -44,7 +44,7 @@ pub fn menu_bar_system(
                 // View menu
                 ui.menu_button("View", |ui| {
                     if ui
-                        .checkbox(&mut ui_state.show_session_panel, "Inspector")
+                        .checkbox(&mut ui_state.show_environment_panel, "Environment")
                         .clicked()
                     {
                         ui.close();
@@ -61,7 +61,7 @@ pub fn menu_bar_system(
 
                     if ui.button("Reset Layout").clicked() {
                         ui_state.panel_sizes = Default::default();
-                        ui_state.show_session_panel = true;
+                        ui_state.show_environment_panel = true;
                         ui_state.show_playback_controls = true;
                         ui.close();
                     }

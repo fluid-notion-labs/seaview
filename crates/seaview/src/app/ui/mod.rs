@@ -34,8 +34,8 @@ impl Plugin for SeaviewUiPlugin {
 
         // Log initial UI state
         let ui_state = app.world().resource::<UiState>();
-        debug!("Initial UI state - show_session_panel: {}, show_network_panel: {}, show_playback_controls: {}",
-              ui_state.show_session_panel,
+        debug!("Initial UI state - show_environment_panel: {}, show_network_panel: {}, show_playback_controls: {}",
+              ui_state.show_environment_panel,
               ui_state.show_network_panel,
               ui_state.show_playback_controls);
     }

@@ -35,8 +35,8 @@ pub struct UiState {
     /// Currently active session ID
     pub active_session: Option<Uuid>,
 
-    /// Whether the session panel is visible
-    pub show_session_panel: bool,
+    /// Whether the environment panel is visible
+    pub show_environment_panel: bool,
 
     /// Whether the network panel is visible
     pub show_network_panel: bool,
@@ -136,8 +136,8 @@ impl LoadingState {
 /// Sizes of UI panels for layout persistence
 #[derive(Debug, Clone)]
 pub struct PanelSizes {
-    /// Width of the left session panel
-    pub session_panel_width: f32,
+    /// Width of the left environment panel
+    pub environment_panel_width: f32,
 
     /// Height of the bottom playback panel
     pub playback_panel_height: f32,
@@ -149,7 +149,7 @@ pub struct PanelSizes {
 impl Default for PanelSizes {
     fn default() -> Self {
         Self {
-            session_panel_width: 300.0,
+            environment_panel_width: 300.0,
             playback_panel_height: 100.0,
             menu_bar_height: 25.0,
         }
@@ -264,7 +264,7 @@ impl UiState {
     /// Create a new UI state with sensible defaults
     pub fn new() -> Self {
         Self {
-            show_session_panel: true,
+            show_environment_panel: true,
             show_network_panel: false,
             show_playback_controls: true,
             show_perf_panel: false,
