@@ -183,6 +183,10 @@ impl From<&NightLightingConfig> for LightingSettings {
 
 impl From<&LightingSettings> for NightLightingConfig {
     fn from(s: &LightingSettings) -> Self {
+        // Use Kilolumens as the default display unit (matches Default impl)
+        let unit = crate::lib::lighting::LightIntensityUnit::Kilolumens;
+        let display_value = unit.from_lumens(s.intensity, s.cone_angle);
+
         Self {
             num_lights: s.num_lights,
             height: s.height,
@@ -191,6 +195,8 @@ impl From<&LightingSettings> for NightLightingConfig {
             enabled: s.enabled,
             global_lighting_enabled: s.global_lighting_enabled,
             intensity: s.intensity,
+            intensity_display_value: display_value,
+            intensity_unit: unit,
             color: Color::srgb(s.color[0], s.color[1], s.color[2]),
             range: s.range,
             show_markers: s.show_markers,

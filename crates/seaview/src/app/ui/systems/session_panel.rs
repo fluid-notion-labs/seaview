@@ -7,7 +7,7 @@ use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 
 use crate::app::ui::state::{MaterialConfig, RenderConfig, UiState};
-use crate::lib::lighting::{NightLightingConfig, PlacementAlgorithm};
+use crate::lib::lighting::{LightIntensityUnit, NightLightingConfig, PlacementAlgorithm};
 use crate::lib::mesh_info::MeshDimensions;
 use crate::lib::sequence::SequenceAssets;
 
@@ -135,23 +135,85 @@ fn render_lighting_rig_controls(
     // Cone angle
     ui.heading("Cone Angle");
     ui.add_space(2.0);
-    ui.add(egui::Slider::new(&mut lighting_config.cone_angle, 5.0..=180.0).text("°"));
+    let cone_changed = ui
+        .add(egui::Slider::new(&mut lighting_config.cone_angle, 5.0..=180.0).text("°"))
+        .changed();
+
+    if cone_changed {
+        // Cone angle affects candela conversion - update display value
+        lighting_config.sync_intensity_from_lumens();
+    }
 
     ui.add_space(5.0);
 
     // Intensity
     ui.heading("Intensity");
     ui.add_space(2.0);
-    ui.add(
-        egui::Slider::new(&mut lighting_config.intensity, 1000.0..=10_000_000.0)
-            .text("cd")
-            .logarithmic(true),
-    );
+
+    // Unit selector
+    let current_unit_name = lighting_config.intensity_unit.name();
+    egui::ComboBox::from_label("Unit")
+        .selected_text(current_unit_name)
+        .show_ui(ui, |ui| {
+            for unit in LightIntensityUnit::all() {
+                if ui
+                    .selectable_value(
+                        &mut lighting_config.intensity_unit,
+                        *unit,
+                        unit.name(),
+                    )
+                    .clicked()
+                {
+                    lighting_config.set_intensity_unit(*unit);
+                }
+            }
+        });
+
+    ui.add_space(2.0);
+
+    // Intensity slider (in selected unit)
+    let min_val = match lighting_config.intensity_unit {
+        LightIntensityUnit::Lumens => 1000.0,
+        LightIntensityUnit::Candela => 1000.0,
+        LightIntensityUnit::Kilolumens => 1.0,
+    };
+    let max_val = match lighting_config.intensity_unit {
+        LightIntensityUnit::Lumens => 10_000_000.0,
+        LightIntensityUnit::Candela => 20_000_000.0,
+        LightIntensityUnit::Kilolumens => 10_000.0,
+    };
+
+    let changed = ui
+        .add(
+            egui::Slider::new(&mut lighting_config.intensity_display_value, min_val..=max_val)
+                .text(lighting_config.intensity_unit.symbol())
+                .logarithmic(true),
+        )
+        .changed();
+
+    if changed {
+        lighting_config.sync_intensity_to_lumens();
+    }
+
+    // Show equivalent in lumens (Bevy's native unit)
+    if lighting_config.intensity_unit != LightIntensityUnit::Lumens {
+        ui.label(
+            egui::RichText::new(format!("≈ {:.0} lm", lighting_config.intensity))
+                .small()
+                .color(egui::Color32::from_gray(140)),
+        );
+    }
 
     ui.add_space(5.0);
 
     // Range
     ui.heading("Range");
+    ui.add_space(2.0);
+    ui.label(
+        egui::RichText::new("Distance light travels before fading to zero")
+            .small()
+            .color(egui::Color32::from_gray(140)),
+    );
     ui.add_space(2.0);
     ui.add(
         egui::Slider::new(&mut lighting_config.range, 10.0..=5000.0)
@@ -175,7 +237,7 @@ fn render_lighting_rig_controls(
     // Coverage
     ui.heading("Coverage");
     ui.add_space(2.0);
-    ui.add(egui::Slider::new(&mut lighting_config.coverage_pct, 50.0..=300.0).text("%"));
+    ui.add(egui::Slider::new(&mut lighting_config.coverage_pct, 10.0..=300.0).text("%"));
 
     ui.add_space(5.0);
 
@@ -221,28 +283,50 @@ fn render_light_map(
     lighting_config: &NightLightingConfig,
     mesh_dims: &MeshDimensions,
 ) {
-    let (min_bounds, max_bounds) = if let (Some(mn), Some(mx)) = (mesh_dims.min, mesh_dims.max) {
-                let coverage_scale = lighting_config.coverage_pct / 100.0;
-                let center_x = (mn.x + mx.x) / 2.0;
-                let center_z = (mn.z + mx.z) / 2.0;
-                let half_x = (mx.x - mn.x) / 2.0 * coverage_scale;
-                let half_z = (mx.z - mn.z) / 2.0 * coverage_scale;
+    // Compute mesh AABB (domain) in XZ
+    let (domain_min, domain_max) = if let (Some(mn), Some(mx)) = (mesh_dims.min, mesh_dims.max) {
+        (
+            bevy::math::Vec2::new(mn.x, mn.z),
+            bevy::math::Vec2::new(mx.x, mx.z),
+        )
+    } else {
+        (
+            bevy::math::Vec2::new(-50.0, -50.0),
+            bevy::math::Vec2::new(50.0, 50.0),
+        )
+    };
 
-                (
-                    bevy::math::Vec2::new(center_x - half_x, center_z - half_z),
-                    bevy::math::Vec2::new(center_x + half_x, center_z + half_z),
-                )
-            } else {
-                (
-                    bevy::math::Vec2::new(-50.0, -50.0),
-                    bevy::math::Vec2::new(50.0, 50.0),
-                )
-            };
+    // Coverage bounds (where lights are placed)
+    let coverage_scale = lighting_config.coverage_pct / 100.0;
+    let domain_center = (domain_min + domain_max) * 0.5;
+    let domain_half = (domain_max - domain_min) * 0.5;
+    let coverage_min = domain_center - domain_half * coverage_scale;
+    let coverage_max = domain_center + domain_half * coverage_scale;
+
+    // View bounds — padded slightly beyond whichever is larger (domain or coverage)
+    let view_min = bevy::math::Vec2::new(
+        coverage_min.x.min(domain_min.x),
+        coverage_min.y.min(domain_min.y),
+    );
+    let view_max = bevy::math::Vec2::new(
+        coverage_max.x.max(domain_max.x),
+        coverage_max.y.max(domain_max.y),
+    );
+    let view_extent = view_max - view_min;
+    let padding_frac = 0.08;
+    let pad = bevy::math::Vec2::new(
+        view_extent.x * padding_frac,
+        view_extent.y * padding_frac,
+    );
+    let view_min = view_min - pad;
+    let view_max = view_max + pad;
+    let view_w = view_max.x - view_min.x;
+    let view_h = view_max.y - view_min.y;
 
     let positions = lighting_config.placement_algorithm.calculate_positions(
-                lighting_config.num_lights,
-        min_bounds,
-        max_bounds,
+        lighting_config.num_lights,
+        coverage_min,
+        coverage_max,
     );
 
     // Use full available width for the map
@@ -250,41 +334,82 @@ fn render_light_map(
     let (rect, _response) =
         ui.allocate_exact_size(egui::Vec2::splat(map_size), egui::Sense::hover());
 
+    // Helper: world XZ → pixel position in the map rect
+    let to_px = |wx: f32, wz: f32| -> egui::Pos2 {
+        egui::pos2(
+            rect.min.x + ((wx - view_min.x) / view_w) * map_size,
+            rect.min.y + ((wz - view_min.y) / view_h) * map_size,
+        )
+    };
+
     if ui.is_rect_visible(rect) {
         let painter = ui.painter_at(rect);
 
         // Background
-        painter.rect_filled(rect, 4.0, egui::Color32::from_gray(30));
+        painter.rect_filled(rect, 4.0, egui::Color32::from_gray(20));
 
-        // Mesh outline (in map space)
-        if let (Some(mn), Some(mx)) = (mesh_dims.min, mesh_dims.max) {
-            let world_w = max_bounds.x - min_bounds.x;
-            let world_h = max_bounds.y - min_bounds.y;
+        // --- Coverage boundary (dashed-style: thin bright rect) ---
+        let cov_tl = to_px(coverage_min.x, coverage_min.y);
+        let cov_br = to_px(coverage_max.x, coverage_max.y);
+        let cov_rect = egui::Rect::from_min_max(cov_tl, cov_br);
+        // Subtle fill to distinguish the coverage zone
+        painter.rect_filled(
+            cov_rect,
+            2.0,
+            egui::Color32::from_rgba_unmultiplied(60, 90, 120, 25),
+        );
+        painter.rect_stroke(
+            cov_rect,
+            2.0,
+            egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(80, 140, 200, 140)),
+            egui::StrokeKind::Outside,
+        );
+        // Label
+        painter.text(
+            egui::pos2(cov_tl.x + 3.0, cov_tl.y + 2.0),
+            egui::Align2::LEFT_TOP,
+            format!("Coverage {:.0}%", lighting_config.coverage_pct),
+            egui::FontId::proportional(7.5),
+            egui::Color32::from_rgba_unmultiplied(80, 140, 200, 160),
+        );
 
-            if world_w > 0.0 && world_h > 0.0 {
-                let mesh_min_x = rect.min.x + ((mn.x - min_bounds.x) / world_w) * map_size;
-                let mesh_min_y = rect.min.y + ((mn.z - min_bounds.y) / world_h) * map_size;
-                let mesh_max_x = rect.min.x + ((mx.x - min_bounds.x) / world_w) * map_size;
-                let mesh_max_y = rect.min.y + ((mx.z - min_bounds.y) / world_h) * map_size;
-
-                let mesh_rect = egui::Rect::from_min_max(
-                    egui::pos2(mesh_min_x, mesh_min_y),
-                    egui::pos2(mesh_max_x, mesh_max_y),
-                );
-                painter.rect_stroke(
-                    mesh_rect,
-                    2.0,
-                    egui::Stroke::new(1.0, egui::Color32::from_gray(80)),
-                    egui::StrokeKind::Outside,
-                );
-            }
+        // --- Domain AABB (mesh footprint) ---
+        let dom_tl = to_px(domain_min.x, domain_min.y);
+        let dom_br = to_px(domain_max.x, domain_max.y);
+        let dom_rect = egui::Rect::from_min_max(dom_tl, dom_br);
+        // Subtle domain fill
+        painter.rect_filled(
+            dom_rect,
+            1.0,
+            egui::Color32::from_rgba_unmultiplied(180, 180, 180, 15),
+        );
+        painter.rect_stroke(
+            dom_rect,
+            1.0,
+            egui::Stroke::new(1.5, egui::Color32::from_rgba_unmultiplied(200, 200, 200, 200)),
+            egui::StrokeKind::Outside,
+        );
+        // Domain label
+        if let Some(dims) = mesh_dims.dimensions {
+            painter.text(
+                egui::pos2(dom_br.x - 3.0, dom_br.y - 2.0),
+                egui::Align2::RIGHT_BOTTOM,
+                format!("Domain {:.0}×{:.0}", dims.x, dims.z),
+                egui::FontId::proportional(7.5),
+                egui::Color32::from_rgba_unmultiplied(200, 200, 200, 160),
+            );
+        } else {
+            painter.text(
+                egui::pos2(dom_br.x - 3.0, dom_br.y - 2.0),
+                egui::Align2::RIGHT_BOTTOM,
+                "Domain",
+                egui::FontId::proportional(7.5),
+                egui::Color32::from_rgba_unmultiplied(200, 200, 200, 160),
+            );
         }
 
-        // Light positions
-        let world_w = max_bounds.x - min_bounds.x;
-        let world_h = max_bounds.y - min_bounds.y;
-
-        if world_w > 0.0 && world_h > 0.0 {
+        // --- Cone ground projections + light dots ---
+        if view_w > 0.0 && view_h > 0.0 {
             let srgba = lighting_config.color.to_srgba();
             let light_color = egui::Color32::from_rgb(
                 (srgba.red * 255.0) as u8,
@@ -292,29 +417,42 @@ fn render_light_map(
                 (srgba.blue * 255.0) as u8,
             );
 
-            for pos in &positions {
-                let px = rect.min.x + ((pos.x - min_bounds.x) / world_w) * map_size;
-                let py = rect.min.y + ((pos.y - min_bounds.y) / world_h) * map_size;
+            // Cone ground radius in world units
+            let cone_world_radius = lighting_config.height
+                * (lighting_config.cone_angle / 2.0).to_radians().tan();
+            // Convert to pixels (use average of x/z scale)
+            let px_per_unit = map_size / ((view_w + view_h) * 0.5);
+            let cone_px = (cone_world_radius * px_per_unit).min(map_size * 0.4);
 
-                // Glow circle (represents cone coverage area)
-                let cone_radius = (lighting_config.height
-                    * (lighting_config.cone_angle / 2.0).to_radians().tan())
-                    / world_w
-                    * map_size;
+            for pos in &positions {
+                let center = to_px(pos.x, pos.y);
+
+                // Glow circle (cone footprint estimation)
                 let glow_color = egui::Color32::from_rgba_unmultiplied(
                     (srgba.red * 255.0) as u8,
                     (srgba.green * 255.0) as u8,
                     (srgba.blue * 255.0) as u8,
-                    30,
+                    25,
                 );
-                painter.circle_filled(
-                    egui::pos2(px, py),
-                    cone_radius.min(map_size * 0.3),
-                    glow_color,
+                painter.circle_filled(center, cone_px, glow_color);
+
+                // Cone edge ring
+                painter.circle_stroke(
+                    center,
+                    cone_px,
+                    egui::Stroke::new(
+                        0.5,
+                        egui::Color32::from_rgba_unmultiplied(
+                            (srgba.red * 255.0) as u8,
+                            (srgba.green * 255.0) as u8,
+                            (srgba.blue * 255.0) as u8,
+                            50,
+                        ),
+                    ),
                 );
 
                 // Light dot
-                painter.circle_filled(egui::pos2(px, py), 3.0, light_color);
+                painter.circle_filled(center, 3.0, light_color);
             }
         }
 
@@ -322,17 +460,26 @@ fn render_light_map(
         painter.rect_stroke(
             rect,
             4.0,
-            egui::Stroke::new(1.0, egui::Color32::from_gray(60)),
+            egui::Stroke::new(1.0, egui::Color32::from_gray(50)),
             egui::StrokeKind::Outside,
         );
     }
 
+    // Info line below the map
     ui.add_space(4.0);
-    ui.label(format!(
-        "{} lights, {:.0}m high",
-        positions.len(),
-        lighting_config.height
-    ));
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 8.0;
+        ui.label(
+            egui::RichText::new(format!(
+                "{} lights · {:.0}m · {}",
+                positions.len(),
+                lighting_config.height,
+                lighting_config.placement_algorithm.name(),
+            ))
+            .small()
+            .color(egui::Color32::from_gray(160)),
+        );
+    });
 }
 
 fn render_material_controls(ui: &mut egui::Ui, material_config: &mut MaterialConfig) {
