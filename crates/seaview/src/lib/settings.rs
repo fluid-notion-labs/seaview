@@ -93,6 +93,8 @@ pub struct PlaybackSettings {
     /// Whether to loop playback
     #[serde(rename = "loop")]
     pub loop_enabled: Option<bool>,
+    /// Whether to watch directory for new frames
+    pub watch: Option<bool>,
 }
 
 impl Default for PlaybackSettings {
@@ -100,6 +102,7 @@ impl Default for PlaybackSettings {
         Self {
             speed: None,
             loop_enabled: None,
+            watch: None,
         }
     }
 }
@@ -519,10 +522,11 @@ impl Settings {
     }
 
     /// Merge playback settings
-    pub fn set_playback(&mut self, speed: f32, loop_enabled: bool) {
+    pub fn set_playback(&mut self, speed: f32, loop_enabled: bool, watch: bool) {
         self.playback = Some(PlaybackSettings {
             speed: Some(speed),
             loop_enabled: Some(loop_enabled),
+            watch: Some(watch),
         });
     }
 
@@ -700,6 +704,7 @@ mod tests {
             playback: Some(PlaybackSettings {
                 speed: Some(1.5),
                 loop_enabled: Some(true),
+                watch: Some(false),
             }),
             mesh: None,
             environment: None,
@@ -1153,6 +1158,7 @@ alpha_cutoff = 0.5
             playback: Some(PlaybackSettings {
                 speed: Some(2.0),
                 loop_enabled: Some(false),
+                watch: Some(true),
             }),
             mesh: None,
             environment: Some(EnvironmentSettings {

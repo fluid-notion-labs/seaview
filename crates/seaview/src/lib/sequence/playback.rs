@@ -7,6 +7,8 @@
 use super::SequenceManager;
 use bevy::prelude::*;
 
+use crate::lib::settings::SaveViewEvent;
+
 /// Plugin for sequence playback controls
 pub struct SequencePlaybackPlugin;
 
@@ -40,15 +42,24 @@ const REPEAT_INTERVAL: f32 = 0.05;
 /// - **End** — jump to last frame
 /// - **+ / -** — increase/decrease playback speed
 /// - **1–0** — jump to 0%–90% of sequence
+/// - **Ctrl+S** — save view to seaview.toml
 pub(super) fn handle_keyboard_playback(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut sm: ResMut<SequenceManager>,
     time: Res<Time>,
     mut key_timer: Local<KeyHoldTimer>,
+    mut save_events: MessageWriter<SaveViewEvent>,
 ) {
     // Only process input if we have a sequence loaded
     if sm.current_sequence.is_none() {
         return;
+    }
+
+    // Ctrl+S — save view
+    let ctrl = keyboard.pressed(KeyCode::ControlLeft) || keyboard.pressed(KeyCode::ControlRight);
+    if ctrl && keyboard.just_pressed(KeyCode::KeyS) {
+        save_events.write(SaveViewEvent);
+        debug!("💾 Save view triggered via Ctrl+S");
     }
 
     // Space bar — toggle play/pause

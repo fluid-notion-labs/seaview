@@ -160,15 +160,24 @@ fn main() {
         .run();
 }
 
-/// Initialize watch config from CLI args
+/// Initialize watch config from CLI args and seaview.toml
 fn init_watch_config(
     args: Res<Args>,
     source_orientation: Res<SourceOrientation>,
+    settings_res: Res<SettingsResource>,
     mut watch_config: ResMut<WatchConfig>,
     mut loading_phase: ResMut<LoadingPhase>,
 ) {
-    // Set watch mode from CLI flag
-    watch_config.enabled = args.watch;
+    // Priority: CLI flag > seaview.toml > default (false)
+    let watch_from_settings = settings_res
+        .settings
+        .playback
+        .as_ref()
+        .and_then(|pb| pb.watch)
+        .unwrap_or(false);
+
+    // CLI --watch flag takes precedence if specified
+    watch_config.enabled = if args.watch { true } else { watch_from_settings };
     watch_config.source_orientation = *source_orientation;
 
     // Set directory to watch
@@ -183,7 +192,11 @@ fn init_watch_config(
 
     // If watch mode enabled, start in watching state after initial load
     if watch_config.enabled {
-        debug!("Watch mode enabled via --watch flag");
+        if args.watch {
+            debug!("Watch mode enabled via --watch flag");
+        } else {
+            debug!("Watch mode enabled via seaview.toml");
+        }
         loading_phase.state = LoadingPhaseState::InitialDiscovery;
     }
 }
@@ -337,6 +350,7 @@ fn handle_save_view(
     source_orientation: Res<SourceOrientation>,
     lighting_cfg: Res<NightLightingConfig>,
     material_cfg: Res<MaterialConfig>,
+    watch_config: Res<WatchConfig>,
 ) {
     for _event in save_events.read() {
         if let Ok(transform) = camera_query.single() {
@@ -345,10 +359,10 @@ fn handle_save_view(
                 .settings
                 .set_camera_from_transform(transform);
 
-            // Playback + coordinates
+            // Playback + coordinates + watch
             settings_res
                 .settings
-                .set_playback(sequence_manager.speed, sequence_manager.loop_enabled);
+                .set_playback(sequence_manager.speed, sequence_manager.loop_enabled, watch_config.enabled);
             settings_res.settings.sequence =
                 Some(seaview::lib::settings::SequenceSettings {
                     source_coordinates: Some(source_orientation.to_string()),
