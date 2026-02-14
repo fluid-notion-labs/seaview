@@ -6,7 +6,7 @@
 use bevy::asset::AssetServer;
 use bevy::prelude::*;
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use super::loader::{load_mesh_handle, MeshFileFormat};
@@ -113,8 +113,8 @@ impl LoadingPhaseState {
 /// Internal state for tracking watched files
 #[derive(Resource, Default)]
 pub struct WatchState {
-    /// Set of known frame paths (already loaded or queued)
-    pub known_frames: HashSet<PathBuf>,
+    /// Set of known frame numbers (already loaded or queued)
+    pub known_frames: HashSet<usize>,
     /// Timer for polling
     pub poll_timer: f32,
     /// Sequence pattern used for discovery (cached from initial load)
@@ -142,21 +142,21 @@ impl WatchState {
     pub fn init_from_sequence(&mut self, sequence: &Sequence) {
         self.known_frames.clear();
         for frame in &sequence.frames {
-            self.known_frames.insert(frame.path.clone());
+            self.known_frames.insert(frame.frame_number);
         }
         self.sequence_pattern = Some(sequence.pattern.clone());
         self.sequence_name = Some(sequence.name.clone());
         self.initialized = true;
     }
 
-    /// Check if a path is already known
-    pub fn is_known(&self, path: &PathBuf) -> bool {
-        self.known_frames.contains(path)
+    /// Check if a frame number is already known
+    pub fn is_known(&self, frame_number: usize) -> bool {
+        self.known_frames.contains(&frame_number)
     }
 
-    /// Add a path to the known set
-    pub fn mark_known(&mut self, path: PathBuf) {
-        self.known_frames.insert(path);
+    /// Add a frame number to the known set
+    pub fn mark_known(&mut self, frame_number: usize) {
+        self.known_frames.insert(frame_number);
     }
 }
 
@@ -239,7 +239,7 @@ fn poll_for_new_frames(
 
         // Mark frames as known immediately to avoid re-detecting them
         for frame in &new_frames {
-            watch_state.mark_known(frame.path.clone());
+            watch_state.mark_known(frame.frame_number);
         }
 
         // Transition to incremental load state
@@ -380,7 +380,7 @@ struct NewFrame {
 
 /// Scan directory for new frames that aren't in our known set
 fn scan_for_new_frames(
-    directory: &PathBuf,
+    directory: &Path,
     watch_state: &WatchState,
     watch_config: &WatchConfig,
 ) -> Vec<NewFrame> {
@@ -396,15 +396,15 @@ fn scan_for_new_frames(
                 continue;
             }
 
-            // Skip if already known
-            if watch_state.is_known(&path) {
-                continue;
-            }
-
             // Try to match against sequence patterns
             if let Some(filename) = path.file_name().and_then(|f| f.to_str()) {
                 if let Some((frame_number, _pattern_name)) = try_match_patterns(filename, &patterns)
                 {
+                    // Skip if frame number already known
+                    if watch_state.is_known(frame_number) {
+                        continue;
+                    }
+
                     // Check file stability (file age)
                     if let Ok(metadata) = std::fs::metadata(&path) {
                         if let Ok(modified) = metadata.modified() {
