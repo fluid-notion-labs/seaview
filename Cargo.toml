@@ -15,7 +15,7 @@ edition = "2021"
 authors = ["Seaview Contributors"]
 
 [workspace.dependencies]
-bevy = { git = "https://github.com/bevyengine/bevy.git", rev = "5f8270f2e049f90139a503d1e930070d926f9427", default-features = false, features = [
+bevy = { version = "0.18.0", default-features = false, features = [
     "bevy_asset",
     "bevy_core_pipeline",
     "bevy_gltf",
