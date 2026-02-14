@@ -6,6 +6,7 @@
 pub mod discovery;
 pub mod loader;
 pub mod playback;
+pub mod watch;
 
 use bevy::prelude::*;
 use std::path::PathBuf;
@@ -14,6 +15,7 @@ use crate::app::ui::state::UiState;
 
 // Re-export commonly used types from loader
 pub use loader::{FrameLoadedEvent, LoadSequenceRequest, LoadingStats, SequenceAssets};
+pub use watch::{LoadingPhase, LoadingPhaseState, WatchConfig, WatchPlugin};
 
 /// Plugin for mesh sequence management
 pub struct SequencePlugin;
@@ -24,6 +26,7 @@ impl Plugin for SequencePlugin {
             discovery::SequenceDiscoveryPlugin,
             playback::SequencePlaybackPlugin,
             loader::SequenceLoaderPlugin,
+            watch::WatchPlugin,
         ))
         .init_resource::<SequenceManager>()
         .add_message::<SequenceEvent>()

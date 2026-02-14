@@ -31,6 +31,13 @@ pub struct SequencePatterns {
     patterns: Vec<SequencePattern>,
 }
 
+impl SequencePatterns {
+    /// Iterate over all patterns
+    pub fn iter(&self) -> impl Iterator<Item = &SequencePattern> {
+        self.patterns.iter()
+    }
+}
+
 impl Default for SequencePatterns {
     fn default() -> Self {
         Self {
@@ -62,7 +69,7 @@ impl Default for SequencePatterns {
 }
 
 /// A pattern for matching sequence files
-struct SequencePattern {
+pub struct SequencePattern {
     name: String,
     regex: Regex,
     frame_group: usize,
@@ -75,6 +82,20 @@ impl SequencePattern {
             regex: Regex::new(pattern).expect("Invalid regex pattern"),
             frame_group,
         }
+    }
+
+    /// Get the pattern name
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Try to match a filename and extract the frame number
+    pub fn try_match(&self, filename: &str) -> Option<usize> {
+        self.regex.captures(filename).and_then(|captures| {
+            captures
+                .get(self.frame_group)
+                .and_then(|m| m.as_str().parse::<usize>().ok())
+        })
     }
 }
 

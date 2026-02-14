@@ -14,7 +14,7 @@ use bevy_egui::{egui, EguiContexts};
 
 use crate::app::systems::camera::{CenterOnMeshEvent, FpsCamera};
 use crate::app::ui::state::UiState;
-use crate::lib::sequence::SequenceManager;
+use crate::lib::sequence::{LoadingPhase, LoadingPhaseState, SequenceManager, WatchConfig};
 use crate::lib::settings::{CameraSettings, SaveViewEvent, SavedCameras};
 
 /// System that renders the playback controls panel.
@@ -29,6 +29,8 @@ pub fn playback_controls_system(
     mut save_view_events: MessageWriter<SaveViewEvent>,
     time: Res<Time>,
     mut sequence_manager: ResMut<SequenceManager>,
+    mut watch_config: ResMut<WatchConfig>,
+    mut loading_phase: ResMut<LoadingPhase>,
     mut saved_cameras: Option<ResMut<SavedCameras>>,
     mut camera_query: Query<&mut Transform, (With<Camera3d>, With<FpsCamera>)>,
 ) {
@@ -246,6 +248,28 @@ pub fn playback_controls_system(
 
                     // Loop toggle → bound directly to SequenceManager.loop_enabled
                     ui.checkbox(&mut sequence_manager.loop_enabled, "Loop");
+
+                    ui.separator();
+
+                    // Watch toggle → enables directory watching for new frames (Ctrl+W)
+                    let watch_label = if loading_phase.state.is_watching() {
+                        "👁 Watch"
+                    } else {
+                        "Watch"
+                    };
+                    let mut watch_enabled = watch_config.enabled;
+                    if ui.checkbox(&mut watch_enabled, watch_label)
+                        .on_hover_text("Watch directory for new frames (Ctrl+W)")
+                        .changed()
+                    {
+                        watch_config.enabled = watch_enabled;
+                        // Update loading phase state
+                        if watch_enabled && loading_phase.state == LoadingPhaseState::Idle {
+                            loading_phase.state = LoadingPhaseState::Watching;
+                        } else if !watch_enabled && loading_phase.state == LoadingPhaseState::Watching {
+                            loading_phase.state = LoadingPhaseState::Idle;
+                        }
+                    }
 
                     // Add some spacing before the right side
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

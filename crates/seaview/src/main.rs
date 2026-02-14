@@ -15,7 +15,8 @@ use seaview::app::ui::state::MaterialConfig;
 
 use seaview::lib::coordinates::SourceOrientation;
 use seaview::lib::sequence::{
-    discovery::DiscoverSequenceRequest, LoadSequenceRequest, SequencePlugin,
+    discovery::DiscoverSequenceRequest, LoadSequenceRequest, LoadingPhase, LoadingPhaseState,
+    SequencePlugin, WatchConfig,
 };
 use seaview::lib::settings::{
     resolve_settings_dir, SaveViewEvent, Settings, SettingsResource,
@@ -145,7 +146,7 @@ fn main() {
         .insert_resource(settings_resource)
         .add_message::<CenterOnMeshEvent>()
         .add_message::<SaveViewEvent>()
-        .add_systems(Startup, (setup, handle_input_path, setup_cursor))
+        .add_systems(Startup, (setup, handle_input_path, setup_cursor, init_watch_config))
         .add_systems(
             Update,
             (
@@ -157,6 +158,34 @@ fn main() {
             ),
         )
         .run();
+}
+
+/// Initialize watch config from CLI args
+fn init_watch_config(
+    args: Res<Args>,
+    source_orientation: Res<SourceOrientation>,
+    mut watch_config: ResMut<WatchConfig>,
+    mut loading_phase: ResMut<LoadingPhase>,
+) {
+    // Set watch mode from CLI flag
+    watch_config.enabled = args.watch;
+    watch_config.source_orientation = *source_orientation;
+
+    // Set directory to watch
+    if let Some(ref path) = args.path {
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
+        if canonical.is_dir() {
+            watch_config.directory = Some(canonical);
+        } else if let Some(parent) = canonical.parent() {
+            watch_config.directory = Some(parent.to_path_buf());
+        }
+    }
+
+    // If watch mode enabled, start in watching state after initial load
+    if watch_config.enabled {
+        debug!("Watch mode enabled via --watch flag");
+        loading_phase.state = LoadingPhaseState::InitialDiscovery;
+    }
 }
 
 fn setup(

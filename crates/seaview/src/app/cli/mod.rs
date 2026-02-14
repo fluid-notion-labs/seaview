@@ -20,6 +20,10 @@ pub struct Args {
     /// Enable network mesh receiving on the specified port
     #[arg(long, short = 'n')]
     pub network_port: Option<u16>,
+
+    /// Watch directory for new frames and auto-load them
+    #[arg(short = 'w', long)]
+    pub watch: bool,
 }
 
 impl Args {
