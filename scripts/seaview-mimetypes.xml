@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+
+  <!-- STL (Stereolithography) files -->
+  <mime-type type="model/stl">
+    <comment>STL 3D model</comment>
+    <comment xml:lang="en">STL stereolithography file</comment>
+    <glob pattern="*.stl"/>
+    <glob pattern="*.STL"/>
+    <magic priority="50">
+      <!-- ASCII STL starts with "solid" -->
+      <match type="string" offset="0" value="solid"/>
+    </magic>
+    <alias type="application/sla"/>
+    <alias type="application/vnd.ms-pki.stl"/>
+    <alias type="application/x-navistyle"/>
+  </mime-type>
+
+  <!-- glTF JSON files -->
+  <mime-type type="model/gltf+json">
+    <comment>glTF 3D model</comment>
+    <comment xml:lang="en">GL Transmission Format (JSON)</comment>
+    <glob pattern="*.gltf"/>
+    <glob pattern="*.GLTF"/>
+    <sub-class-of type="application/json"/>
+  </mime-type>
+
+  <!-- glTF Binary files -->
+  <mime-type type="model/gltf-binary">
+    <comment>glTF binary 3D model</comment>
+    <comment xml:lang="en">GL Transmission Format (Binary)</comment>
+    <glob pattern="*.glb"/>
+    <glob pattern="*.GLB"/>
+    <magic priority="50">
+      <!-- GLB magic number: "glTF" -->
+      <match type="string" offset="0" value="glTF"/>
+    </magic>
+  </mime-type>
+
+</mime-info>

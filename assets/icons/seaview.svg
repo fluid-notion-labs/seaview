@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <!-- Gradient for the water/fluid -->
+    <linearGradient id="waterGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#4FC3F7;stop-opacity:1" />
+      <stop offset="50%" style="stop-color:#0288D1;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#01579B;stop-opacity:1" />
+    </linearGradient>
+
+    <!-- Gradient for the 3D mesh surface -->
+    <linearGradient id="meshGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#81D4FA;stop-opacity:0.9" />
+      <stop offset="100%" style="stop-color:#0277BD;stop-opacity:0.9" />
+    </linearGradient>
+
+    <!-- Background circle gradient -->
+    <radialGradient id="bgGradient" cx="50%" cy="30%" r="70%">
+      <stop offset="0%" style="stop-color:#263238;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#0D1B2A;stop-opacity:1" />
+    </radialGradient>
+  </defs>
+
+  <!-- Background circle -->
+  <circle cx="128" cy="128" r="120" fill="url(#bgGradient)" />
+
+  <!-- Outer ring -->
+  <circle cx="128" cy="128" r="120" fill="none" stroke="#4FC3F7" stroke-width="4" opacity="0.6" />
+
+  <!-- Stylized fluid wave surface (3D mesh representation) -->
+  <g transform="translate(128, 128)">
+    <!-- Back wave -->
+    <path d="M-85,20
+             Q-60,-15 -30,5
+             Q0,-20 30,0
+             Q60,-15 85,15
+             L85,60
+             Q60,40 30,55
+             Q0,35 -30,50
+             Q-60,35 -85,55
+             Z"
+          fill="url(#waterGradient)" opacity="0.5" />
+
+    <!-- Middle wave -->
+    <path d="M-80,35
+             Q-50,0 -20,20
+             Q10,-5 40,15
+             Q70,0 80,30
+             L80,70
+             Q70,50 40,60
+             Q10,45 -20,60
+             Q-50,45 -80,65
+             Z"
+          fill="url(#waterGradient)" opacity="0.7" />
+
+    <!-- Front wave with mesh lines -->
+    <path d="M-75,50
+             Q-45,20 -15,40
+             Q15,15 45,35
+             Q75,20 75,45
+             L75,75
+             Q45,60 15,70
+             Q-15,55 -45,70
+             Q-75,55 -75,75
+             Z"
+          fill="url(#meshGradient)" />
+
+    <!-- Mesh grid lines on front wave -->
+    <g stroke="#B3E5FC" stroke-width="1.5" fill="none" opacity="0.6">
+      <!-- Horizontal lines -->
+      <path d="M-70,55 Q-40,30 -10,48 Q20,25 50,42 Q70,30 72,50" />
+      <path d="M-72,65 Q-42,45 -12,58 Q18,40 48,52 Q72,45 74,60" />
+
+      <!-- Vertical lines -->
+      <path d="M-55,45 Q-55,55 -55,72" />
+      <path d="M-25,38 Q-25,50 -25,68" />
+      <path d="M5,32 Q5,48 5,65" />
+      <path d="M35,38 Q35,52 35,68" />
+      <path d="M60,42 Q60,55 60,72" />
+    </g>
+
+    <!-- Mesh vertices (dots at intersections) -->
+    <g fill="#E1F5FE">
+      <circle cx="-55" cy="52" r="3" />
+      <circle cx="-25" cy="44" r="3" />
+      <circle cx="5" cy="38" r="3" />
+      <circle cx="35" cy="44" r="3" />
+      <circle cx="60" cy="48" r="3" />
+      <circle cx="-55" cy="65" r="2.5" />
+      <circle cx="-25" cy="58" r="2.5" />
+      <circle cx="5" cy="52" r="2.5" />
+      <circle cx="35" cy="58" r="2.5" />
+      <circle cx="60" cy="62" r="2.5" />
+    </g>
+  </g>
+
+  <!-- Eye/view symbol integrated into design -->
+  <g transform="translate(128, 90)">
+    <ellipse cx="0" cy="0" rx="35" ry="20" fill="none" stroke="#4FC3F7" stroke-width="3" />
+    <circle cx="0" cy="0" r="12" fill="#4FC3F7" />
+    <circle cx="0" cy="0" r="6" fill="#01579B" />
+    <circle cx="3" cy="-3" r="2" fill="#E1F5FE" />
+  </g>
+
+  <!-- Subtle highlight arc -->
+  <path d="M60,60 A85,85 0 0,1 196,60" fill="none" stroke="#81D4FA" stroke-width="2" opacity="0.3" />
+</svg>

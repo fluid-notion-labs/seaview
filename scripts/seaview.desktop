@@ -1,0 +1,14 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Seaview
+GenericName=3D Mesh Viewer
+Comment=View and animate 3D mesh sequences (STL, glTF, GLB)
+Exec=seaview %f
+Icon=seaview
+Terminal=false
+Categories=Graphics;3DGraphics;Viewer;Science;
+Keywords=mesh;3d;stl;gltf;glb;simulation;fluid;cfd;viewer;animation;
+MimeType=model/stl;model/gltf+json;model/gltf-binary;application/sla;
+StartupNotify=true
+StartupWMClass=seaview
