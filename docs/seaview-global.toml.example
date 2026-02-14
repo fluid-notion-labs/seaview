@@ -1,0 +1,38 @@
+# Seaview Global Configuration
+#
+# This file is located at ~/.config/seaview/seaview.toml (Linux/Mac)
+# or ~/.seaview.toml as a fallback.
+#
+# Global settings provide defaults that apply to all projects.
+# Per-directory seaview.toml files can override these settings.
+
+[memory]
+# Manual memory budget in megabytes (optional)
+# If set, this overrides auto-detection
+# budget_mb = 4096
+
+# Enable automatic memory detection (default: true)
+# When true, Seaview will detect available RAM and GPU VRAM
+auto_detect = true
+
+# Fraction of available RAM to use for mesh data (0.0 - 1.0)
+# Default: 0.5 (50% of available RAM)
+ram_fraction = 0.5
+
+# Fraction of GPU VRAM to use for rendering (0.0 - 1.0)
+# Default: 0.5 (50% of available VRAM)
+gpu_fraction = 0.5
+
+[defaults]
+# Default watch mode (auto-load new frames)
+# watch = false
+
+# Default loop mode (loop playback at end of sequence)
+# loop = true
+
+# Default playback speed multiplier
+# speed = 1.0
+
+# Default source coordinate system
+# Options: "yup" (graphics/Bevy), "zup" (CAD/GIS), "fluidx3d" (CFD)
+# source_coordinates = "yup"

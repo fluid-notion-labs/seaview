@@ -14,6 +14,7 @@ use seaview::app::systems::diagnostics::RenderingDiagnosticsPlugin;
 use seaview::app::ui::state::MaterialConfig;
 
 use seaview::lib::coordinates::SourceOrientation;
+use seaview::lib::global_settings::GlobalSettings;
 use seaview::lib::sequence::{
     discovery::DiscoverSequenceRequest, LoadSequenceRequest, LoadingPhase, LoadingPhaseState,
     SequencePlugin, WatchConfig,
@@ -32,6 +33,18 @@ fn main() {
             debug!("Path provided: {:?}", path);
         }
     }
+
+    // Load global settings first
+    let global_settings = match GlobalSettings::load() {
+        Ok(settings) => {
+            debug!("Loaded global settings");
+            settings
+        }
+        Err(e) => {
+            warn!("Failed to load global settings: {}, using defaults", e);
+            GlobalSettings::default()
+        }
+    };
 
     // Load per-directory settings if a path was provided
     let settings_dir = args.path.as_ref().and_then(|p| resolve_settings_dir(p));
@@ -52,7 +65,7 @@ fn main() {
             }
         });
 
-    // Determine source coordinates: CLI flag > seaview.toml > default
+    // Determine source coordinates: CLI flag > per-directory settings > global settings > default
     // clap sets default_value = "yup", so we check if the user explicitly passed it
     let coord_string = {
         let cli_explicit = std::env::args().any(|a| a.starts_with("--source-coordinates"));
@@ -62,9 +75,19 @@ fn main() {
             s.sequence
                 .as_ref()
                 .and_then(|seq| seq.source_coordinates.clone())
+                .or_else(|| {
+                    global_settings
+                        .defaults
+                        .as_ref()
+                        .and_then(|d| d.source_coordinates.clone())
+                })
                 .unwrap_or_else(|| args.source_coordinates.clone())
         } else {
-            args.source_coordinates.clone()
+            global_settings
+                .defaults
+                .as_ref()
+                .and_then(|d| d.source_coordinates.clone())
+                .unwrap_or_else(|| args.source_coordinates.clone())
         }
     };
 
@@ -144,6 +167,7 @@ fn main() {
         .insert_resource(args)
         .insert_resource(source_orientation)
         .insert_resource(settings_resource)
+        .insert_resource(global_settings)
         .add_message::<CenterOnMeshEvent>()
         .add_message::<SaveViewEvent>()
         .add_systems(Startup, (setup, handle_input_path, setup_cursor, init_watch_config))
@@ -160,24 +184,33 @@ fn main() {
         .run();
 }
 
-/// Initialize watch config from CLI args and seaview.toml
+/// Initialize watch config from CLI args, per-directory settings, and global settings
 fn init_watch_config(
     args: Res<Args>,
     source_orientation: Res<SourceOrientation>,
     settings_res: Res<SettingsResource>,
+    global_settings: Res<GlobalSettings>,
     mut watch_config: ResMut<WatchConfig>,
     mut loading_phase: ResMut<LoadingPhase>,
 ) {
-    // Priority: CLI flag > seaview.toml > default (false)
-    let watch_from_settings = settings_res
+    // Priority: CLI flag > per-directory settings > global settings > default (false)
+    let watch_from_dir_settings = settings_res
         .settings
         .playback
         .as_ref()
-        .and_then(|pb| pb.watch)
+        .and_then(|pb| pb.watch);
+
+    let watch_from_global = global_settings
+        .defaults
+        .as_ref()
+        .and_then(|d| d.watch);
+
+    let watch_enabled = watch_from_dir_settings
+        .or(watch_from_global)
         .unwrap_or(false);
 
     // CLI --watch flag takes precedence if specified
-    watch_config.enabled = if args.watch { true } else { watch_from_settings };
+    watch_config.enabled = if args.watch { true } else { watch_enabled };
     watch_config.source_orientation = *source_orientation;
 
     // Set directory to watch
@@ -206,6 +239,7 @@ fn setup(
     _meshes: ResMut<Assets<Mesh>>,
     _materials: ResMut<Assets<StandardMaterial>>,
     settings_res: Res<SettingsResource>,
+    global_settings: Res<GlobalSettings>,
     mut sequence_manager: ResMut<seaview::sequence::SequenceManager>,
 ) {
     // -- Cameras: look up active_camera in the named map -----------------------
@@ -252,16 +286,39 @@ fn setup(
         commands.insert_resource(dims);
     }
 
-    // Apply playback settings from seaview.toml → write to SequenceManager (single source of truth)
-    if let Some(ref pb) = settings_res.settings.playback {
-        if let Some(speed) = pb.speed {
-            sequence_manager.speed = speed;
-            debug!("Applied playback speed from seaview.toml: {}", speed);
-        }
-        if let Some(loop_enabled) = pb.loop_enabled {
-            sequence_manager.loop_enabled = loop_enabled;
-            debug!("Applied loop setting from seaview.toml: {}", loop_enabled);
-        }
+    // Apply playback settings: per-directory > global > defaults
+    // Speed
+    let speed = settings_res
+        .settings
+        .playback
+        .as_ref()
+        .and_then(|pb| pb.speed)
+        .or_else(|| {
+            global_settings
+                .defaults
+                .as_ref()
+                .and_then(|d| d.speed)
+        });
+    if let Some(speed) = speed {
+        sequence_manager.speed = speed;
+        debug!("Applied playback speed: {}", speed);
+    }
+
+    // Loop
+    let loop_enabled = settings_res
+        .settings
+        .playback
+        .as_ref()
+        .and_then(|pb| pb.loop_enabled)
+        .or_else(|| {
+            global_settings
+                .defaults
+                .as_ref()
+                .and_then(|d| d.loop_enabled)
+        });
+    if let Some(loop_enabled) = loop_enabled {
+        sequence_manager.loop_enabled = loop_enabled;
+        debug!("Applied loop setting: {}", loop_enabled);
     }
 
     // Add a directional light for overall illumination

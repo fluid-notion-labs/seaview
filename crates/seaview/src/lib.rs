@@ -6,6 +6,7 @@
 pub mod lib {
     pub mod asset_loaders;
     pub mod coordinates;
+    pub mod global_settings;
     pub mod lighting;
     pub mod mesh_info;
     // pub mod network;
