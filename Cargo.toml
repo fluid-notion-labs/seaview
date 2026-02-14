@@ -15,7 +15,7 @@ edition = "2021"
 authors = ["Seaview Contributors"]
 
 [workspace.dependencies]
-bevy = { version = "0.18", default-features = false, features = [
+bevy = { git = "https://github.com/bevyengine/bevy.git", rev = "5f8270f2e049f90139a503d1e930070d926f9427", default-features = false, features = [
     "bevy_asset",
     "bevy_core_pipeline",
     "bevy_gltf",
@@ -32,10 +32,17 @@ bevy = { version = "0.18", default-features = false, features = [
     "default_font",
     "png",
     "bevy_remote",
-    "serialize",
+    "bevy_mesh",
+    "bevy_image",
+    "bevy_color",
+    "bevy_shader",
+    "bevy_camera",
+    "bevy_light",
+    "bevy_post_process",
+    "bevy_log",
     "zstd_rust",
 ] }
-bevy_egui = "0.39"
+bevy_egui = { git = "https://github.com/vladbat00/bevy_egui.git", rev = "fc54b193441e74e0317c5c8a158f73669670cf8f" }
 
 [profile.dev]
 opt-level = 1
