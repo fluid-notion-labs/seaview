@@ -3,12 +3,14 @@
 //! This module provides functionality for monitoring a directory for new mesh
 //! files and incrementally loading them into the current sequence.
 
+use bevy::asset::AssetServer;
 use bevy::prelude::*;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use super::{FrameInfo, Sequence, SequenceAssets};
+use super::loader::{load_mesh_handle, MeshFileFormat};
+use super::{FrameInfo, Sequence, SequenceAssets, SequenceManager};
 
 /// Plugin for watch mode functionality
 pub struct WatchPlugin;
@@ -18,7 +20,18 @@ impl Plugin for WatchPlugin {
         app.init_resource::<WatchConfig>()
             .init_resource::<LoadingPhase>()
             .init_resource::<WatchState>()
-            .add_systems(Update, (poll_for_new_frames, handle_keyboard_watch_toggle));
+            .add_message::<IncrementalLoadRequest>()
+            .add_systems(
+                Update,
+                (
+                    init_watch_state_from_sequence,
+                    poll_for_new_frames,
+                    handle_incremental_load,
+                    update_loading_phase_on_load_complete,
+                    handle_keyboard_watch_toggle,
+                )
+                    .chain(),
+            );
     }
 }
 
@@ -54,6 +67,8 @@ impl Default for WatchConfig {
 pub struct LoadingPhase {
     /// Current phase state
     pub state: LoadingPhaseState,
+    /// Number of frames being loaded in current incremental batch
+    pub pending_frame_count: usize,
 }
 
 /// Phases of the loading lifecycle
@@ -100,33 +115,27 @@ impl LoadingPhaseState {
 pub struct WatchState {
     /// Set of known frame paths (already loaded or queued)
     pub known_frames: HashSet<PathBuf>,
-    /// Files pending stability check: path -> (size, first_seen_instant)
-    pub pending_files: Vec<PendingFile>,
     /// Timer for polling
     pub poll_timer: f32,
     /// Sequence pattern used for discovery (cached from initial load)
     pub sequence_pattern: Option<String>,
     /// Sequence name (cached from initial load)
     pub sequence_name: Option<String>,
-}
-
-/// A file that's been discovered but not yet confirmed stable
-#[derive(Clone, Debug)]
-pub struct PendingFile {
-    pub path: PathBuf,
-    pub size: u64,
-    pub first_seen: f32, // Time since startup when first seen
-    pub frame_number: usize,
+    /// Whether we've initialized from the current sequence
+    pub initialized: bool,
+    /// Previous loaded count to detect when loading completes
+    pub prev_loaded_count: usize,
 }
 
 impl WatchState {
     /// Reset watch state for a new sequence
     pub fn reset(&mut self) {
         self.known_frames.clear();
-        self.pending_files.clear();
         self.poll_timer = 0.0;
         self.sequence_pattern = None;
         self.sequence_name = None;
+        self.initialized = false;
+        self.prev_loaded_count = 0;
     }
 
     /// Initialize from an existing sequence
@@ -137,6 +146,7 @@ impl WatchState {
         }
         self.sequence_pattern = Some(sequence.pattern.clone());
         self.sequence_name = Some(sequence.name.clone());
+        self.initialized = true;
     }
 
     /// Check if a path is already known
@@ -150,16 +160,57 @@ impl WatchState {
     }
 }
 
+/// Event to request incremental loading of new frames
+#[derive(Message)]
+pub struct IncrementalLoadRequest {
+    /// Paths to new frame files (in order by frame number)
+    pub frame_paths: Vec<PathBuf>,
+    /// Frame numbers corresponding to each path
+    pub frame_numbers: Vec<usize>,
+}
+
+/// System that initializes watch state when a sequence is first loaded
+fn init_watch_state_from_sequence(
+    sequence_manager: Res<SequenceManager>,
+    mut watch_state: ResMut<WatchState>,
+    mut loading_phase: ResMut<LoadingPhase>,
+    watch_config: Res<WatchConfig>,
+    sequence_assets: Res<SequenceAssets>,
+) {
+    // Wait for initial load to complete before initializing watch state
+    if !watch_state.initialized {
+        if let Some(sequence) = sequence_manager.current_sequence() {
+            // Only initialize once we have frames loaded
+            if sequence_assets.loaded_count > 0 && !sequence_assets.loading {
+                watch_state.init_from_sequence(sequence);
+                debug!(
+                    "Watch state initialized with {} known frames",
+                    watch_state.known_frames.len()
+                );
+
+                // Transition to watching if enabled
+                if watch_config.enabled {
+                    loading_phase.state = LoadingPhaseState::Watching;
+                    debug!("Transitioned to Watching state");
+                }
+            }
+        }
+    }
+}
+
 /// System that polls for new frames when watch mode is enabled
 fn poll_for_new_frames(
     time: Res<Time>,
     watch_config: Res<WatchConfig>,
     mut watch_state: ResMut<WatchState>,
     mut loading_phase: ResMut<LoadingPhase>,
-    _sequence_assets: Res<SequenceAssets>,
+    mut incremental_load_events: MessageWriter<IncrementalLoadRequest>,
 ) {
-    // Only poll when watching
-    if !watch_config.enabled || loading_phase.state != LoadingPhaseState::Watching {
+    // Only poll when watching and initialized
+    if !watch_config.enabled
+        || loading_phase.state != LoadingPhaseState::Watching
+        || !watch_state.initialized
+    {
         return;
     }
 
@@ -176,22 +227,155 @@ fn poll_for_new_frames(
     };
 
     // Scan for new files
-    let new_frames = scan_for_new_frames(
-        directory,
-        &watch_state,
-        &watch_config,
-        time.elapsed_secs(),
-    );
+    let new_frames = scan_for_new_frames(directory, &watch_state, &watch_config);
 
     if !new_frames.is_empty() {
-        debug!("Found {} new stable frames to load", new_frames.len());
-        // TODO: Trigger incremental load
-        // For now, just mark them as known
-        for frame in new_frames {
-            watch_state.mark_known(frame.path);
+        let count = new_frames.len();
+        debug!("Found {} new stable frames to load", count);
+
+        // Collect paths and frame numbers
+        let frame_paths: Vec<PathBuf> = new_frames.iter().map(|f| f.path.clone()).collect();
+        let frame_numbers: Vec<usize> = new_frames.iter().map(|f| f.frame_number).collect();
+
+        // Mark frames as known immediately to avoid re-detecting them
+        for frame in &new_frames {
+            watch_state.mark_known(frame.path.clone());
         }
+
+        // Transition to incremental load state
         loading_phase.state = LoadingPhaseState::IncrementalLoad;
+        loading_phase.pending_frame_count = count;
+
+        // Emit incremental load request
+        incremental_load_events.write(IncrementalLoadRequest {
+            frame_paths,
+            frame_numbers,
+        });
     }
+}
+
+/// System that handles incremental load requests
+fn handle_incremental_load(
+    mut incremental_requests: MessageReader<IncrementalLoadRequest>,
+    mut sequence_manager: ResMut<SequenceManager>,
+    mut sequence_assets: ResMut<SequenceAssets>,
+    asset_server: Res<AssetServer>,
+) {
+    for request in incremental_requests.read() {
+        debug!(
+            "Processing incremental load of {} frames",
+            request.frame_paths.len()
+        );
+
+        // Detect format from existing sequence or first new file
+        let format = sequence_assets.format.unwrap_or_else(|| {
+            request
+                .frame_paths
+                .first()
+                .and_then(|p| p.extension())
+                .and_then(|e| e.to_str())
+                .and_then(|ext| MeshFileFormat::from_extension(ext))
+                .unwrap_or(MeshFileFormat::Stl)
+        });
+
+        // Update sequence manager with new frames
+        if let Some(sequence) = sequence_manager.current_sequence.as_mut() {
+            for (path, frame_number) in request
+                .frame_paths
+                .iter()
+                .zip(request.frame_numbers.iter())
+            {
+                let frame_info = FrameInfo::new(path.clone(), *frame_number);
+
+                // Insert in sorted order by frame number
+                let insert_pos = sequence
+                    .frames
+                    .binary_search_by_key(frame_number, |f| f.frame_number)
+                    .unwrap_or_else(|pos| pos);
+
+                sequence.frames.insert(insert_pos, frame_info);
+            }
+
+            debug!(
+                "Sequence now has {} frames after incremental update",
+                sequence.frame_count()
+            );
+        }
+
+        // Load new frames directly using the asset server
+        for path in &request.frame_paths {
+            let filename = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown");
+
+            let handle = load_mesh_handle(&asset_server, filename, format);
+            sequence_assets.frame_handles.push(handle);
+            sequence_assets.loaded_frames.push(false);
+            sequence_assets.frame_entities.push(None);
+        }
+
+        // Update total frames and mark as loading
+        sequence_assets.total_frames += request.frame_paths.len();
+        sequence_assets.loading = true;
+
+        debug!(
+            "Started incremental load of {} frames, total now {}",
+            request.frame_paths.len(),
+            sequence_assets.total_frames
+        );
+    }
+}
+
+/// System that transitions back to Watching state when incremental load completes
+fn update_loading_phase_on_load_complete(
+    sequence_assets: Res<SequenceAssets>,
+    mut loading_phase: ResMut<LoadingPhase>,
+    mut watch_state: ResMut<WatchState>,
+    watch_config: Res<WatchConfig>,
+) {
+    // Check if we just finished an incremental load
+    if loading_phase.state == LoadingPhaseState::IncrementalLoad {
+        // Detect load completion by checking if loaded count increased and loading stopped
+        if !sequence_assets.loading
+            && sequence_assets.loaded_count > watch_state.prev_loaded_count
+        {
+            debug!(
+                "Incremental load complete: {} frames now loaded",
+                sequence_assets.loaded_count
+            );
+
+            // Transition back to watching if still enabled
+            if watch_config.enabled {
+                loading_phase.state = LoadingPhaseState::Watching;
+            } else {
+                loading_phase.state = LoadingPhaseState::Idle;
+            }
+            loading_phase.pending_frame_count = 0;
+        }
+    }
+
+    // Also handle transition from InitialLoading to Watching
+    if loading_phase.state == LoadingPhaseState::InitialLoading {
+        if !sequence_assets.loading && sequence_assets.is_fully_loaded() {
+            if watch_config.enabled {
+                loading_phase.state = LoadingPhaseState::Watching;
+                debug!("Initial load complete, transitioning to Watching");
+            } else {
+                loading_phase.state = LoadingPhaseState::Idle;
+            }
+        }
+    }
+
+    // Track loaded count for next frame
+    watch_state.prev_loaded_count = sequence_assets.loaded_count;
+}
+
+/// A file that's been discovered and confirmed stable
+#[derive(Clone, Debug)]
+struct NewFrame {
+    path: PathBuf,
+    frame_number: usize,
 }
 
 /// Scan directory for new frames that aren't in our known set
@@ -199,8 +383,7 @@ fn scan_for_new_frames(
     directory: &PathBuf,
     watch_state: &WatchState,
     watch_config: &WatchConfig,
-    current_time: f32,
-) -> Vec<PendingFile> {
+) -> Vec<NewFrame> {
     let mut stable_frames = Vec::new();
 
     // Get the pattern regex for this sequence
@@ -222,20 +405,12 @@ fn scan_for_new_frames(
             if let Some(filename) = path.file_name().and_then(|f| f.to_str()) {
                 if let Some((frame_number, _pattern_name)) = try_match_patterns(filename, &patterns)
                 {
-                    // Check file stability
+                    // Check file stability (file age)
                     if let Ok(metadata) = std::fs::metadata(&path) {
-                        let size = metadata.len();
-
-                        // Check if file is old enough
                         if let Ok(modified) = metadata.modified() {
                             if let Ok(age) = modified.elapsed() {
                                 if age >= watch_config.min_file_age {
-                                    stable_frames.push(PendingFile {
-                                        path,
-                                        size,
-                                        first_seen: current_time,
-                                        frame_number,
-                                    });
+                                    stable_frames.push(NewFrame { path, frame_number });
                                 }
                             }
                         }
@@ -268,6 +443,7 @@ fn handle_keyboard_watch_toggle(
     input: Res<ButtonInput<KeyCode>>,
     mut watch_config: ResMut<WatchConfig>,
     mut loading_phase: ResMut<LoadingPhase>,
+    watch_state: Res<WatchState>,
 ) {
     let ctrl = input.pressed(KeyCode::ControlLeft) || input.pressed(KeyCode::ControlRight);
 
@@ -275,13 +451,13 @@ fn handle_keyboard_watch_toggle(
         watch_config.enabled = !watch_config.enabled;
 
         if watch_config.enabled {
-            debug!("Watch mode enabled");
-            // Transition to watching if we're idle or done loading
-            if loading_phase.state == LoadingPhaseState::Idle {
+            debug!("Watch mode enabled via Ctrl+W");
+            // Transition to watching if we're idle and initialized
+            if loading_phase.state == LoadingPhaseState::Idle && watch_state.initialized {
                 loading_phase.state = LoadingPhaseState::Watching;
             }
         } else {
-            debug!("Watch mode disabled");
+            debug!("Watch mode disabled via Ctrl+W");
             // Transition back to idle if we were watching
             if loading_phase.state == LoadingPhaseState::Watching {
                 loading_phase.state = LoadingPhaseState::Idle;
@@ -306,26 +482,6 @@ impl SequenceExt for Sequence {
                 .unwrap_or_else(|pos| pos);
 
             self.frames.insert(insert_pos, frame);
-        }
-    }
-}
-
-/// Extension trait for SequenceAssets to support incremental loading
-pub trait SequenceAssetsExt {
-    /// Extend the assets to accommodate new frames at specific positions
-    fn extend_for_frames(&mut self, new_count: usize, insert_positions: &[usize]);
-}
-
-impl SequenceAssetsExt for SequenceAssets {
-    fn extend_for_frames(&mut self, new_count: usize, _insert_positions: &[usize]) {
-        // For now, just extend at the end
-        // A more sophisticated implementation would insert at the correct positions
-        self.total_frames += new_count;
-
-        // Extend tracking vectors
-        for _ in 0..new_count {
-            self.loaded_frames.push(false);
-            self.frame_entities.push(None);
         }
     }
 }

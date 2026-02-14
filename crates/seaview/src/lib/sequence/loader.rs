@@ -185,7 +185,7 @@ pub struct SequenceMeshDisplay;
 /// For **glTF / GLB** files we use [`GltfAssetLabel::Primitive`] to request
 /// the first mesh primitive (`mesh 0, primitive 0`), which gives back a
 /// `Handle<Mesh>`.
-fn load_mesh_handle(
+pub fn load_mesh_handle(
     asset_server: &AssetServer,
     filename: &str,
     format: MeshFileFormat,
