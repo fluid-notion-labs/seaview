@@ -25,7 +25,7 @@ use bevy_egui::{egui, EguiContexts};
 
 use crate::app::systems::diagnostics::RenderingStats;
 use crate::app::ui::state::{MaterialConfig, RenderConfig, UiState};
-use crate::lib::lighting::{EnvironmentLightConfig, LightingRig, NightLightingConfig};
+use crate::lib::lighting::{EnvironmentLightConfig, LightingRig};
 use crate::lib::mesh_info::MeshDimensions;
 use crate::lib::sequence::SequenceAssets;
 
@@ -36,7 +36,6 @@ use crate::lib::sequence::SequenceAssets;
 pub fn environment_panel_system(
     mut contexts: EguiContexts,
     mut ui_state: ResMut<UiState>,
-    _lighting_config: ResMut<NightLightingConfig>,
     mut env_light_config: ResMut<EnvironmentLightConfig>,
     mut lighting_rig: ResMut<LightingRig>,
     mut gen_state: Local<GenerateGroupState>,

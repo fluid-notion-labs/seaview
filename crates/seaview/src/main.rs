@@ -6,8 +6,8 @@ use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 use seaview::lib::lighting::{EnvironmentLightConfig, GlobalLight};
 use seaview::{
-    AssetLoadersPlugin, MemoryBudgetPlugin, MeshDimensions, MeshInfoPlugin, NightLightingConfig,
-    NightLightingPlugin, SeaviewUiPlugin, SessionPlugin,
+    AssetLoadersPlugin, MemoryBudgetPlugin, MeshDimensions, MeshInfoPlugin, NightLightingPlugin,
+    SeaviewUiPlugin, SessionPlugin,
 };
 
 use seaview::app::cli::Args;
@@ -403,16 +403,6 @@ fn setup(
             commands.insert_resource(env_light_cfg);
         }
 
-        // Spot-light rig (legacy v1)
-        if let Some(ref lighting_settings) = env.lighting {
-            let lighting_cfg = NightLightingConfig::from(lighting_settings);
-            debug!(
-                "Restored lighting from seaview.toml: {} lights, height={}, algo={}",
-                lighting_cfg.num_lights, lighting_cfg.height, lighting_settings.placement_algorithm,
-            );
-            commands.insert_resource(lighting_cfg);
-        }
-
         // Lighting v2 rig (named groups with per-light params)
         if let Some(rig) = settings_res.settings.get_lighting_rig() {
             debug!(
@@ -505,7 +495,6 @@ fn handle_save_view(
     camera_query: Query<&Transform, (With<Camera3d>, With<FpsCamera>)>,
     sequence_manager: Res<seaview::sequence::SequenceManager>,
     source_orientation: Res<SourceOrientation>,
-    lighting_cfg: Res<NightLightingConfig>,
     env_light_cfg: Res<EnvironmentLightConfig>,
     lighting_rig: Res<seaview::lighting::LightingRig>,
     material_cfg: Res<MaterialConfig>,
@@ -527,12 +516,10 @@ fn handle_save_view(
                 source_coordinates: Some(source_orientation.to_string()),
             });
 
-            // Environment — lighting + material
+            // Environment — env light + material + lighting rig
             settings_res
                 .settings
-                .set_environment(&lighting_cfg, &env_light_cfg, &material_cfg);
-
-            // Lighting v2 rig (named groups with per-light params)
+                .set_environment(&env_light_cfg, &material_cfg);
             settings_res.settings.set_lighting_rig(&lighting_rig);
 
             // Load sections — persist multi-section layout

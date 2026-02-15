@@ -10,9 +10,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::app::ui::state::MaterialConfig;
-use crate::lib::lighting::{
-    Light, LightGroup, LightingRig, NightLightingConfig, PlacementAlgorithm,
-};
+use crate::lib::lighting::{Light, LightGroup, LightingRig};
 use crate::lib::sequence::LoadSection;
 use uuid::Uuid;
 
@@ -340,50 +338,19 @@ impl From<&EnvironmentLightSettings> for crate::lib::lighting::EnvironmentLightC
 
 impl Default for LightingSettings {
     fn default() -> Self {
-        let cfg = NightLightingConfig::default();
-        Self::from(&cfg)
-    }
-}
-
-impl From<&NightLightingConfig> for LightingSettings {
-    fn from(cfg: &NightLightingConfig) -> Self {
         Self {
-            num_lights: cfg.num_lights,
-            height: cfg.height,
-            cone_angle: cfg.cone_angle,
-            placement_algorithm: placement_to_snake(&cfg.placement_algorithm),
-            enabled: cfg.enabled,
-            global_lighting_enabled: true, // legacy field, always true
-            intensity: cfg.intensity,
-            color: color_to_srgb3(&cfg.color),
-            range: cfg.range,
-            show_markers: cfg.show_markers,
-            marker_size: cfg.marker_size,
-            coverage_pct: cfg.coverage_pct,
-        }
-    }
-}
-
-impl From<&LightingSettings> for NightLightingConfig {
-    fn from(s: &LightingSettings) -> Self {
-        // Use Kilolumens as the default display unit (matches Default impl)
-        let unit = crate::lib::lighting::LightIntensityUnit::Kilolumens;
-        let display_value = unit.from_lumens(s.intensity, s.cone_angle);
-
-        Self {
-            num_lights: s.num_lights,
-            height: s.height,
-            cone_angle: s.cone_angle,
-            placement_algorithm: snake_to_placement(&s.placement_algorithm),
-            enabled: s.enabled,
-            intensity: s.intensity,
-            intensity_display_value: display_value,
-            intensity_unit: unit,
-            color: Color::srgb(s.color[0], s.color[1], s.color[2]),
-            range: s.range,
-            show_markers: s.show_markers,
-            marker_size: s.marker_size,
-            coverage_pct: s.coverage_pct,
+            num_lights: 9,
+            height: 50.0,
+            cone_angle: 60.0,
+            placement_algorithm: "uniform_grid".to_string(),
+            enabled: true,
+            global_lighting_enabled: true,
+            intensity: 800_000.0,
+            color: [1.0, 0.95, 0.9],
+            range: 500.0,
+            show_markers: true,
+            marker_size: 0.5,
+            coverage_pct: 120.0,
         }
     }
 }
@@ -857,16 +824,17 @@ impl Settings {
     }
 
     /// Build and set environment from the current runtime resources.
+    ///
+    /// Saves environment light and material settings. The lighting rig is
+    /// saved separately via [`Self::set_lighting_rig`].
     pub fn set_environment(
         &mut self,
-        lighting_cfg: &NightLightingConfig,
         env_light_cfg: &crate::lib::lighting::EnvironmentLightConfig,
         material_cfg: &MaterialConfig,
     ) {
         let env = self
             .environment
             .get_or_insert_with(EnvironmentSettings::default);
-        env.lighting = Some(LightingSettings::from(lighting_cfg));
         env.environment_light = Some(EnvironmentLightSettings::from(env_light_cfg));
         env.materials
             .insert("fluid".to_string(), MaterialSettings::from(material_cfg));
@@ -1001,33 +969,6 @@ pub fn resolve_settings_dir(path: &Path) -> Option<PathBuf> {
 pub struct SaveViewEvent;
 
 // ---------------------------------------------------------------------------
-// PlacementAlgorithm ↔ snake_case string helpers
-// ---------------------------------------------------------------------------
-
-fn placement_to_snake(alg: &PlacementAlgorithm) -> String {
-    match alg {
-        PlacementAlgorithm::UniformGrid => "uniform_grid",
-        PlacementAlgorithm::HexagonalPacking => "hexagonal_packing",
-        PlacementAlgorithm::PoissonDisk => "poisson_disk",
-        PlacementAlgorithm::SingleRow => "single_row",
-        PlacementAlgorithm::SingleColumn => "single_column",
-    }
-    .to_string()
-}
-
-fn snake_to_placement(s: &str) -> PlacementAlgorithm {
-    match s {
-        "uniform_grid" => PlacementAlgorithm::UniformGrid,
-        "hexagonal_packing" => PlacementAlgorithm::HexagonalPacking,
-        "poisson_disk" => PlacementAlgorithm::PoissonDisk,
-        "single_row" => PlacementAlgorithm::SingleRow,
-        "single_column" => PlacementAlgorithm::SingleColumn,
-        // Fall back to the default
-        _ => PlacementAlgorithm::UniformGrid,
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Helper: extract (r, g, b, a) without relying on a method that may not exist
 // ---------------------------------------------------------------------------
 
@@ -1044,6 +985,29 @@ fn color_to_srgb3(color: &Color) -> [f32; 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lib::lighting::PlacementAlgorithm;
+
+    fn placement_to_snake(alg: &PlacementAlgorithm) -> String {
+        match alg {
+            PlacementAlgorithm::UniformGrid => "uniform_grid",
+            PlacementAlgorithm::HexagonalPacking => "hexagonal_packing",
+            PlacementAlgorithm::PoissonDisk => "poisson_disk",
+            PlacementAlgorithm::SingleRow => "single_row",
+            PlacementAlgorithm::SingleColumn => "single_column",
+        }
+        .to_string()
+    }
+
+    fn snake_to_placement(s: &str) -> PlacementAlgorithm {
+        match s {
+            "uniform_grid" => PlacementAlgorithm::UniformGrid,
+            "hexagonal_packing" => PlacementAlgorithm::HexagonalPacking,
+            "poisson_disk" => PlacementAlgorithm::PoissonDisk,
+            "single_row" => PlacementAlgorithm::SingleRow,
+            "single_column" => PlacementAlgorithm::SingleColumn,
+            _ => PlacementAlgorithm::UniformGrid,
+        }
+    }
 
     #[test]
     fn test_camera_roundtrip() {
@@ -1183,21 +1147,12 @@ rotation = [-30.0, 90.0, 0.0]
     }
 
     #[test]
-    fn test_lighting_settings_roundtrip() {
-        let cfg = NightLightingConfig::default();
-        let settings = LightingSettings::from(&cfg);
-        let recovered = NightLightingConfig::from(&settings);
-
-        assert_eq!(cfg.num_lights, recovered.num_lights);
-        assert_eq!(cfg.height, recovered.height);
-        assert_eq!(cfg.cone_angle, recovered.cone_angle);
-        assert_eq!(cfg.placement_algorithm, recovered.placement_algorithm);
-        assert_eq!(cfg.enabled, recovered.enabled);
-        assert_eq!(cfg.intensity, recovered.intensity);
-        assert_eq!(cfg.range, recovered.range);
-        assert_eq!(cfg.show_markers, recovered.show_markers);
-        assert_eq!(cfg.marker_size, recovered.marker_size);
-        assert_eq!(cfg.coverage_pct, recovered.coverage_pct);
+    fn test_lighting_settings_default_is_sane() {
+        let settings = LightingSettings::default();
+        assert_eq!(settings.num_lights, 9);
+        assert_eq!(settings.height, 50.0);
+        assert_eq!(settings.placement_algorithm, "uniform_grid");
+        assert!(settings.enabled);
     }
 
     #[test]
@@ -1424,15 +1379,13 @@ rotation = [-89.0, 0.0, 0.0]
 
     #[test]
     fn test_set_environment_helper() {
-        let lighting = NightLightingConfig::default();
         let env_light = crate::lib::lighting::EnvironmentLightConfig::default();
         let material = MaterialConfig::default();
 
         let mut settings = Settings::default();
-        settings.set_environment(&lighting, &env_light, &material);
+        settings.set_environment(&env_light, &material);
 
         let env = settings.environment.as_ref().unwrap();
-        assert!(env.lighting.is_some());
         assert!(env.environment_light.is_some());
         assert!(env.materials.contains_key("fluid"));
     }
@@ -1878,12 +1831,11 @@ visible = true
     #[test]
     fn test_set_lighting_rig_clears_legacy() {
         let mut settings = Settings::default();
-        // Set legacy v1 lighting
-        settings.set_environment(
-            &NightLightingConfig::default(),
-            &crate::lib::lighting::EnvironmentLightConfig::default(),
-            &MaterialConfig::default(),
-        );
+        // Manually set legacy v1 lighting field
+        let env = settings
+            .environment
+            .get_or_insert_with(EnvironmentSettings::default);
+        env.lighting = Some(LightingSettings::default());
         assert!(settings.environment.as_ref().unwrap().lighting.is_some());
 
         // Now set v2 rig — should clear legacy
