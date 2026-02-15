@@ -4,8 +4,12 @@
 //! the timeline scrubber.  Each section is drawn as a highlighted region with
 //! draggable edge handles.
 //!
-//! Extracted from the monolithic `playback_controls_system` so the drawing
-//! logic is isolated and ready for multi-section support (seaview-wme).
+//! **Multi-section interactions (seaview-wme):**
+//! - **Ctrl+Click** on an empty region to add a new section centred there.
+//! - **Right-click** on an existing section to remove it.
+//! - Sections are colour-coded with alternating hues so the user can tell
+//!   them apart at a glance.
+//! - A small section-count label is drawn at the right edge.
 
 use bevy_egui::egui;
 
@@ -14,15 +18,58 @@ use crate::lib::sequence::Timeline;
 
 /// Persistent drag state tracked across frames.
 ///
-/// Stored in the parent system's `UiState.load_section_dragging` field so that
-/// a drag that starts on one edge stays locked to that edge even if the pointer
-/// drifts away.
+/// Stored in the parent system's `Local` so that a drag that starts on one
+/// edge stays locked to that edge even if the pointer drifts away.
 pub struct LoadSectionDragState {
     /// Which section index is being dragged (index into `timeline.sections`).
     pub section_idx: usize,
     /// Which edge of that section.
     pub edge: LoadSectionEdge,
 }
+
+// ---------------------------------------------------------------------------
+// Colour palette — one fill / handle pair per section (cycles)
+// ---------------------------------------------------------------------------
+
+/// (fill, handle) colour pairs for up to 6 sections; wraps around after that.
+const SECTION_COLORS: [(egui::Color32, egui::Color32); 6] = [
+    (
+        egui::Color32::from_rgb(60, 120, 80),   // green fill
+        egui::Color32::from_rgb(100, 180, 120), // green handle
+    ),
+    (
+        egui::Color32::from_rgb(60, 90, 140),   // blue fill
+        egui::Color32::from_rgb(100, 140, 200), // blue handle
+    ),
+    (
+        egui::Color32::from_rgb(130, 90, 50),  // orange fill
+        egui::Color32::from_rgb(190, 140, 80), // orange handle
+    ),
+    (
+        egui::Color32::from_rgb(110, 60, 120),  // purple fill
+        egui::Color32::from_rgb(170, 110, 180), // purple handle
+    ),
+    (
+        egui::Color32::from_rgb(120, 110, 50), // olive fill
+        egui::Color32::from_rgb(180, 170, 90), // olive handle
+    ),
+    (
+        egui::Color32::from_rgb(50, 120, 120), // teal fill
+        egui::Color32::from_rgb(90, 180, 180), // teal handle
+    ),
+];
+
+fn section_fill(index: usize) -> egui::Color32 {
+    SECTION_COLORS[index % SECTION_COLORS.len()].0
+}
+
+fn section_handle(index: usize) -> egui::Color32 {
+    SECTION_COLORS[index % SECTION_COLORS.len()].1
+}
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
 
 /// Draw the load-section bar for all sections in the timeline.
 ///
@@ -46,20 +93,53 @@ pub fn draw_load_section_bar(
 
         let bar_height = 14.0;
         let handle_width = 8.0;
-        let desired_size = egui::Vec2::new(ui.available_width() - 20.0, bar_height);
-        let (rect, response) =
-            ui.allocate_exact_size(desired_size, egui::Sense::click_and_drag());
+        // Reserve a little space on the right for the section-count label.
+        let label_width = 40.0;
+        let desired_size = egui::Vec2::new(ui.available_width() - 20.0 - label_width, bar_height);
+        let (rect, response) = ui.allocate_exact_size(desired_size, egui::Sense::click_and_drag());
 
         let total = display_total_frames.max(1) as f32;
+        let budget = max_loaded_frames.min(display_total_frames);
 
-        // -----------------------------------------------------------------
+        // =================================================================
+        // Interaction: Ctrl+Click to ADD a section
+        // =================================================================
+        if response.clicked() && ui.input(|i| i.modifiers.ctrl) {
+            if let Some(pos) = response.interact_pointer_pos() {
+                let rel_x = (pos.x - rect.min.x) / rect.width();
+                let frame = (rel_x * total).round().max(0.0) as usize;
+                // Only add if the click is NOT inside an existing section
+                if !timeline.is_frame_loaded(frame) {
+                    let _ = timeline.add_section(frame, budget);
+                }
+            }
+        }
+
+        // =================================================================
+        // Interaction: Right-click to REMOVE a section
+        // =================================================================
+        if response.secondary_clicked() {
+            if let Some(pos) = response.interact_pointer_pos() {
+                let rel_x = (pos.x - rect.min.x) / rect.width();
+                let frame = (rel_x * total).round().max(0.0) as usize;
+                if let Some((idx, _)) = timeline.section_containing_indexed(frame) {
+                    // Don't allow removing the last section (remove_section
+                    // restores a default, but it's a confusing UX to remove
+                    // the only section).
+                    if timeline.sections.len() > 1 {
+                        timeline.remove_section(idx, budget);
+                    }
+                }
+            }
+        }
+
+        // =================================================================
         // Interaction: dragging section edges
-        // -----------------------------------------------------------------
+        // =================================================================
         if response.dragged() {
             if let Some(pos) = response.interact_pointer_pos() {
                 let rel_x = (pos.x - rect.min.x) / rect.width();
                 let frame = (rel_x * total).round().max(0.0) as usize;
-                let budget = max_loaded_frames.min(display_total_frames);
 
                 match drag_state {
                     Some(ref ds) => {
@@ -71,24 +151,29 @@ pub fn draw_load_section_bar(
                                     timeline.sections[idx].set_start(frame, budget);
                                 }
                                 LoadSectionEdge::End => {
-                                    timeline.sections[idx]
-                                        .set_end(frame, display_total_frames, budget);
+                                    timeline.sections[idx].set_end(
+                                        frame,
+                                        display_total_frames,
+                                        budget,
+                                    );
                                 }
                             }
                         }
                     }
                     None => {
                         // Determine which section edge is closest to the pointer
-                        if let Some((idx, edge)) =
-                            closest_edge(&timeline, rect, pos.x, handle_width)
+                        if let Some((idx, edge)) = closest_edge(timeline, rect, pos.x, handle_width)
                         {
                             match edge {
                                 LoadSectionEdge::Start => {
                                     timeline.sections[idx].set_start(frame, budget);
                                 }
                                 LoadSectionEdge::End => {
-                                    timeline.sections[idx]
-                                        .set_end(frame, display_total_frames, budget);
+                                    timeline.sections[idx].set_end(
+                                        frame,
+                                        display_total_frames,
+                                        budget,
+                                    );
                                 }
                             }
                             *drag_state = Some(LoadSectionDragState {
@@ -107,24 +192,23 @@ pub fn draw_load_section_bar(
         // Change cursor when hovering over any section handle
         if response.hovered() {
             if let Some(pos) = ui.ctx().pointer_hover_pos() {
-                if closest_edge(&timeline, rect, pos.x, handle_width).is_some() {
-                    ui.ctx()
-                        .set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                if closest_edge(timeline, rect, pos.x, handle_width).is_some() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
                 }
             }
         }
 
-        // -----------------------------------------------------------------
+        // =================================================================
         // Painting
-        // -----------------------------------------------------------------
+        // =================================================================
         if ui.is_rect_visible(rect) {
             let painter = ui.painter();
 
             // Background (unloaded region)
             painter.rect_filled(rect, 2.0, egui::Color32::from_gray(35));
 
-            // Draw each section
-            for section in &timeline.sections {
+            // Draw each section with its own colour
+            for (i, section) in timeline.sections.iter().enumerate() {
                 let section_start = section.start as f32 / total;
                 let section_end = section.end as f32 / total;
 
@@ -135,38 +219,26 @@ pub fn draw_load_section_bar(
                 let start_x = rect.min.x + rect.width() * section_start;
                 let end_x = rect.min.x + rect.width() * section_end;
 
-                // Loaded region — green
+                // Loaded region
                 let loaded_rect = egui::Rect::from_min_max(
                     egui::pos2(start_x, rect.min.y),
                     egui::pos2(end_x, rect.max.y),
                 );
-                painter.rect_filled(
-                    loaded_rect,
-                    2.0,
-                    egui::Color32::from_rgb(60, 120, 80),
-                );
+                painter.rect_filled(loaded_rect, 2.0, section_fill(i));
 
                 // Left handle
                 let left_handle = egui::Rect::from_min_size(
                     egui::pos2(start_x - handle_width / 2.0, rect.min.y),
                     egui::Vec2::new(handle_width, bar_height),
                 );
-                painter.rect_filled(
-                    left_handle,
-                    2.0,
-                    egui::Color32::from_rgb(100, 180, 120),
-                );
+                painter.rect_filled(left_handle, 2.0, section_handle(i));
 
                 // Right handle
                 let right_handle = egui::Rect::from_min_size(
                     egui::pos2(end_x - handle_width / 2.0, rect.min.y),
                     egui::Vec2::new(handle_width, bar_height),
                 );
-                painter.rect_filled(
-                    right_handle,
-                    2.0,
-                    egui::Color32::from_rgb(100, 180, 120),
-                );
+                painter.rect_filled(right_handle, 2.0, section_handle(i));
             }
 
             // Border
@@ -179,8 +251,22 @@ pub fn draw_load_section_bar(
         }
 
         // Tooltip — summarise all sections
-        let tooltip = section_tooltip(&timeline, max_loaded_frames, display_total_frames);
+        let tooltip = section_tooltip(timeline, max_loaded_frames, display_total_frames);
         response.on_hover_text(tooltip);
+
+        // Section-count label to the right of the bar
+        ui.add_space(4.0);
+        let n = timeline.sections.len();
+        let label_text = if n == 1 {
+            "1 section".to_string()
+        } else {
+            format!("{} sections", n)
+        };
+        ui.label(
+            egui::RichText::new(label_text)
+                .small()
+                .color(egui::Color32::from_gray(140)),
+        );
     });
 }
 
@@ -233,14 +319,17 @@ fn section_tooltip(
     if timeline.sections.len() == 1 {
         let s = &timeline.sections[0];
         format!(
-            "Loaded: frames {} – {} ({} frames)\nMax: {} frames\nDrag edges to adjust",
+            "Loaded: frames {} – {} ({} frames)\n\
+             Max: {} frames\n\
+             Drag edges to adjust\n\
+             Ctrl+Click empty area to add a section",
             s.start,
             s.end.saturating_sub(1),
             s.frame_count(),
             budget,
         )
     } else {
-        let mut lines = Vec::with_capacity(timeline.sections.len() + 2);
+        let mut lines = Vec::with_capacity(timeline.sections.len() + 4);
         for (i, s) in timeline.sections.iter().enumerate() {
             lines.push(format!(
                 "Section {}: {} – {} ({} frames)",
@@ -255,7 +344,10 @@ fn section_tooltip(
             timeline.total_loaded(),
             budget,
         ));
+        lines.push(String::new());
         lines.push("Drag edges to adjust".to_string());
+        lines.push("Ctrl+Click empty area to add a section".to_string());
+        lines.push("Right-click a section to remove it".to_string());
         lines.join("\n")
     }
 }
