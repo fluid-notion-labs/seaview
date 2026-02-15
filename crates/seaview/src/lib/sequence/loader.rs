@@ -24,7 +24,7 @@ use bevy::gltf::GltfAssetLabel;
 use bevy::prelude::*;
 use std::path::PathBuf;
 
-use super::{compute_spawn_window, SequenceManager, Timeline};
+use super::{compute_spawn_windows, SequenceManager, Timeline};
 
 use crate::app::ui::state::RenderConfig;
 use crate::lib::memory_budget::{estimate_mesh_gpu_bytes_from_vertices, MemoryBudget};
@@ -506,7 +506,7 @@ fn manage_frame_window(
     timeline: Res<Timeline>,
     render_config: Res<RenderConfig>,
     mut visibility_query: Query<&mut Visibility, With<SequenceMeshDisplay>>,
-    mut prev_window: Local<(usize, usize)>,
+    mut prev_windows: Local<Vec<(usize, usize)>>,
     mut memory_budget: ResMut<MemoryBudget>,
 ) {
     if sequence_assets.total_frames == 0 {
@@ -519,126 +519,115 @@ fn manage_frame_window(
 
     let current = timeline.playhead;
 
-    // Entity spawning uses RenderConfig::frame_window_size (small sliding window
-    // around the current frame) to keep entity count low. The load sections
-    // control which frames are *loaded as assets* (budget-level), but we only
-    // *spawn* entities for a small window within that range.
-    let section = timeline.section();
-    let (win_lo, win_hi) = compute_spawn_window(
+    // Compute spawn windows across ALL load sections.  Each section may
+    // contribute a window if it overlaps the render region centred on the
+    // playhead.  The union of these windows is the set of frames we want
+    // spawned as entities.
+    let new_windows = compute_spawn_windows(
         current,
         render_config.frame_window_size,
-        section.start,
-        section.end,
+        &timeline.sections,
         sequence_assets.total_frames,
     );
+
     let transform = sequence_assets.coord_transform;
     let frame_bytes = sequence_assets.estimated_frame_bytes;
 
-    let (old_lo, old_hi) = *prev_window;
+    // Helper: check if `idx` falls inside any of the given window ranges.
+    let in_windows = |idx: usize, windows: &[(usize, usize)]| -> bool {
+        windows.iter().any(|&(lo, hi)| idx >= lo && idx < hi)
+    };
 
-    // 1. Despawn entities that left the window (O(delta), not O(total_frames)).
-    //    Two ranges to check: old left side that fell off, old right side that fell off.
-    //    Left eviction: [old_lo, min(old_hi, win_lo))
-    //    Right eviction: [max(old_lo, win_hi), old_hi)
-    let evict_left_end = old_hi.min(win_lo);
-    for idx in old_lo..evict_left_end {
-        if let Some(entity) = sequence_assets.frame_entities[idx].take() {
-            if let Ok(mut vis) = visibility_query.get_mut(entity) {
-                *vis = Visibility::Hidden;
+    // 1. Despawn entities that were in old windows but are NOT in new windows.
+    for &(old_lo, old_hi) in prev_windows.iter() {
+        for idx in old_lo..old_hi {
+            if in_windows(idx, &new_windows) {
+                continue; // still needed
             }
-            commands.entity(entity).despawn();
-            // Track memory freed
-            if frame_bytes > 0 {
-                memory_budget.record_frame_unloaded(frame_bytes);
-            }
-        }
-    }
-    let evict_right_start = old_lo.max(win_hi);
-    for idx in evict_right_start..old_hi {
-        if let Some(entity) = sequence_assets.frame_entities[idx].take() {
-            if let Ok(mut vis) = visibility_query.get_mut(entity) {
-                *vis = Visibility::Hidden;
-            }
-            commands.entity(entity).despawn();
-            // Track memory freed
-            if frame_bytes > 0 {
-                memory_budget.record_frame_unloaded(frame_bytes);
+            if let Some(entity) = sequence_assets.frame_entities[idx].take() {
+                if let Ok(mut vis) = visibility_query.get_mut(entity) {
+                    *vis = Visibility::Hidden;
+                }
+                commands.entity(entity).despawn();
+                if frame_bytes > 0 {
+                    memory_budget.record_frame_unloaded(frame_bytes);
+                }
             }
         }
     }
 
-    // 2. Spawn entities inside the window that are loaded but not yet spawned.
-    //    Newly-spawned entities won't be visible to queries until Commands are
-    //    applied, but they are spawned with the correct Visibility component.
-    for idx in win_lo..win_hi {
-        if sequence_assets.frame_entities[idx].is_some() {
-            continue; // already spawned
+    // 2. Spawn entities that are in new windows but were NOT in old windows.
+    for &(win_lo, win_hi) in &new_windows {
+        for idx in win_lo..win_hi {
+            if sequence_assets.frame_entities[idx].is_some() {
+                continue; // already spawned
+            }
+            if !sequence_assets.is_frame_loaded(idx) {
+                continue; // asset not ready yet
+            }
+            let Some(handle) = sequence_assets.get_frame(idx).cloned() else {
+                continue;
+            };
+
+            let visibility = if idx == current {
+                Visibility::Visible
+            } else {
+                Visibility::Hidden
+            };
+
+            let entity = commands
+                .spawn((
+                    Mesh3d(handle),
+                    MeshMaterial3d(material.clone()),
+                    transform,
+                    SequenceMeshDisplay,
+                    visibility,
+                    Name::new(format!("Frame {}", idx)),
+                ))
+                .id();
+
+            sequence_assets.frame_entities[idx] = Some(entity);
+
+            if frame_bytes > 0 {
+                memory_budget.record_frame_loaded(frame_bytes);
+            }
+
+            debug!(
+                "Spawned frame {} entity {:?} (window [{}, {}))",
+                idx, entity, win_lo, win_hi
+            );
         }
-        if !sequence_assets.is_frame_loaded(idx) {
-            continue; // asset not ready yet
-        }
-        let Some(handle) = sequence_assets.get_frame(idx).cloned() else {
-            continue;
-        };
-
-        let visibility = if idx == current {
-            Visibility::Visible
-        } else {
-            Visibility::Hidden
-        };
-
-        let entity = commands
-            .spawn((
-                Mesh3d(handle),
-                MeshMaterial3d(material.clone()),
-                transform,
-                SequenceMeshDisplay,
-                visibility,
-                Name::new(format!("Frame {}", idx)),
-            ))
-            .id();
-
-        sequence_assets.frame_entities[idx] = Some(entity);
-
-        // Track memory used
-        if frame_bytes > 0 {
-            memory_budget.record_frame_loaded(frame_bytes);
-        }
-
-        debug!(
-            "Spawned frame {} entity {:?} (window [{}, {}))",
-            idx, entity, win_lo, win_hi
-        );
     }
 
     // Log window changes
-    if (win_lo, win_hi) != (old_lo, old_hi) {
+    if new_windows != *prev_windows {
         debug!(
-            "Frame window changed: [{}..{}) → [{}..{}), current frame: {}",
-            old_lo, old_hi, win_lo, win_hi, current
+            "Frame windows changed: {:?} → {:?}, current frame: {}",
+            *prev_windows, new_windows, current
         );
     }
 
-    // 3. Set visibility on all already-existing entities in the window.
+    // 3. Set visibility on all entities across all windows.
     //    Only the current frame is Visible; everything else is Hidden.
-    //    This is a direct query mutation — takes effect this frame, no flicker.
-    for idx in win_lo..win_hi {
-        if let Some(Some(entity)) = sequence_assets.frame_entities.get(idx) {
-            if let Ok(mut vis) = visibility_query.get_mut(*entity) {
-                let desired = if idx == current {
-                    Visibility::Visible
-                } else {
-                    Visibility::Hidden
-                };
-                if *vis != desired {
-                    *vis = desired;
+    for &(win_lo, win_hi) in &new_windows {
+        for idx in win_lo..win_hi {
+            if let Some(Some(entity)) = sequence_assets.frame_entities.get(idx) {
+                if let Ok(mut vis) = visibility_query.get_mut(*entity) {
+                    let desired = if idx == current {
+                        Visibility::Visible
+                    } else {
+                        Visibility::Hidden
+                    };
+                    if *vis != desired {
+                        *vis = desired;
+                    }
                 }
             }
         }
     }
 
     sequence_assets.displayed_frame = Some(current);
-    *prev_window = (win_lo, win_hi);
+    *prev_windows = new_windows;
 }
 
 /// Helper function to trigger loading a sequence from discovered frames

@@ -638,6 +638,11 @@ impl SequenceManager {
 
 /// Timer-based auto-advance. Reads `SequenceManager` for playback state,
 /// writes `Timeline.playhead`.
+///
+/// When multiple load sections exist the playhead skips over gaps between
+/// sections — it jumps from the end of one section to the start of the
+/// next.  If the playhead is past the last section and looping is enabled
+/// it wraps to the first loaded frame.
 fn advance_playback(
     mut sm: ResMut<SequenceManager>,
     mut timeline: ResMut<Timeline>,
@@ -655,14 +660,33 @@ fn advance_playback(
     while *accumulator >= frame_duration {
         *accumulator -= frame_duration;
 
-        if timeline.playhead + 1 < timeline.total_frames {
-            timeline.playhead += 1;
-        } else if sm.loop_enabled {
-            timeline.playhead = 0;
+        let next_candidate = timeline.playhead + 1;
+
+        if next_candidate >= timeline.total_frames {
+            // Past the end of the whole sequence
+            if sm.loop_enabled {
+                // Wrap to the first loaded frame (start of first section)
+                timeline.playhead = timeline.next_loaded_frame(0).unwrap_or(0);
+            } else {
+                sm.is_playing = false;
+                *accumulator = 0.0;
+                break;
+            }
+        } else if timeline.is_frame_loaded(next_candidate) {
+            // Next frame is inside a loaded section — simple advance
+            timeline.playhead = next_candidate;
         } else {
-            sm.is_playing = false;
-            *accumulator = 0.0;
-            break;
+            // Next frame is in a gap — skip to the start of the next section
+            if let Some(next) = timeline.next_loaded_frame(next_candidate) {
+                timeline.playhead = next;
+            } else if sm.loop_enabled {
+                // No section ahead — wrap around
+                timeline.playhead = timeline.next_loaded_frame(0).unwrap_or(0);
+            } else {
+                sm.is_playing = false;
+                *accumulator = 0.0;
+                break;
+            }
         }
     }
 }
