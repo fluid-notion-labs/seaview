@@ -25,9 +25,19 @@ bd ready              # See available work
 
 Issue **seaview-437** is the living session context. It is always open (P0) and contains the full project state, architecture overview, open issues, and handoff notes from the last session. **Read it first.**
 
-## `!context` Command
+## `!lc` Command
 
-When the user says **`!context`**, update seaview-437's notes with the current session state:
+`!lcc` means, load context and continue: !lc + continue
+
+When the user says **`!lc`**, check issue seaview-437:
+
+```bash
+bd show seaview-437
+```
+
+## `!sc` Command
+
+When the user says **`!sc`**, update seaview-437's notes with the current session state:
 
 ```bash
 bd update seaview-437 --notes "## Session Context (DATE)
@@ -39,7 +49,7 @@ bd update seaview-437 --notes "## Session Context (DATE)
 ### Test status ..."
 ```
 
-This issue is **never closed**. Always update it before ending a session.
+
 
 ## Quick Reference
 
@@ -81,4 +91,3 @@ bd sync               # Sync with git
 - NEVER stop before pushing - that leaves work stranded locally
 - NEVER say "ready to push when you are" - YOU must push
 - If push fails, resolve and retry until it succeeds
-
