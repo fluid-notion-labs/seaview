@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 
 use crate::app::ui::state::MaterialConfig;
 use crate::lib::lighting::{NightLightingConfig, PlacementAlgorithm};
+use crate::lib::sequence::LoadSection;
 
 /// Filename used for per-directory settings
 pub const SETTINGS_FILENAME: &str = "seaview.toml";
@@ -196,6 +197,32 @@ impl LoadSectionSettings {
             self.start = new_start;
             self.end = new_end;
         }
+    }
+}
+
+// -- Conversions between LoadSectionSettings ↔ LoadSection ----------------
+
+impl From<LoadSectionSettings> for LoadSection {
+    fn from(s: LoadSectionSettings) -> Self {
+        LoadSection::new(s.start, s.end)
+    }
+}
+
+impl From<&LoadSectionSettings> for LoadSection {
+    fn from(s: &LoadSectionSettings) -> Self {
+        LoadSection::new(s.start, s.end)
+    }
+}
+
+impl From<LoadSection> for LoadSectionSettings {
+    fn from(s: LoadSection) -> Self {
+        LoadSectionSettings::new(s.start, s.end)
+    }
+}
+
+impl From<&LoadSection> for LoadSectionSettings {
+    fn from(s: &LoadSection) -> Self {
+        LoadSectionSettings::new(s.start, s.end)
     }
 }
 
@@ -445,13 +472,57 @@ pub struct Settings {
     pub environment: Option<EnvironmentSettings>,
 
     // -- memory / loading -------------------------------------------------
-    /// Load section defining which frames to keep in memory.
+    /// Single load section (legacy / single-window mode).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub load_section: Option<LoadSectionSettings>,
+
+    /// Multiple load sections for non-contiguous playback.
+    /// Takes precedence over `load_section` when present.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub load_sections: Vec<LoadSectionSettings>,
 }
 
 impl Settings {
-    // -- migration --------------------------------------------------------
+    /// Get all configured load sections as runtime [`LoadSection`] values.
+    ///
+    /// Resolution order:
+    /// 1. `load_sections` (plural) if non-empty
+    /// 2. `load_section` (singular) wrapped in a `Vec`
+    /// 3. Empty `Vec` (no sections configured)
+    pub fn get_load_sections(&self) -> Vec<LoadSection> {
+        if !self.load_sections.is_empty() {
+            self.load_sections.iter().map(LoadSection::from).collect()
+        } else if let Some(ref single) = self.load_section {
+            vec![LoadSection::from(single)]
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Set load sections from runtime [`LoadSection`] values.
+    ///
+    /// If there is exactly one section, stores it in `load_section` (singular)
+    /// for backward-compatible TOML output. Otherwise uses `load_sections`.
+    pub fn set_load_sections(&mut self, sections: &[LoadSection]) {
+        match sections.len() {
+            0 => {
+                self.load_section = None;
+                self.load_sections.clear();
+            }
+            1 => {
+                self.load_section = Some(LoadSectionSettings::from(&sections[0]));
+                self.load_sections.clear();
+            }
+            _ => {
+                self.load_section = None;
+                self.load_sections = sections.iter().map(LoadSectionSettings::from).collect();
+            }
+        }
+    }
+}
+
+impl Settings {
+    // -- migration (continued) --------------------------------------------
 
     /// Migrate legacy `[camera]` → `cameras["default"]`.
     ///
@@ -782,6 +853,7 @@ mod tests {
             mesh: None,
             environment: None,
             load_section: None,
+            load_sections: vec![],
         };
 
         let toml_str = toml::to_string_pretty(&settings).unwrap();
@@ -1247,6 +1319,7 @@ alpha_cutoff = 0.5
                 },
             }),
             load_section: None,
+            load_sections: vec![],
         };
 
         settings.save_to_dir(&dir).unwrap();

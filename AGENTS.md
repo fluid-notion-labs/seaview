@@ -2,6 +2,18 @@
 
 This project uses **bd** (beads) for issue tracking. Run `bd onboard` to get started.
 
+## Architecture
+
+**Read [`docs/architecture.md`](docs/architecture.md) for the full reference.** Key rules:
+
+- **`lib/`** = pure logic. No system signatures, no ECS queries. Methods take plain args, return plain results. Testable without Bevy.
+- **`app/`** = Bevy integration. Systems are thin wrappers: read resources → call `lib/` functions → write back.
+- **`bin/`** = standalone tools. Import from `lib/` public API only, never from `app/`.
+- **No UI state in domain structs.** Interaction state (drag, hover, selection) lives in `UiState`.
+- **One authoritative resource per domain.** Everything else is a mirror (e.g. `UiState.playback` mirrors `Timeline` + `SequenceManager`).
+- **Extract pure functions.** If a system has >20 lines of logic, pull it into a testable `lib/` function.
+- **File size signals.** Systems >200 lines, modules >500 lines (excl. tests) → split.
+
 ## Starting a Session
 
 **Always start here:**
