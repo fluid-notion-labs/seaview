@@ -33,15 +33,6 @@ pub struct LoadSection {
     pub start: usize,
     /// End frame index (exclusive)
     pub end: usize,
-    /// Whether the user is currently dragging an edge
-    pub dragging: Option<LoadSectionEdge>,
-}
-
-/// Which edge of the load section is being dragged
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LoadSectionEdge {
-    Start,
-    End,
 }
 
 impl Default for LoadSection {
@@ -49,7 +40,6 @@ impl Default for LoadSection {
         Self {
             start: 0,
             end: usize::MAX, // Will be clamped to actual sequence length
-            dragging: None,
         }
     }
 }
@@ -57,11 +47,7 @@ impl Default for LoadSection {
 impl LoadSection {
     /// Create a new load section
     pub fn new(start: usize, end: usize) -> Self {
-        Self {
-            start,
-            end,
-            dragging: None,
-        }
+        Self { start, end }
     }
 
     /// Get the number of frames in this section
@@ -478,7 +464,6 @@ mod tests {
         assert_eq!(ls.start, 10);
         assert_eq!(ls.end, 50);
         assert_eq!(ls.frame_count(), 40);
-        assert!(ls.dragging.is_none());
     }
 
     #[test]

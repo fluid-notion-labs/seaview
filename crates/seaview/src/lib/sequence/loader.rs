@@ -301,7 +301,6 @@ fn handle_load_requests(
         };
         load_section.start = 0;
         load_section.end = n.min(max_frames);
-        load_section.dragging = None;
         info!(
             "LoadSection initialized: frames 0..{} (total: {}, budget max: {})",
             load_section.end, n, max_frames

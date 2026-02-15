@@ -13,9 +13,12 @@ use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 
 use crate::app::systems::camera::{CenterOnMeshEvent, FpsCamera};
+use crate::app::ui::state::LoadSectionEdge;
 use crate::app::ui::state::UiState;
 use crate::lib::memory_budget::MemoryBudget;
-use crate::lib::sequence::{LoadSection, LoadingPhase, LoadingPhaseState, SequenceManager, WatchConfig};
+use crate::lib::sequence::{
+    LoadSection, LoadingPhase, LoadingPhaseState, SequenceManager, WatchConfig,
+};
 use crate::lib::settings::{CameraSettings, SaveViewEvent, SavedCameras};
 
 /// System that renders the playback controls panel.
@@ -25,7 +28,7 @@ use crate::lib::settings::{CameraSettings, SaveViewEvent, SavedCameras};
 /// speed slider, loop checkbox, timeline scrubber).
 pub fn playback_controls_system(
     mut contexts: EguiContexts,
-    ui_state: Res<UiState>,
+    mut ui_state: ResMut<UiState>,
     mut center_events: MessageWriter<CenterOnMeshEvent>,
     mut save_view_events: MessageWriter<SaveViewEvent>,
     time: Res<Time>,
@@ -443,27 +446,27 @@ pub fn playback_controls_system(
                                 let near_start = (pos.x - start_x).abs() < handle_width * 1.5;
                                 let near_end = (pos.x - end_x).abs() < handle_width * 1.5;
 
-                                match load_section.dragging {
-                                    Some(crate::lib::sequence::LoadSectionEdge::Start) => {
+                                match ui_state.load_section_dragging {
+                                    Some(LoadSectionEdge::Start) => {
                                         load_section.set_start(frame, max_frames);
                                     }
-                                    Some(crate::lib::sequence::LoadSectionEdge::End) => {
+                                    Some(LoadSectionEdge::End) => {
                                         load_section.set_end(frame, display_total_frames, max_frames);
                                     }
                                     None => {
                                         // Start a new drag
                                         if near_start && !near_end {
-                                            load_section.dragging = Some(crate::lib::sequence::LoadSectionEdge::Start);
+                                            ui_state.load_section_dragging = Some(LoadSectionEdge::Start);
                                             load_section.set_start(frame, max_frames);
                                         } else if near_end {
-                                            load_section.dragging = Some(crate::lib::sequence::LoadSectionEdge::End);
+                                            ui_state.load_section_dragging = Some(LoadSectionEdge::End);
                                             load_section.set_end(frame, display_total_frames, max_frames);
                                         }
                                     }
                                 }
                             }
                         } else {
-                            load_section.dragging = None;
+                            ui_state.load_section_dragging = None;
                         }
 
                         // Change cursor when hovering over handles

@@ -61,6 +61,16 @@ pub struct UiState {
 
     /// Collapsible section state for accordion UI
     pub collapsible: CollapsibleState,
+
+    /// Which load-section edge the user is currently dragging (if any)
+    pub load_section_dragging: Option<LoadSectionEdge>,
+}
+
+/// Which edge of the load section the user is dragging in the timeline UI
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoadSectionEdge {
+    Start,
+    End,
 }
 
 /// Playback control state
