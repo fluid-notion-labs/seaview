@@ -23,8 +23,12 @@ use crate::lib::sequence::Timeline;
 pub struct LoadSectionDragState {
     /// Which section index is being dragged (index into `timeline.sections`).
     pub section_idx: usize,
-    /// Which edge of that section.
+    /// Which edge of that section (or `Body` for whole-section move).
     pub edge: LoadSectionEdge,
+    /// For `Body` drags: the frame offset from section start to the grab point.
+    /// E.g. if the section starts at frame 100 and the user clicks at frame 130,
+    /// `grab_offset` is 30 so the section tracks the mouse naturally.
+    pub grab_offset: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -157,13 +161,24 @@ pub fn draw_load_section_bar(
                                         budget,
                                     );
                                 }
+                                LoadSectionEdge::Body => {
+                                    let new_start = frame.saturating_sub(ds.grab_offset);
+                                    timeline.sections[idx].move_to(new_start, display_total_frames);
+                                }
                             }
                         }
                     }
                     None => {
-                        // Determine which section edge is closest to the pointer
-                        if let Some((idx, edge)) = closest_edge(timeline, rect, pos.x, handle_width)
+                        // Determine which section edge (or body) is closest to the pointer
+                        if let Some((idx, edge)) =
+                            hit_test_section(timeline, rect, pos.x, handle_width)
                         {
+                            let grab_offset = match edge {
+                                LoadSectionEdge::Body => {
+                                    frame.saturating_sub(timeline.sections[idx].start)
+                                }
+                                _ => 0,
+                            };
                             match edge {
                                 LoadSectionEdge::Start => {
                                     timeline.sections[idx].set_start(frame, budget);
@@ -175,10 +190,15 @@ pub fn draw_load_section_bar(
                                         budget,
                                     );
                                 }
+                                LoadSectionEdge::Body => {
+                                    let new_start = frame.saturating_sub(grab_offset);
+                                    timeline.sections[idx].move_to(new_start, display_total_frames);
+                                }
                             }
                             *drag_state = Some(LoadSectionDragState {
                                 section_idx: idx,
                                 edge,
+                                grab_offset,
                             });
                         }
                     }
@@ -189,11 +209,17 @@ pub fn draw_load_section_bar(
             *drag_state = None;
         }
 
-        // Change cursor when hovering over any section handle
+        // Change cursor when hovering over section handles or body
         if response.hovered() {
             if let Some(pos) = ui.ctx().pointer_hover_pos() {
-                if closest_edge(timeline, rect, pos.x, handle_width).is_some() {
-                    ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                match hit_test_section(timeline, rect, pos.x, handle_width) {
+                    Some((_, LoadSectionEdge::Start | LoadSectionEdge::End)) => {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                    }
+                    Some((_, LoadSectionEdge::Body)) => {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+                    }
+                    None => {}
                 }
             }
         }
@@ -274,17 +300,21 @@ pub fn draw_load_section_bar(
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Find the section edge closest to `pointer_x` within `threshold` pixels.
+/// Hit-test the load-section bar: edges first, then body.
 ///
-/// Returns `(section_index, edge)` or `None` if no edge is close enough.
-fn closest_edge(
+/// Returns `(section_index, edge_or_body)` or `None` if pointer is on empty
+/// background.  Edge handles have priority over the body so that thin sections
+/// are still resizable.
+fn hit_test_section(
     timeline: &Timeline,
     rect: egui::Rect,
     pointer_x: f32,
-    threshold: f32,
+    handle_threshold: f32,
 ) -> Option<(usize, LoadSectionEdge)> {
     let total = timeline.total_frames.max(1) as f32;
-    let mut best: Option<(usize, LoadSectionEdge, f32)> = None;
+
+    // Pass 1: check edges (highest priority)
+    let mut best_edge: Option<(usize, LoadSectionEdge, f32)> = None;
 
     for (i, section) in timeline.sections.iter().enumerate() {
         let start_x = rect.min.x + rect.width() * (section.start as f32 / total);
@@ -293,19 +323,33 @@ fn closest_edge(
         let d_start = (pointer_x - start_x).abs();
         let d_end = (pointer_x - end_x).abs();
 
-        if d_start < threshold * 1.5 {
-            if best.as_ref().map_or(true, |b| d_start < b.2) {
-                best = Some((i, LoadSectionEdge::Start, d_start));
+        if d_start < handle_threshold * 1.5 {
+            if best_edge.as_ref().map_or(true, |b| d_start < b.2) {
+                best_edge = Some((i, LoadSectionEdge::Start, d_start));
             }
         }
-        if d_end < threshold * 1.5 {
-            if best.as_ref().map_or(true, |b| d_end < b.2) {
-                best = Some((i, LoadSectionEdge::End, d_end));
+        if d_end < handle_threshold * 1.5 {
+            if best_edge.as_ref().map_or(true, |b| d_end < b.2) {
+                best_edge = Some((i, LoadSectionEdge::End, d_end));
             }
         }
     }
 
-    best.map(|(idx, edge, _)| (idx, edge))
+    if let Some((idx, edge, _)) = best_edge {
+        return Some((idx, edge));
+    }
+
+    // Pass 2: check section bodies (pointer is inside but not near an edge)
+    for (i, section) in timeline.sections.iter().enumerate() {
+        let start_x = rect.min.x + rect.width() * (section.start as f32 / total);
+        let end_x = rect.min.x + rect.width() * (section.end as f32 / total);
+
+        if pointer_x >= start_x && pointer_x <= end_x {
+            return Some((i, LoadSectionEdge::Body));
+        }
+    }
+
+    None
 }
 
 /// Build a tooltip string summarising all sections.

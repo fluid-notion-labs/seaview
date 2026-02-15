@@ -15,10 +15,18 @@ use crate::lib::sequence::{LoadingPhase, LoadingPhaseState, WatchConfig};
 #[derive(Resource, Default)]
 pub struct PreviousLoadingPhaseState {
     pub state: LoadingPhaseState,
+    /// Whether assets were loading on the previous frame.
+    pub was_loading: bool,
+    /// Loaded frame count on the previous frame (for progress toasts).
+    pub prev_loaded: usize,
 }
 
 /// System that keeps the toast clock in sync with Bevy's `Time` and
 /// detects `LoadingPhase` transitions to fire informational toasts.
+///
+/// Also watches `UiState.loading` for section-level load start/complete
+/// transitions (e.g. when the user drags a section to a new position and
+/// `sync_section_loads` kicks off new asset loads).
 ///
 /// Registered in `UiSystemsPlugin` as an `Update` system (not an egui pass).
 pub fn toast_events_system(
@@ -31,15 +39,35 @@ pub fn toast_events_system(
     // ── 1. Tick the toast clock ────────────────────────────────────
     ui_state.update_toast_clock(time.elapsed_secs_f64());
 
-    // ── 2. Detect phase transitions ────────────────────────────────
+    let now = time.elapsed_secs_f64();
+
+    // ── 2. Detect asset loading transitions (section sync) ─────────
+    let is_loading = ui_state.loading.is_loading;
+    let loaded = ui_state.loading.loaded_frames;
+
+    if is_loading && !prev_phase.was_loading {
+        // Loading just started (section moved / new section added)
+        let total = ui_state.loading.total_frames;
+        ui_state
+            .toasts
+            .info(format!("Loading frames… ({}/{})", loaded, total), now);
+    } else if !is_loading && prev_phase.was_loading && loaded > 0 {
+        // Loading just finished
+        ui_state
+            .toasts
+            .success(format!("✓ {} frames loaded", loaded), now);
+    }
+
+    prev_phase.was_loading = is_loading;
+    prev_phase.prev_loaded = loaded;
+
+    // ── 3. Detect phase transitions ────────────────────────────────
     let current = loading_phase.state;
     let previous = prev_phase.state;
 
     if current == previous {
         return;
     }
-
-    let now = time.elapsed_secs_f64();
 
     match (previous, current) {
         // Initial discovery started
@@ -54,7 +82,9 @@ pub fn toast_events_system(
 
         // Initial load → watching
         (LoadingPhaseState::InitialLoading, LoadingPhaseState::Watching) => {
-            ui_state.toasts.success("Sequence loaded — watching for new frames", now);
+            ui_state
+                .toasts
+                .success("Sequence loaded — watching for new frames", now);
         }
 
         // Initial load → idle (watch not enabled)
@@ -97,10 +127,7 @@ pub fn toast_events_system(
 
         // Fallback for any other transition we haven't thought of
         _ => {
-            debug!(
-                "Loading phase transition: {:?} → {:?}",
-                previous, current
-            );
+            debug!("Loading phase transition: {:?} → {:?}", previous, current);
         }
     }
 

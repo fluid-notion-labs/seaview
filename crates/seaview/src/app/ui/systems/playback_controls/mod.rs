@@ -53,12 +53,6 @@ pub fn playback_controls_system(
     let display_total_frames = ui_state.playback.total_frames;
     let display_is_playing = ui_state.playback.is_playing;
 
-    // Loading state
-    let loading_is_loading = ui_state.loading.is_loading;
-    let loading_loaded_frames = ui_state.loading.loaded_frames;
-    let loading_total_frames = ui_state.loading.total_frames;
-    let loading_progress = ui_state.loading.progress();
-
     let panel_height = ui_state.panel_sizes.playback_panel_height;
     let delta_secs = time.delta_secs();
 
@@ -78,33 +72,6 @@ pub fn playback_controls_system(
             ui.add_space(5.0);
 
             ui.vertical(|ui| {
-                // -- Loading progress bar (fixed height — always present) -----
-                // Always allocate the same space whether loading or not so
-                // the layout never shifts during section edge drags.
-                ui.horizontal(|ui| {
-                    ui.add_space(10.0);
-                    if loading_is_loading {
-                        ui.add(
-                            egui::ProgressBar::new(loading_progress)
-                                .text(format!(
-                                    "{}/{}  ({:.0}%)",
-                                    loading_loaded_frames,
-                                    loading_total_frames,
-                                    loading_progress * 100.0
-                                ))
-                                .desired_width(ui.available_width() - 20.0),
-                        );
-                    } else {
-                        // Empty bar placeholder — same height, no visual noise
-                        ui.add(
-                            egui::ProgressBar::new(0.0)
-                                .text("")
-                                .desired_width(ui.available_width() - 20.0),
-                        );
-                    }
-                    ui.add_space(10.0);
-                });
-
                 // -- Transport controls row ----------------------------------
                 transport_actions = transport::draw_transport_row(
                     ui,

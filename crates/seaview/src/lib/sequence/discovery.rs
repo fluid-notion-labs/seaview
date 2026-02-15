@@ -1,28 +1,67 @@
 //! Sequence discovery module for finding mesh file sequences
+//!
+//! Directory scanning runs on Bevy's [`IoTaskPool`] so the main thread never
+//! blocks on filesystem I/O.  The two-system split works as follows:
+//!
+//! 1. **`start_async_discovery`** — picks up [`DiscoverSequenceRequest`]
+//!    components, spawns an I/O task, and replaces the component with a
+//!    [`PendingDiscovery`] that holds the in-flight [`Task`].
+//! 2. **`poll_async_discovery`** — each frame, checks whether any pending
+//!    tasks have completed.  When one finishes it fires the appropriate
+//!    events and kicks off asset loading.
 
 use super::{loader::LoadSequenceRequest, FrameInfo, Sequence, SequenceEvent, SequenceManager};
 use bevy::prelude::*;
+use bevy::tasks::{block_on, IoTaskPool, Task};
 use regex::Regex;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+// ---------------------------------------------------------------------------
+// Plugin
+// ---------------------------------------------------------------------------
 
 /// Plugin for sequence discovery functionality
 pub struct SequenceDiscoveryPlugin;
 
 impl Plugin for SequenceDiscoveryPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, handle_discovery_requests);
+        app.add_systems(
+            Update,
+            (start_async_discovery, poll_async_discovery).chain(),
+        );
     }
 }
 
-/// Component that requests sequence discovery in a directory
+// ---------------------------------------------------------------------------
+// Components / resources
+// ---------------------------------------------------------------------------
+
+/// Component that requests sequence discovery in a directory.
+///
+/// Attach this to an entity and the discovery systems will pick it up,
+/// start an async scan, and eventually fire [`SequenceEvent`]s and a
+/// [`LoadSequenceRequest`].
 #[derive(Component)]
 pub struct DiscoverSequenceRequest {
     pub directory: PathBuf,
     pub recursive: bool,
     pub source_orientation: crate::lib::coordinates::SourceOrientation,
 }
+
+/// Component attached while an async discovery task is in flight.
+///
+/// Replaces [`DiscoverSequenceRequest`] for the duration of the scan so the
+/// start system doesn't re-trigger on the same entity.
+#[derive(Component)]
+struct PendingDiscovery {
+    task: Task<Result<Vec<Sequence>, String>>,
+}
+
+// ---------------------------------------------------------------------------
+// Patterns
+// ---------------------------------------------------------------------------
 
 /// Resource for managing sequence discovery patterns
 #[derive(Resource)]
@@ -99,33 +138,71 @@ impl SequencePattern {
     }
 }
 
-/// System that handles sequence discovery requests
-fn handle_discovery_requests(
+// ---------------------------------------------------------------------------
+// Systems
+// ---------------------------------------------------------------------------
+
+/// System that picks up [`DiscoverSequenceRequest`] components and kicks off
+/// an async filesystem scan on the I/O task pool.
+///
+/// The request component is removed and replaced with [`PendingDiscovery`]
+/// which holds the in-flight task handle.
+fn start_async_discovery(
     mut commands: Commands,
     query: Query<(Entity, &DiscoverSequenceRequest)>,
+    mut events: MessageWriter<SequenceEvent>,
+) {
+    let pool = IoTaskPool::get();
+
+    for (entity, request) in query.iter() {
+        let directory = request.directory.clone();
+        let recursive = request.recursive;
+        let source_orientation = request.source_orientation;
+
+        debug!("Starting async discovery in: {:?}", directory);
+        events.write(SequenceEvent::DiscoveryStarted(directory.clone()));
+
+        // Capture values for the async closure.
+        let dir = directory.clone();
+        let task = pool.spawn(async move {
+            // Everything inside here runs OFF the main thread.
+            discover_sequences_blocking(&dir, recursive, source_orientation)
+                .map_err(|e| format!("{e}"))
+        });
+
+        // Swap the request component for a pending handle.
+        commands
+            .entity(entity)
+            .remove::<DiscoverSequenceRequest>()
+            .insert(PendingDiscovery { task });
+    }
+}
+
+/// System that polls in-flight discovery tasks each frame and, when one
+/// completes, fires events and triggers asset loading.
+fn poll_async_discovery(
+    mut commands: Commands,
+    mut pending_query: Query<(Entity, &mut PendingDiscovery)>,
     mut sequence_manager: ResMut<SequenceManager>,
     mut events: MessageWriter<SequenceEvent>,
     mut load_events: MessageWriter<LoadSequenceRequest>,
-    patterns: Option<Res<SequencePatterns>>,
 ) {
-    // Use default patterns if none provided
-    let default_patterns = SequencePatterns::default();
-    let patterns = patterns.as_deref().unwrap_or(&default_patterns);
+    for (entity, mut pending) in pending_query.iter_mut() {
+        if !pending.task.is_finished() {
+            continue;
+        }
 
-    for (entity, request) in query.iter() {
-        debug!("Discovering sequences in: {:?}", request.directory);
-        events.write(SequenceEvent::DiscoveryStarted(request.directory.clone()));
+        // Task is done — retrieve the result.  Because `is_finished()` was
+        // true this `block_on` returns immediately without actually blocking.
+        let result = block_on(&mut pending.task);
 
-        match discover_sequences(
-            &request.directory,
-            request.recursive,
-            patterns,
-            request.source_orientation,
-        ) {
+        // Clean up the component regardless of outcome.
+        commands.entity(entity).remove::<PendingDiscovery>();
+
+        match result {
             Ok(sequences) => {
-                debug!("Found {} sequences", sequences.len());
+                debug!("Async discovery found {} sequences", sequences.len());
 
-                // For now, load the first sequence if any found
                 if let Some(sequence) = sequences.into_iter().next() {
                     let frame_count = sequence.frame_count();
                     let sequence_name = sequence.name.clone();
@@ -137,7 +214,7 @@ fn handle_discovery_requests(
                         debug!(
                             "Triggering load of {} mesh frames for sequence '{}'",
                             frame_paths.len(),
-                            sequence_name
+                            sequence_name,
                         );
                         load_events.write(LoadSequenceRequest { frame_paths });
                     }
@@ -150,17 +227,32 @@ fn handle_discovery_requests(
                 }
             }
             Err(e) => {
-                error!("Failed to discover sequences: {}", e);
+                error!("Async discovery failed: {}", e);
                 events.write(SequenceEvent::Error(format!("Discovery failed: {e}")));
             }
         }
-
-        // Remove the request component
-        commands.entity(entity).remove::<DiscoverSequenceRequest>();
     }
 }
 
-/// Discover sequences in a directory
+// ---------------------------------------------------------------------------
+// Pure discovery logic (runs off-thread)
+// ---------------------------------------------------------------------------
+
+/// Blocking discovery entry-point.  Called from an I/O task — never from a
+/// Bevy system directly.
+fn discover_sequences_blocking(
+    directory: &Path,
+    recursive: bool,
+    source_orientation: crate::lib::coordinates::SourceOrientation,
+) -> Result<Vec<Sequence>, std::io::Error> {
+    let patterns = SequencePatterns::default();
+    discover_sequences(directory, recursive, &patterns, source_orientation)
+}
+
+/// Discover sequences in a directory.
+///
+/// This is a pure function with no Bevy dependencies — it only does filesystem
+/// I/O and regex matching.  Safe to call from any thread.
 pub fn discover_sequences(
     directory: &Path,
     recursive: bool,
@@ -246,6 +338,10 @@ fn scan_directory(
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// UI helpers
+// ---------------------------------------------------------------------------
+
 /// Component for displaying discovered sequences in UI
 #[derive(Component)]
 pub struct SequenceList {
@@ -276,6 +372,10 @@ impl From<&Sequence> for SequenceInfo {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

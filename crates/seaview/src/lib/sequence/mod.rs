@@ -121,6 +121,15 @@ impl LoadSection {
         self.end = clamped.min(max_end);
     }
 
+    /// Move the section so it starts at `new_start`, keeping the same size.
+    /// Clamps to `[0, total_frames)`.
+    pub fn move_to(&mut self, new_start: usize, total_frames: usize) {
+        let size = self.frame_count();
+        let clamped_start = new_start.min(total_frames.saturating_sub(size));
+        self.start = clamped_start;
+        self.end = clamped_start + size;
+    }
+
     /// Center the section on a frame, keeping the same size
     pub fn center_on(&mut self, frame: usize, total_frames: usize) {
         let size = self.frame_count();
@@ -1014,6 +1023,34 @@ mod tests {
         // end capped at start + max = 60 (start stays put)
         assert_eq!(ls.end, 60);
         assert_eq!(ls.start, 10);
+    }
+
+    // -----------------------------------------------------------------------
+    // LoadSection::move_to
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_move_to_normal() {
+        let mut ls = LoadSection::new(0, 100);
+        ls.move_to(50, 2133);
+        assert_eq!(ls.start, 50);
+        assert_eq!(ls.end, 150);
+    }
+
+    #[test]
+    fn test_move_to_clamps_to_end() {
+        let mut ls = LoadSection::new(0, 100);
+        ls.move_to(2100, 2133);
+        assert_eq!(ls.start, 2033);
+        assert_eq!(ls.end, 2133);
+    }
+
+    #[test]
+    fn test_move_to_preserves_size() {
+        let mut ls = LoadSection::new(500, 776);
+        let size = ls.frame_count();
+        ls.move_to(200, 2133);
+        assert_eq!(ls.frame_count(), size);
     }
 
     // -----------------------------------------------------------------------
