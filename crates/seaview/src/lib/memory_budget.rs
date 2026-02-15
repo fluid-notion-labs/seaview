@@ -2,8 +2,7 @@
 //!
 //! This module provides trait-based memory detection with multiple backend implementations:
 //! - `SysInfoBackend`: Uses sysinfo crate for RAM detection
-//! - `WgpuBackend`: Uses wgpu limits for VRAM estimation
-//! - `NvmlBackend`: (Future) Uses NVIDIA Management Library for accurate VRAM on NVIDIA GPUs
+//! - `NvmlBackend`: Uses NVIDIA Management Library for accurate VRAM detection
 //!
 //! The `MemoryBudget` resource combines these to compute frame loading limits.
 //!
@@ -83,89 +82,6 @@ impl RamDetector for SysInfoBackend {
 }
 
 // ============================================================================
-// Wgpu Backend (VRAM estimation)
-// ============================================================================
-
-/// VRAM estimation using wgpu device limits
-///
-/// Note: wgpu doesn't expose actual VRAM amounts directly. We use `max_buffer_size`
-/// as a heuristic - it's typically a fraction of total VRAM that the driver allows
-/// for a single buffer allocation.
-pub struct WgpuBackend {
-    device_name: String,
-    max_buffer_size: u64,
-    /// Estimated total VRAM based on heuristics
-    estimated_vram: u64,
-}
-
-impl WgpuBackend {
-    /// Create from wgpu limits and adapter info
-    ///
-    /// # Arguments
-    /// * `max_buffer_size` - From `RenderDevice::limits().max_buffer_size`
-    /// * `device_name` - From `RenderAdapterInfo.name`
-    /// * `driver_lied` - True if the raw max_buffer_size had to be sanity-capped
-    pub fn new(max_buffer_size: u64, device_name: String, driver_lied: bool) -> Self {
-        // Heuristic: max_buffer_size is often ~25-50% of total VRAM
-        // We estimate conservatively at 4x max_buffer_size, capped at reasonable values
-        let estimated_vram = estimate_vram_from_buffer_limit(max_buffer_size, driver_lied);
-
-        Self {
-            device_name,
-            max_buffer_size,
-            estimated_vram,
-        }
-    }
-
-    /// Get the raw max_buffer_size limit
-    pub fn max_buffer_size(&self) -> u64 {
-        self.max_buffer_size
-    }
-}
-
-impl VramDetector for WgpuBackend {
-    fn total_vram_bytes(&self) -> Option<u64> {
-        Some(self.estimated_vram)
-    }
-
-    fn available_vram_bytes(&self) -> Option<u64> {
-        // wgpu doesn't provide this - return None to indicate unknown
-        None
-    }
-
-    fn device_name(&self) -> String {
-        self.device_name.clone()
-    }
-}
-
-/// Estimate total VRAM from max_buffer_size limit
-///
-/// This is a heuristic based on typical driver behavior:
-/// - Most drivers set max_buffer_size to 25-50% of VRAM
-/// - We use 4x as a conservative multiplier
-/// - Clamp to reasonable bounds (512MB - 48GB)
-///
-/// If `driver_lied` is true (the raw value had to be sanity-capped), the
-/// heuristic is unreliable so we fall back to a conservative 4 GB estimate.
-fn estimate_vram_from_buffer_limit(max_buffer_size: u64, driver_lied: bool) -> u64 {
-    const MIN_VRAM: u64 = 512 * 1024 * 1024; // 512 MB
-    const MAX_VRAM: u64 = 48 * 1024 * 1024 * 1024; // 48 GB
-    const CONSERVATIVE_VRAM: u64 = 4 * 1024 * 1024 * 1024; // 4 GB
-    const MULTIPLIER: u64 = 4;
-
-    if driver_lied {
-        warn!(
-            "Driver reported nonsensical max_buffer_size — using conservative {:.0} GB VRAM estimate",
-            CONSERVATIVE_VRAM as f64 / 1_073_741_824.0,
-        );
-        return CONSERVATIVE_VRAM;
-    }
-
-    let estimated = max_buffer_size.saturating_mul(MULTIPLIER);
-    estimated.clamp(MIN_VRAM, MAX_VRAM)
-}
-
-// ============================================================================
 // Mesh Memory Estimation
 // ============================================================================
 
@@ -211,21 +127,20 @@ pub fn estimate_mesh_gpu_bytes_from_vertices(vertex_count: usize) -> u64 {
 // NVML Backend (accurate NVIDIA VRAM via nvidia-ml)
 // ============================================================================
 
+/// Conservative VRAM estimate used when NVML is unavailable (e.g. non-NVIDIA GPU).
+const CONSERVATIVE_VRAM_BYTES: u64 = 4 * 1024 * 1024 * 1024; // 4 GB
+
 /// VRAM detection using NVIDIA Management Library (NVML).
 ///
 /// Provides accurate total and available VRAM for NVIDIA GPUs.
 /// Requires the NVML shared library to be installed on the system
 /// (ships with NVIDIA drivers on Linux as `libnvidia-ml.so`).
-///
-/// Enable with `--features nvml`.
-#[cfg(feature = "nvml")]
 pub struct NvmlBackend {
     device_name: String,
     total_vram: u64,
     free_vram: u64,
 }
 
-#[cfg(feature = "nvml")]
 impl NvmlBackend {
     /// Try to initialise NVML and query device 0.
     ///
@@ -270,7 +185,6 @@ impl NvmlBackend {
     }
 }
 
-#[cfg(feature = "nvml")]
 impl VramDetector for NvmlBackend {
     fn total_vram_bytes(&self) -> Option<u64> {
         Some(self.total_vram)
@@ -516,7 +430,7 @@ fn detect_ram_on_startup(
 fn detect_gpu_on_first_frame(
     mut budget: ResMut<MemoryBudget>,
     mut state: ResMut<GpuDetectionState>,
-    render_device: Res<RenderDevice>,
+    _render_device: Res<RenderDevice>,
     adapter_info: Res<RenderAdapterInfo>,
     settings: Option<Res<crate::lib::global_settings::GlobalSettings>>,
 ) {
@@ -530,76 +444,50 @@ fn detect_gpu_on_first_frame(
         .and_then(|s| s.memory.clone())
         .unwrap_or_default();
 
-    // Pull real device name from the adapter (e.g. "NVIDIA GeForce RTX 3060")
-    let device_name = if adapter_info.name.is_empty() {
+    // Pull real device name from the adapter (e.g. "NVIDIA GeForce RTX 5060")
+    let adapter_name = if adapter_info.name.is_empty() {
         "Unknown GPU".to_string()
     } else {
         adapter_info.name.clone()
     };
 
-    let limits = render_device.limits();
-    let raw_max_buffer_size = limits.max_buffer_size;
-
-    // Sanity-cap: some drivers report absurd max_buffer_size (e.g. 2^62).
-    // Cap at 32 GB — no single buffer should ever be larger than total VRAM.
-    const MAX_SANE_BUFFER_SIZE: u64 = 32 * 1024 * 1024 * 1024; // 32 GB
-    let max_buffer_size = raw_max_buffer_size.min(MAX_SANE_BUFFER_SIZE);
-    let driver_lied = raw_max_buffer_size != max_buffer_size;
-
-    if driver_lied {
-        warn!(
-            "GPU reports max_buffer_size={} bytes ({:.1} TB) — capping to {:.1} GB",
-            raw_max_buffer_size,
-            raw_max_buffer_size as f64 / (1024.0 * 1024.0 * 1024.0 * 1024.0),
-            max_buffer_size as f64 / 1_073_741_824.0,
-        );
-    }
-
-    // Try NVML first (accurate), fall back to wgpu heuristic (unreliable)
-    let vram_detected: Option<Box<dyn VramDetector>> = {
-        #[cfg(feature = "nvml")]
-        {
-            match NvmlBackend::new() {
-                Some(backend) => {
-                    info!("Using NVML for VRAM detection");
-                    Some(Box::new(backend))
-                }
-                None => {
-                    warn!("NVML init failed — falling back to wgpu heuristic");
-                    None
-                }
-            }
+    // Use NVML for accurate VRAM detection; fall back to conservative estimate
+    let (detected_vram, device_name) = match NvmlBackend::new() {
+        Some(backend) => {
+            let vram = backend
+                .total_vram_bytes()
+                .unwrap_or(CONSERVATIVE_VRAM_BYTES);
+            let name = backend.device_name();
+            info!("VRAM detection: NVML — {}", name);
+            (vram, name)
         }
-        #[cfg(not(feature = "nvml"))]
-        {
-            None
+        None => {
+            warn!(
+                "NVML unavailable (non-NVIDIA GPU or driver issue) — \
+                 using conservative {:.0} GB VRAM estimate",
+                CONSERVATIVE_VRAM_BYTES as f64 / 1_073_741_824.0,
+            );
+            (CONSERVATIVE_VRAM_BYTES, adapter_name)
         }
     };
 
-    let vram_backend: Box<dyn VramDetector> = vram_detected.unwrap_or_else(|| {
-        info!("Using wgpu max_buffer_size heuristic for VRAM estimation (build with --features nvml for accurate detection)");
-        Box::new(WgpuBackend::new(max_buffer_size, device_name.clone(), driver_lied))
-    });
+    budget.total_vram = Some(detected_vram);
+    budget.vram_budget = (detected_vram as f64 * memory_settings.gpu_fraction as f64) as u64;
+    budget.device_name = device_name;
 
-    if let Some(detected_vram) = vram_backend.total_vram_bytes() {
-        budget.total_vram = Some(detected_vram);
-        budget.vram_budget = (detected_vram as f64 * memory_settings.gpu_fraction as f64) as u64;
-        budget.device_name = device_name;
-
-        info!(
-            "GPU: {} — VRAM: {:.1} GB, budget: {:.1} GB ({:.0}%)",
-            budget.device_name,
-            detected_vram as f64 / 1_073_741_824.0,
-            budget.vram_budget as f64 / 1_073_741_824.0,
-            memory_settings.gpu_fraction * 100.0,
-        );
-        info!(
-            "Effective memory budget: {:.1} GB (min of RAM {:.1} GB, VRAM {:.1} GB)",
-            budget.effective_budget() as f64 / 1_073_741_824.0,
-            budget.ram_budget as f64 / 1_073_741_824.0,
-            budget.vram_budget as f64 / 1_073_741_824.0,
-        );
-    }
+    info!(
+        "GPU: {} — VRAM: {:.1} GB, budget: {:.1} GB ({:.0}%)",
+        budget.device_name,
+        detected_vram as f64 / 1_073_741_824.0,
+        budget.vram_budget as f64 / 1_073_741_824.0,
+        memory_settings.gpu_fraction * 100.0,
+    );
+    info!(
+        "Effective memory budget: {:.1} GB (min of RAM {:.1} GB, VRAM {:.1} GB)",
+        budget.effective_budget() as f64 / 1_073_741_824.0,
+        budget.ram_budget as f64 / 1_073_741_824.0,
+        budget.vram_budget as f64 / 1_073_741_824.0,
+    );
 }
 
 // ============================================================================
@@ -684,29 +572,9 @@ mod tests {
     }
 
     #[test]
-    fn test_vram_estimation_heuristic() {
-        // 1 GB max buffer -> ~4 GB estimated VRAM
-        let estimated = estimate_vram_from_buffer_limit(1024 * 1024 * 1024, false);
-        assert_eq!(estimated, 4 * 1024 * 1024 * 1024);
-
-        // Very small buffer -> clamps to minimum
-        let estimated = estimate_vram_from_buffer_limit(64 * 1024 * 1024, false);
-        assert_eq!(estimated, 512 * 1024 * 1024);
-
-        // Huge buffer -> clamps to maximum
-        let estimated = estimate_vram_from_buffer_limit(20 * 1024 * 1024 * 1024, false);
-        assert_eq!(estimated, 48 * 1024 * 1024 * 1024);
-    }
-
-    #[test]
-    fn test_vram_estimation_driver_lied() {
-        // When the driver reported nonsense, fall back to conservative 4 GB
-        let estimated = estimate_vram_from_buffer_limit(32 * 1024 * 1024 * 1024, true);
-        assert_eq!(estimated, 4 * 1024 * 1024 * 1024);
-
-        // Even a small value still returns conservative estimate when driver_lied
-        let estimated = estimate_vram_from_buffer_limit(1024 * 1024 * 1024, true);
-        assert_eq!(estimated, 4 * 1024 * 1024 * 1024);
+    fn test_conservative_vram_fallback() {
+        // The conservative fallback should be 4 GB
+        assert_eq!(CONSERVATIVE_VRAM_BYTES, 4 * 1024 * 1024 * 1024);
     }
 
     #[test]

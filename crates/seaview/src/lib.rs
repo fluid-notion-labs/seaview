@@ -31,7 +31,7 @@ pub use lib::mesh_info::{MeshDimensions, MeshInfoPlugin, RecomputeMeshBounds};
 pub use lib::asset_loaders::{self, AssetLoadersPlugin};
 pub use lib::memory_budget::{
     estimate_mesh_gpu_bytes, estimate_mesh_gpu_bytes_from_vertices, MemoryBudget,
-    MemoryBudgetPlugin, RamDetector, SysInfoBackend, VramDetector, WgpuBackend,
+    MemoryBudgetPlugin, NvmlBackend, RamDetector, SysInfoBackend, VramDetector,
 };
 pub use lib::sequence::{self, LoadSection, LoadSectionEdge};
 pub use lib::session::{self, Session, SessionManager, SessionPlugin};
