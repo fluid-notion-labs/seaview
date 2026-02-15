@@ -8,9 +8,11 @@ use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
 pub mod placement;
+pub mod rig;
 pub mod systems;
 
 pub use placement::PlacementAlgorithm;
+pub use rig::{Light, LightGroup, LightGroupGenConfig, LightingRig};
 
 /// Units for light intensity display and input
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
