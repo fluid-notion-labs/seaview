@@ -94,3 +94,16 @@ bd sync               # Sync with git
 - NEVER stop before pushing - that leaves work stranded locally
 - NEVER say "ready to push when you are" - YOU must push
 - If push fails, resolve and retry until it succeeds
+
+## Merging Branches
+
+When the user says **"merge"**, they mean **rebase to main** (not a merge commit). Use this workflow:
+
+```bash
+git checkout main
+git pull
+git rebase <feature-branch>
+git push
+```
+
+This keeps the history linear. Never use `git merge` unless explicitly asked for a merge commit.
