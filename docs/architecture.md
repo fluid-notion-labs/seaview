@@ -21,8 +21,8 @@ src/
 
 | File | What |
 |------|------|
-| `lib/sequence/mod.rs` | `Timeline`, `LoadSection`, `compute_spawn_window()`, `distribute_sections()` |
-| `lib/sequence/loader.rs` | `SequenceAssets`, `manage_frame_window`, asset loading systems |
+| `lib/sequence/mod.rs` | `Timeline`, `LoadSection`, `compute_spawn_window()`, `compute_spawn_windows()`, `distribute_sections()` |
+| `lib/sequence/loader.rs` | `SequenceAssets`, `manage_frame_window` (multi-section), asset loading systems |
 | `lib/sequence/playback.rs` | Keyboard playback controls |
 | `lib/sequence/discovery.rs` | Filesystem sequence detection |
 | `lib/sequence/watch.rs` | Directory watch mode, incremental loading |
@@ -30,7 +30,7 @@ src/
 | `lib/settings.rs` | `Settings`, `LoadSectionSettings`, seaview.toml persistence |
 | `lib/lighting/` | `NightLightingConfig`, placement algorithms |
 | `app/ui/state.rs` | `UiState`, `RenderConfig`, `MaterialConfig`, `LoadSectionEdge` |
-| `app/ui/systems/playback_controls.rs` | Bottom panel: timeline scrubber, transport, load section bar |
+| `app/ui/systems/playback_controls/` | Bottom panel module: `mod.rs` (orchestrator), `transport.rs`, `timeline_bar.rs`, `load_section_bar.rs` |
 | `app/ui/systems/environment_panel/` | Left panel: lighting, materials, rendering, perf |
 
 ## Resource Ownership
@@ -74,20 +74,40 @@ PostUpdate: manage_frame_window → compute_spawn_window() → spawn/despawn ent
 
 ## Current Debt
 
-**`SequenceAssets` (loader.rs)** — holds 7 concerns: asset handles, entity tracking, metadata, memory estimation, material cache, coord transform, window computation. Every consumer takes `ResMut<SequenceAssets>` blocking parallel scheduling. **Trigger:** seaview-wme (multi-section) will force decomposition.
+**`SequenceAssets` (loader.rs)** — holds 7 concerns: asset handles, entity tracking, metadata, memory estimation, material cache, coord transform, window computation. Every consumer takes `ResMut<SequenceAssets>` blocking parallel scheduling. **Trigger:** next major loader refactor.
 
 **Debug binary duplication** — `debug_loader.rs` and `timeline_debug.rs` reimplement discovery, mesh parsing, GPU detection. `timeline_debug` partially fixed (uses library `LoadSection`/`distribute_sections`). **Trigger:** when discovery is extracted to a pure function.
 
-**`manage_frame_window` (loader.rs)** — 140-line system mixing window computation, spawn/despawn, visibility, memory accounting. Window computation extracted to `compute_spawn_window()`. **Trigger:** seaview-wme multi-section spawn logic.
+### Resolved Debt
 
-**`playback_controls.rs`** — 575-line single function. **Trigger:** when any section needs significant rework.
+**`manage_frame_window` (loader.rs)** — ✅ Resolved by seaview-wme. Now uses `compute_spawn_windows()` across all sections with delta-based eviction/spawn.
+
+**`playback_controls.rs`** — ✅ Resolved by seaview-wme. Split from 575-line monolith into `playback_controls/` module: `mod.rs` (orchestrator), `transport.rs`, `timeline_bar.rs`, `load_section_bar.rs`.
 
 ## Feature Map
 
-| Issue | Touches | Risk |
-|-------|---------|------|
-| seaview-blz (light controls) | `lighting_section.rs`, `NightLightingConfig` | Low |
-| seaview-4sg (toasts) | New `UiState` fields, new UI system | Low |
-| seaview-9wx (multi-GPU) | `memory_budget.rs` new backends | Low |
-| seaview-nvh (HUD overlays) | New UI files, reads existing resources | Low |
-| seaview-wme (multi-section) | `playback_controls.rs`, `manage_frame_window`, Timeline | Medium — triggers SequenceAssets decomposition |
+| Issue | Touches | Risk | Status |
+|-------|---------|------|--------|
+| seaview-blz (light controls) | `lighting_section.rs`, `NightLightingConfig` | Low | ✅ Done |
+| seaview-4sg (toasts) | New `UiState` fields, new UI system | Low | ✅ Done |
+| seaview-9wx (multi-GPU) | `memory_budget.rs` new backends | Low | Blocked / punted |
+| seaview-nvh (HUD overlays) | New UI files, reads existing resources | Low | Open |
+| seaview-wme (multi-section) | `playback_controls/`, `manage_frame_window`, Timeline | Medium | ✅ Done |
+
+## Multi-Section Architecture (seaview-wme)
+
+**Timeline** owns `Vec<LoadSection>`. Methods: `add_section`, `remove_section`, `next_loaded_frame`, `prev_loaded_frame`, `is_frame_loaded`, `init_multi_section`.
+
+**`compute_spawn_windows`** — multi-section generalisation of `compute_spawn_window`. Returns a `Vec<(lo, hi)>` for each section that overlaps the render window.
+
+**`manage_frame_window`** — tracks `Local<Vec<(usize, usize)>>` (previous windows). Evicts/spawns the delta between old and new window sets.
+
+**`advance_playback`** — skips gaps between sections. When the next frame is unloaded, jumps to the start of the next section. Looping wraps to the first loaded frame.
+
+**UI interactions** (in `playback_controls/load_section_bar.rs`):
+- Ctrl+Click on empty area → `timeline.add_section(frame, budget)`
+- Right-click on section → `timeline.remove_section(idx, budget)`
+- Drag section edges → per-section `set_start` / `set_end`
+- Sections colour-coded with 6-colour rotating palette
+
+**Persistence** — `settings.set_load_sections(&timeline.sections)` on save; `PendingSavedSections` resource applied once sequence loads.
