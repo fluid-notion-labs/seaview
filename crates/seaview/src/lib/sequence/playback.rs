@@ -71,9 +71,24 @@ pub(super) fn handle_keyboard_playback(
         );
     }
 
+    // Ctrl+Arrow — jump to start/end of timeline
+    if ctrl && keyboard.just_pressed(KeyCode::ArrowLeft) {
+        sm.is_playing = false;
+        sm.jump_to_frame(0);
+        debug!("⏮ Jump to start via Ctrl+←");
+    }
+    if ctrl && keyboard.just_pressed(KeyCode::ArrowRight) {
+        sm.is_playing = false;
+        if let Some(seq) = sm.current_sequence() {
+            let last = seq.frame_count().saturating_sub(1);
+            sm.jump_to_frame(last);
+            debug!("⏭ Jump to end via Ctrl+→");
+        }
+    }
+
     // Arrow keys — step forward/backward with hold-to-repeat
-    let right = keyboard.pressed(KeyCode::ArrowRight);
-    let left = keyboard.pressed(KeyCode::ArrowLeft);
+    let right = !ctrl && keyboard.pressed(KeyCode::ArrowRight);
+    let left = !ctrl && keyboard.pressed(KeyCode::ArrowLeft);
 
     if right || left {
         // Stop auto-playback when manually stepping
@@ -81,8 +96,7 @@ pub(super) fn handle_keyboard_playback(
             sm.is_playing = false;
         }
 
-        if keyboard.just_pressed(KeyCode::ArrowRight) || keyboard.just_pressed(KeyCode::ArrowLeft)
-        {
+        if keyboard.just_pressed(KeyCode::ArrowRight) || keyboard.just_pressed(KeyCode::ArrowLeft) {
             // Reset timer and do immediate step
             key_timer.hold_time = 0.0;
             key_timer.last_repeat = 0.0;
