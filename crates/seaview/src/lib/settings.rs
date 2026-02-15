@@ -10,8 +10,11 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::app::ui::state::MaterialConfig;
-use crate::lib::lighting::{NightLightingConfig, PlacementAlgorithm};
+use crate::lib::lighting::{
+    Light, LightGroup, LightingRig, NightLightingConfig, PlacementAlgorithm,
+};
 use crate::lib::sequence::LoadSection;
+use uuid::Uuid;
 
 /// Filename used for per-directory settings
 pub const SETTINGS_FILENAME: &str = "seaview.toml";
@@ -386,6 +389,127 @@ impl From<&LightingSettings> for NightLightingConfig {
 }
 
 // ---------------------------------------------------------------------------
+// Environment — Lighting v2 bridge
+// ---------------------------------------------------------------------------
+
+/// TOML-friendly settings for a single [`Light`] in the v2 lighting rig.
+///
+/// Colour stored as `[f32; 3]` sRGB, position as `[f32; 2]` (XZ plane).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LightSettings {
+    pub name: String,
+    /// XZ position `[x, z]` in metres.
+    pub position: [f32; 2],
+    /// Height above sea level (metres).
+    pub height: f32,
+    /// Intensity in lumens.
+    pub intensity: f32,
+    /// Maximum effective distance (metres).
+    pub range: f32,
+    /// Full cone angle (degrees).
+    pub cone_angle: f32,
+    /// sRGB colour `[r, g, b]` in 0–1 range.
+    pub color: [f32; 3],
+    /// Per-light visibility toggle.
+    pub visible: bool,
+}
+
+impl Default for LightSettings {
+    fn default() -> Self {
+        let l = Light::new("default");
+        Self::from(&l)
+    }
+}
+
+impl From<&Light> for LightSettings {
+    fn from(l: &Light) -> Self {
+        Self {
+            name: l.name.clone(),
+            position: [l.position.x, l.position.y],
+            height: l.height,
+            intensity: l.intensity,
+            range: l.range,
+            cone_angle: l.cone_angle,
+            color: color_to_srgb3(&l.color),
+            visible: l.visible,
+        }
+    }
+}
+
+impl From<&LightSettings> for Light {
+    fn from(s: &LightSettings) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            name: s.name.clone(),
+            position: Vec2::new(s.position[0], s.position[1]),
+            height: s.height,
+            intensity: s.intensity,
+            range: s.range,
+            cone_angle: s.cone_angle,
+            color: Color::srgb(s.color[0], s.color[1], s.color[2]),
+            visible: s.visible,
+        }
+    }
+}
+
+/// TOML-friendly settings for a [`LightGroup`] in the v2 lighting rig.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LightGroupSettings {
+    pub name: String,
+    pub visible: bool,
+    #[serde(default)]
+    pub lights: Vec<LightSettings>,
+}
+
+impl Default for LightGroupSettings {
+    fn default() -> Self {
+        Self {
+            name: "New Group".to_string(),
+            visible: true,
+            lights: Vec::new(),
+        }
+    }
+}
+
+impl From<&LightGroup> for LightGroupSettings {
+    fn from(g: &LightGroup) -> Self {
+        Self {
+            name: g.name.clone(),
+            visible: g.visible,
+            lights: g.lights.iter().map(LightSettings::from).collect(),
+        }
+    }
+}
+
+impl From<&LightGroupSettings> for LightGroup {
+    fn from(s: &LightGroupSettings) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            name: s.name.clone(),
+            visible: s.visible,
+            lights: s.lights.iter().map(Light::from).collect(),
+        }
+    }
+}
+
+/// Convert a [`LightingRig`] to a `Vec<LightGroupSettings>` for TOML
+/// serialization.
+pub fn lighting_rig_to_settings(rig: &LightingRig) -> Vec<LightGroupSettings> {
+    rig.groups.iter().map(LightGroupSettings::from).collect()
+}
+
+/// Reconstruct a [`LightingRig`] from a `Vec<LightGroupSettings>` loaded
+/// from TOML. UUIDs are regenerated; `active_group` resets to `None`.
+pub fn settings_to_lighting_rig(groups: &[LightGroupSettings]) -> LightingRig {
+    LightingRig {
+        groups: groups.iter().map(LightGroup::from).collect(),
+        active_group: None,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Environment — Material bridge
 // ---------------------------------------------------------------------------
 
@@ -472,8 +596,12 @@ impl From<&MaterialSettings> for MaterialConfig {
 pub struct EnvironmentSettings {
     /// Environment (global) light: directional + ambient.
     pub environment_light: Option<EnvironmentLightSettings>,
-    /// Spot-light rig configuration.
+    /// Spot-light rig configuration (legacy v1 — kept for backwards compat on
+    /// deserialize, ignored when `lighting_groups` is non-empty).
     pub lighting: Option<LightingSettings>,
+    /// Lighting v2: named groups with per-light params.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lighting_groups: Vec<LightGroupSettings>,
     /// Named materials map. `"fluid"` is the default key for the sequence mesh.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub materials: HashMap<String, MaterialSettings>,
@@ -742,6 +870,29 @@ impl Settings {
         env.environment_light = Some(EnvironmentLightSettings::from(env_light_cfg));
         env.materials
             .insert("fluid".to_string(), MaterialSettings::from(material_cfg));
+    }
+
+    /// Save a [`LightingRig`] into the environment settings (v2 format).
+    ///
+    /// Clears the legacy `lighting` field so only `lighting_groups` is
+    /// written to TOML.
+    pub fn set_lighting_rig(&mut self, rig: &LightingRig) {
+        let env = self
+            .environment
+            .get_or_insert_with(EnvironmentSettings::default);
+        env.lighting_groups = lighting_rig_to_settings(rig);
+        env.lighting = None; // drop legacy v1
+    }
+
+    /// Reconstruct a [`LightingRig`] from the persisted settings.
+    ///
+    /// Returns `None` if there are no `lighting_groups` in the TOML.
+    pub fn get_lighting_rig(&self) -> Option<LightingRig> {
+        let env = self.environment.as_ref()?;
+        if env.lighting_groups.is_empty() {
+            return None;
+        }
+        Some(settings_to_lighting_rig(&env.lighting_groups))
     }
 
     /// Convenience: set camera from a Transform under the active name.
@@ -1395,6 +1546,7 @@ alpha_cutoff = 0.5
             environment: Some(EnvironmentSettings {
                 environment_light: Some(EnvironmentLightSettings::default()),
                 lighting: Some(LightingSettings::default()),
+                lighting_groups: vec![],
                 materials: {
                     let mut m = HashMap::new();
                     m.insert("fluid".to_string(), MaterialSettings::default());
@@ -1531,6 +1683,275 @@ dimensions = [75.0, 50.0, 75.0]
         assert!(settings.sequence.is_some());
         assert!(settings.playback.is_some());
         assert!(settings.mesh.is_some());
+    }
+
+    // -----------------------------------------------------------------------
+    // Lighting v2 settings
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_light_settings_roundtrip() {
+        let light = Light::new("Spot A").with_position(Vec2::new(10.0, -20.0));
+        let settings = LightSettings::from(&light);
+        let recovered = Light::from(&settings);
+
+        assert_eq!(recovered.name, "Spot A");
+        assert_eq!(recovered.position, Vec2::new(10.0, -20.0));
+        assert_eq!(recovered.height, light.height);
+        assert_eq!(recovered.intensity, light.intensity);
+        assert_eq!(recovered.range, light.range);
+        assert_eq!(recovered.cone_angle, light.cone_angle);
+        assert_eq!(recovered.visible, light.visible);
+        // id is regenerated — just check it's valid
+        assert_ne!(recovered.id, Uuid::nil());
+    }
+
+    #[test]
+    fn test_light_settings_toml_roundtrip() {
+        let settings = LightSettings {
+            name: "Test Light".to_string(),
+            position: [-5.0, 12.5],
+            height: 30.0,
+            intensity: 500_000.0,
+            range: 300.0,
+            cone_angle: 45.0,
+            color: [1.0, 0.8, 0.6],
+            visible: false,
+        };
+
+        let toml_str = toml::to_string_pretty(&settings).unwrap();
+        let recovered: LightSettings = toml::from_str(&toml_str).unwrap();
+
+        assert_eq!(recovered.name, "Test Light");
+        assert_eq!(recovered.position, [-5.0, 12.5]);
+        assert_eq!(recovered.height, 30.0);
+        assert_eq!(recovered.intensity, 500_000.0);
+        assert_eq!(recovered.cone_angle, 45.0);
+        assert_eq!(recovered.color, [1.0, 0.8, 0.6]);
+        assert!(!recovered.visible);
+    }
+
+    #[test]
+    fn test_light_group_settings_roundtrip() {
+        let mut group = LightGroup::new("Overhead Grid");
+        group.add_light(Light::new("L1").with_position(Vec2::new(1.0, 2.0)));
+        group.add_light(Light::new("L2").with_position(Vec2::new(3.0, 4.0)));
+        group.visible = true;
+
+        let settings = LightGroupSettings::from(&group);
+        let recovered = LightGroup::from(&settings);
+
+        assert_eq!(recovered.name, "Overhead Grid");
+        assert!(recovered.visible);
+        assert_eq!(recovered.lights.len(), 2);
+        assert_eq!(recovered.lights[0].name, "L1");
+        assert_eq!(recovered.lights[0].position, Vec2::new(1.0, 2.0));
+        assert_eq!(recovered.lights[1].name, "L2");
+    }
+
+    #[test]
+    fn test_light_group_settings_toml_roundtrip() {
+        let settings = LightGroupSettings {
+            name: "Ring".to_string(),
+            visible: true,
+            lights: vec![
+                LightSettings {
+                    name: "R1".to_string(),
+                    position: [0.0, 10.0],
+                    ..Default::default()
+                },
+                LightSettings {
+                    name: "R2".to_string(),
+                    position: [10.0, 0.0],
+                    ..Default::default()
+                },
+            ],
+        };
+
+        let toml_str = toml::to_string_pretty(&settings).unwrap();
+        let recovered: LightGroupSettings = toml::from_str(&toml_str).unwrap();
+
+        assert_eq!(recovered.name, "Ring");
+        assert!(recovered.visible);
+        assert_eq!(recovered.lights.len(), 2);
+        assert_eq!(recovered.lights[0].name, "R1");
+        assert_eq!(recovered.lights[1].name, "R2");
+    }
+
+    #[test]
+    fn test_lighting_rig_settings_roundtrip() {
+        let mut rig = LightingRig::new();
+        let mut g1 = LightGroup::new("Grid A");
+        g1.add_light(Light::new("A1").with_position(Vec2::new(1.0, 2.0)));
+        g1.add_light(Light::new("A2").with_position(Vec2::new(3.0, 4.0)));
+        rig.add_group(g1);
+
+        let mut g2 = LightGroup::new("Grid B");
+        g2.visible = false;
+        g2.add_light(Light::new("B1"));
+        rig.add_group(g2);
+
+        let group_settings = lighting_rig_to_settings(&rig);
+        let recovered = settings_to_lighting_rig(&group_settings);
+
+        assert_eq!(recovered.groups.len(), 2);
+        assert_eq!(recovered.groups[0].name, "Grid A");
+        assert!(recovered.groups[0].visible);
+        assert_eq!(recovered.groups[0].lights.len(), 2);
+        assert_eq!(recovered.groups[0].lights[0].name, "A1");
+        assert_eq!(recovered.groups[1].name, "Grid B");
+        assert!(!recovered.groups[1].visible);
+        assert_eq!(recovered.groups[1].lights.len(), 1);
+        assert!(recovered.active_group.is_none());
+    }
+
+    #[test]
+    fn test_lighting_rig_full_toml_roundtrip() {
+        let toml_str = r#"
+[[environment.lighting_groups]]
+name = "Overhead Grid"
+visible = true
+
+[[environment.lighting_groups.lights]]
+name = "Light 1"
+position = [-10.0, 25.0]
+height = 50.0
+intensity = 800000.0
+range = 500.0
+cone_angle = 60.0
+color = [1.0, 0.95, 0.9]
+visible = true
+
+[[environment.lighting_groups.lights]]
+name = "Light 2"
+position = [10.0, 25.0]
+height = 50.0
+intensity = 800000.0
+range = 500.0
+cone_angle = 60.0
+color = [1.0, 0.95, 0.9]
+visible = false
+
+[[environment.lighting_groups]]
+name = "Accent"
+visible = false
+
+[[environment.lighting_groups.lights]]
+name = "Spot A"
+position = [0.0, 0.0]
+height = 30.0
+intensity = 400000.0
+range = 200.0
+cone_angle = 45.0
+color = [0.8, 0.8, 1.0]
+visible = true
+"#;
+
+        let settings: Settings = toml::from_str(toml_str).unwrap();
+        let rig = settings.get_lighting_rig().unwrap();
+
+        assert_eq!(rig.groups.len(), 2);
+        assert_eq!(rig.groups[0].name, "Overhead Grid");
+        assert!(rig.groups[0].visible);
+        assert_eq!(rig.groups[0].lights.len(), 2);
+        assert_eq!(rig.groups[0].lights[0].name, "Light 1");
+        assert_eq!(rig.groups[0].lights[0].position, Vec2::new(-10.0, 25.0));
+        assert!(rig.groups[0].lights[0].visible);
+        assert!(!rig.groups[0].lights[1].visible);
+
+        assert_eq!(rig.groups[1].name, "Accent");
+        assert!(!rig.groups[1].visible);
+        assert_eq!(rig.groups[1].lights[0].intensity, 400_000.0);
+
+        // Re-serialize and verify structure survives
+        let mut roundtrip_settings = Settings::default();
+        roundtrip_settings.set_lighting_rig(&rig);
+        let toml_out = toml::to_string_pretty(&roundtrip_settings).unwrap();
+        let reloaded: Settings = toml::from_str(&toml_out).unwrap();
+        let rig2 = reloaded.get_lighting_rig().unwrap();
+
+        assert_eq!(rig2.groups.len(), 2);
+        assert_eq!(rig2.groups[0].lights.len(), 2);
+        assert_eq!(rig2.groups[0].lights[0].name, "Light 1");
+    }
+
+    #[test]
+    fn test_set_lighting_rig_clears_legacy() {
+        let mut settings = Settings::default();
+        // Set legacy v1 lighting
+        settings.set_environment(
+            &NightLightingConfig::default(),
+            &crate::lib::lighting::EnvironmentLightConfig::default(),
+            &MaterialConfig::default(),
+        );
+        assert!(settings.environment.as_ref().unwrap().lighting.is_some());
+
+        // Now set v2 rig — should clear legacy
+        let mut rig = LightingRig::new();
+        rig.add_group(LightGroup::new("Test"));
+        settings.set_lighting_rig(&rig);
+
+        let env = settings.environment.as_ref().unwrap();
+        assert!(env.lighting.is_none(), "legacy lighting should be cleared");
+        assert_eq!(env.lighting_groups.len(), 1);
+    }
+
+    #[test]
+    fn test_get_lighting_rig_returns_none_when_empty() {
+        let settings = Settings::default();
+        assert!(settings.get_lighting_rig().is_none());
+
+        // Also None when environment exists but no groups
+        let mut settings2 = Settings::default();
+        settings2.environment = Some(EnvironmentSettings::default());
+        assert!(settings2.get_lighting_rig().is_none());
+    }
+
+    #[test]
+    fn test_lighting_groups_omitted_when_empty() {
+        let mut settings = Settings::default();
+        settings.environment = Some(EnvironmentSettings {
+            environment_light: Some(EnvironmentLightSettings::default()),
+            lighting: None,
+            lighting_groups: vec![],
+            materials: HashMap::new(),
+        });
+
+        let toml_str = toml::to_string_pretty(&settings).unwrap();
+        assert!(
+            !toml_str.contains("lighting_groups"),
+            "empty lighting_groups should be omitted from TOML, got:\n{}",
+            toml_str
+        );
+    }
+
+    #[test]
+    fn test_legacy_v1_toml_still_loads() {
+        let toml_str = r#"
+[environment.lighting]
+num_lights = 9
+height = 50.0
+cone_angle = 60.0
+placement_algorithm = "uniform_grid"
+enabled = true
+intensity = 800000.0
+color = [1.0, 0.95, 0.9]
+range = 500.0
+show_markers = true
+marker_size = 0.5
+coverage_pct = 120.0
+"#;
+
+        let settings: Settings = toml::from_str(toml_str).unwrap();
+        let env = settings.environment.as_ref().unwrap();
+
+        // Legacy field still accessible
+        assert!(env.lighting.is_some());
+        assert_eq!(env.lighting.as_ref().unwrap().num_lights, 9);
+
+        // No v2 groups
+        assert!(env.lighting_groups.is_empty());
+        assert!(settings.get_lighting_rig().is_none());
     }
 
     // -----------------------------------------------------------------------
