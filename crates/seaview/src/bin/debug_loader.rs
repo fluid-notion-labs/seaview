@@ -307,7 +307,7 @@ struct BudgetReport {
     vram_total_bytes: Option<u64>,
     vram_budget_bytes: Option<u64>,
     gpu_fraction: f32,
-    /// Effective budget: min(RAM budget, VRAM budget) or RAM-only if no GPU
+    /// Effective budget: RAM-only (VRAM managed by spawn window)
     effective_budget_bytes: u64,
     /// Per-frame estimate
     frame_bytes: u64,
@@ -331,10 +331,9 @@ fn compute_budget(
     let effective_budget_bytes = if let Some(mb) = manual_budget_mb {
         mb * 1024 * 1024
     } else {
-        match vram_budget_bytes {
-            Some(vb) => ram_budget_bytes.min(vb),
-            None => ram_budget_bytes,
-        }
+        // Effective budget is RAM-only. VRAM residency is controlled by
+        // the spawn-window system (promote_to_gpu / demote_from_gpu).
+        ram_budget_bytes
     };
 
     let max_frames = if avg_frame_bytes > 0 {

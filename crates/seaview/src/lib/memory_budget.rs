@@ -273,16 +273,16 @@ impl MemoryBudget {
             .map(|v| (v as f64 * settings.gpu_fraction as f64) as u64)
             .unwrap_or(ram_budget); // Fallback to RAM budget if VRAM unknown
 
-        // Use the minimum of RAM and VRAM budgets as the effective limit
-        // (meshes need to fit in both system RAM during loading and VRAM for rendering)
-        let effective_budget = ram_budget.min(vram_budget);
-
+        // The effective budget is RAM-only.  VRAM residency is controlled
+        // separately by the spawn-window system which promotes/demotes
+        // meshes via RenderAssetUsages flags, so only a small window of
+        // frames lives on the GPU at any time.
         info!(
-            "Memory budget: RAM {:.1} GB / {:.1} GB, VRAM ~{:.1} GB, effective budget: {:.1} GB",
+            "Memory budget: RAM {:.1} GB / {:.1} GB (effective {:.1} GB), VRAM ~{:.1} GB (managed by spawn window)",
             ram_budget as f64 / 1_073_741_824.0,
             total_ram as f64 / 1_073_741_824.0,
+            ram_budget as f64 / 1_073_741_824.0,
             vram_budget as f64 / 1_073_741_824.0,
-            effective_budget as f64 / 1_073_741_824.0,
         );
 
         Self {
@@ -308,9 +308,13 @@ impl MemoryBudget {
         }
     }
 
-    /// Get the effective memory budget (minimum of RAM and VRAM)
+    /// Get the effective memory budget.
+    ///
+    /// This is the RAM budget only.  VRAM residency is managed separately
+    /// by the spawn-window system (`promote_to_gpu` / `demote_from_gpu`),
+    /// so only a small number of frames occupy GPU memory at any time.
     pub fn effective_budget(&self) -> u64 {
-        self.ram_budget.min(self.vram_budget)
+        self.ram_budget
     }
 
     /// Update frame size estimate and recalculate max_frames
@@ -552,8 +556,8 @@ mod tests {
         assert_eq!(budget.ram_budget, 8 * 1024 * 1024 * 1024);
         // VRAM budget: 8GB * 0.5 = 4GB
         assert_eq!(budget.vram_budget, 4 * 1024 * 1024 * 1024);
-        // Effective is min(8GB, 4GB) = 4GB
-        assert_eq!(budget.effective_budget(), 4 * 1024 * 1024 * 1024);
+        // Effective is RAM budget only (VRAM managed by spawn window)
+        assert_eq!(budget.effective_budget(), 8 * 1024 * 1024 * 1024);
     }
 
     #[test]

@@ -98,9 +98,12 @@ fn build_mesh_auto_normals(stl: &stl_io::IndexedMesh) -> Mesh {
         .flat_map(|face| face.vertices.iter().map(|&idx| idx as u32))
         .collect();
 
-    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
-        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
-        .with_inserted_indices(Indices::U32(indices));
+    let mut mesh = Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::MAIN_WORLD,
+    )
+    .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
+    .with_inserted_indices(Indices::U32(indices));
 
     // Let Bevy compute smooth normals from the indexed geometry.
     mesh.compute_normals();
@@ -157,8 +160,11 @@ fn build_mesh_with_stl_normals(stl: &stl_io::IndexedMesh) -> Mesh {
         .flat_map(|face| face.vertices.iter().map(|&idx| idx as u32))
         .collect();
 
-    Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
-        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
-        .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
-        .with_inserted_indices(Indices::U32(indices))
+    Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::MAIN_WORLD,
+    )
+    .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
+    .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
+    .with_inserted_indices(Indices::U32(indices))
 }

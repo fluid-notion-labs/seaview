@@ -33,8 +33,9 @@
 //! - **[`sync_section_loads`]** — only recomputes the needed-frame set when
 //!   the [`Timeline`] actually changed (Bevy change detection).
 
-use bevy::asset::{AssetEvent, LoadState};
-use bevy::gltf::GltfAssetLabel;
+use bevy::asset::{AssetEvent, LoadState, RenderAssetUsages};
+use bevy::gltf::{GltfAssetLabel, GltfLoaderSettings};
+use bevy::mesh::Mesh;
 use bevy::prelude::*;
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
@@ -221,6 +222,40 @@ impl SequenceAssets {
         let hi = (center + half + 1).min(self.total_frames);
         (lo, hi)
     }
+
+    // ── GPU residency management ──────────────────────────────────────
+    //
+    // Meshes are loaded with `MAIN_WORLD` only (CPU-resident).  These
+    // helpers flip the `asset_usage` flag so Bevy's render-asset system
+    // uploads / releases the GPU buffer on demand.
+
+    /// Promote a frame's mesh to GPU by adding the `RENDER_WORLD` flag.
+    ///
+    /// This triggers Bevy's render-asset system to upload the mesh to
+    /// VRAM on the next extract pass.  Returns `true` if the flag was set.
+    pub fn promote_to_gpu(&self, idx: usize, meshes: &mut Assets<Mesh>) -> bool {
+        if let Some(handle) = self.get_frame(idx) {
+            if let Some(mesh) = meshes.get_mut(handle) {
+                mesh.asset_usage = RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Demote a frame's mesh from GPU by removing the `RENDER_WORLD` flag.
+    ///
+    /// This triggers Bevy's render-asset system to release the GPU buffer.
+    /// Returns `true` if the flag was cleared.
+    pub fn demote_from_gpu(&self, idx: usize, meshes: &mut Assets<Mesh>) -> bool {
+        if let Some(handle) = self.get_frame(idx) {
+            if let Some(mesh) = meshes.get_mut(handle) {
+                mesh.asset_usage = RenderAssetUsages::MAIN_WORLD;
+                return true;
+            }
+        }
+        false
+    }
 }
 
 /// A throttled queue of frame indices waiting to be sent to the asset server.
@@ -306,16 +341,22 @@ pub fn load_mesh_handle(
     match format {
         MeshFileFormat::Stl => {
             // The StlLoader registered for ".stl" will produce a Mesh directly.
+            // STL loader already creates meshes with MAIN_WORLD only.
             asset_server.load(asset_path)
         }
         MeshFileFormat::Gltf | MeshFileFormat::Glb => {
             // Use GltfAssetLabel to extract Mesh 0 / Primitive 0.
-            asset_server.load(
+            // Load with MAIN_WORLD only so meshes stay CPU-side until
+            // explicitly promoted to RENDER_WORLD in the spawn window.
+            asset_server.load_with_settings(
                 GltfAssetLabel::Primitive {
                     mesh: 0,
                     primitive: 0,
                 }
                 .from_asset(asset_path),
+                |settings: &mut GltfLoaderSettings| {
+                    settings.load_meshes = RenderAssetUsages::MAIN_WORLD;
+                },
             )
         }
     }
@@ -800,6 +841,7 @@ fn manage_frame_window(
     mut visibility_query: Query<&mut Visibility, With<SequenceMeshDisplay>>,
     mut prev_windows: Local<Vec<(usize, usize)>>,
     mut memory_budget: ResMut<MemoryBudget>,
+    mut meshes: ResMut<Assets<Mesh>>,
 ) {
     if sequence_assets.total_frames == 0 {
         return;
@@ -832,6 +874,8 @@ fn manage_frame_window(
 
     // 1. Despawn entities that were in old windows but are NOT in new windows.
     //    Despawns are NOT throttled — freeing memory is always welcome.
+    //    We also demote the mesh back to MAIN_WORLD only so Bevy's render
+    //    asset system releases the GPU buffer.
     for &(old_lo, old_hi) in prev_windows.iter() {
         for idx in old_lo..old_hi {
             if in_windows(idx, &new_windows) {
@@ -842,6 +886,7 @@ fn manage_frame_window(
                     *vis = Visibility::Hidden;
                 }
                 commands.entity(entity).despawn();
+                sequence_assets.demote_from_gpu(idx, &mut meshes);
                 if frame_bytes > 0 {
                     memory_budget.record_frame_unloaded(frame_bytes);
                 }
@@ -866,6 +911,8 @@ fn manage_frame_window(
             let Some(handle) = sequence_assets.get_frame(idx).cloned() else {
                 continue;
             };
+
+            sequence_assets.promote_to_gpu(idx, &mut meshes);
 
             let visibility = if idx == current {
                 Visibility::Visible
