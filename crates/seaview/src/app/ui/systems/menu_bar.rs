@@ -1,13 +1,13 @@
 //! Menu bar system for Seaview
 //!
 //! This module implements the top menu bar with File, View, and Help menus.
-//! Also handles global keyboard shortcuts (Ctrl+S) at the egui level so they
-//! work even when an egui widget has focus.
+//! Also handles global keyboard shortcuts (Ctrl+S, Ctrl+Shift+W) at the egui
+//! level so they work even when an egui widget has focus.
 
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 
-use crate::app::ui::state::UiState;
+use crate::app::ui::state::{RenderConfig, UiState};
 use crate::lib::settings::SaveViewEvent;
 
 /// System that renders the top menu bar
@@ -16,6 +16,7 @@ pub fn menu_bar_system(
     mut ui_state: ResMut<UiState>,
     mut exit: MessageWriter<AppExit>,
     mut save_view_events: MessageWriter<SaveViewEvent>,
+    mut render_config: ResMut<RenderConfig>,
 ) {
     let ctx = contexts.ctx_mut().unwrap();
 
@@ -26,6 +27,19 @@ pub fn menu_bar_system(
     if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::S)) {
         save_view_events.write(SaveViewEvent);
         debug!("💾 Save view triggered via Ctrl+S (egui)");
+    }
+
+    // Global keyboard shortcut: Ctrl+Shift+W to toggle wireframe overlay.
+    if ctx.input(|i| i.modifiers.ctrl && i.modifiers.shift && i.key_pressed(egui::Key::W)) {
+        render_config.wireframe_enabled = !render_config.wireframe_enabled;
+        debug!(
+            "🔲 Wireframe overlay {} via Ctrl+Shift+W (egui)",
+            if render_config.wireframe_enabled {
+                "enabled"
+            } else {
+                "disabled"
+            }
+        );
     }
 
     egui::TopBottomPanel::top("menu_bar")

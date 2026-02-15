@@ -107,6 +107,23 @@ pub fn draw_load_section_bar(
         let budget = max_loaded_frames.min(display_total_frames);
 
         // =================================================================
+        // Interaction: Ctrl+click to TOGGLE section active/inactive
+        // =================================================================
+        if response.clicked() && ui.input(|i| i.modifiers.ctrl) {
+            if let Some(pos) = response.interact_pointer_pos() {
+                let rel_x = (pos.x - rect.min.x) / rect.width();
+                let frame = (rel_x * total).round().max(0.0) as usize;
+                if let Some((idx, section)) = timeline.section_containing_indexed_any(frame) {
+                    if section.active {
+                        timeline.deactivate_section(idx);
+                    } else {
+                        timeline.activate_section(idx, budget);
+                    }
+                }
+            }
+        }
+
+        // =================================================================
         // Interaction: Click on inactive section to ACTIVATE it
         // =================================================================
         if response.clicked() && !ui.input(|i| i.modifiers.ctrl) {
@@ -122,9 +139,9 @@ pub fn draw_load_section_bar(
         }
 
         // =================================================================
-        // Interaction: Right-click to REMOVE a section
+        // Interaction: Ctrl+Right-click to REMOVE a section
         // =================================================================
-        if response.secondary_clicked() {
+        if response.secondary_clicked() && ui.input(|i| i.modifiers.ctrl) {
             if let Some(pos) = response.interact_pointer_pos() {
                 let rel_x = (pos.x - rect.min.x) / rect.width();
                 let frame = (rel_x * total).round().max(0.0) as usize;

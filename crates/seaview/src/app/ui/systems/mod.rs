@@ -54,6 +54,7 @@ impl Plugin for UiSystemsPlugin {
                 handle_delete_session_events,
                 handle_create_session_events,
                 apply_material_config,
+                sync_wireframe_config,
                 toast_events_system,
             ),
         );

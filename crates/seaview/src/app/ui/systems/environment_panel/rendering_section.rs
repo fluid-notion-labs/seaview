@@ -1,7 +1,7 @@
 //! Rendering section for the Environment Panel
 //!
-//! This module renders the rendering controls (frame window size, spawned
-//! entity stats) inside the environment panel's accordion UI.
+//! This module renders the rendering controls (wireframe overlay, frame window
+//! size, spawned entity stats) inside the environment panel's accordion UI.
 
 use bevy_egui::egui;
 
@@ -23,6 +23,16 @@ pub fn render_rendering_section(
         .show(ui, |ui| {
             ui_state.collapsible.rendering_open = true;
 
+            // Wireframe overlay toggle
+            ui.heading("Wireframe");
+            ui.add_space(2.0);
+            ui.checkbox(
+                &mut render_config.wireframe_enabled,
+                "Show wireframe overlay",
+            )
+            .on_hover_text("Overlay triangle edges on the mesh (Ctrl+Shift+W)");
+            ui.add_space(8.0);
+
             // Frame window size slider
             ui.heading("Frame Window");
             ui.add_space(2.0);
@@ -31,9 +41,12 @@ pub fn render_rendering_section(
 
             let max_window = sequence_assets.total_frames.max(1);
             ui.add(
-                egui::Slider::new(&mut render_config.frame_window_size, 1..=max_window.min(100))
-                    .text("frames")
-                    .logarithmic(true),
+                egui::Slider::new(
+                    &mut render_config.frame_window_size,
+                    1..=max_window.min(100),
+                )
+                .text("frames")
+                .logarithmic(true),
             );
 
             ui.add_space(4.0);

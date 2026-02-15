@@ -38,12 +38,18 @@ gltf = { version = "1.4", features = ["import"] }
 threadpool = "1.8"
 sysinfo = "0.37"
 nvml-wrapper = "0.10"
+libc = { version = "0.2", optional = true }
 
 [dev-dependencies]
 tempfile = "3.8"
 
 [features]
 default = []
+# After bulk mesh unloads, call libc::malloc_trim(0) to return freed pages
+# to the OS.  Without this glibc keeps the pages in its arena and RSS stays
+# high even though the memory is logically free.  Can be expensive on
+# highly-fragmented heaps, so opt-in.
+mesh_unload_malloc_trim = ["libc"]
 # Maximum performance: disable all logging at compile time
 max-perf = [
     "log/max_level_off",

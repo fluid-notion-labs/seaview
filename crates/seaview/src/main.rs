@@ -1,5 +1,6 @@
 use bevy::asset::io::AssetSourceBuilder;
 use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
+use bevy::pbr::wireframe::WireframePlugin;
 use bevy::pbr::{DefaultOpaqueRendererMethod, ScreenSpaceReflections};
 use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
@@ -163,6 +164,7 @@ fn main() {
 
     app.insert_resource(DefaultOpaqueRendererMethod::deferred())
         .add_plugins(DefaultPlugins)
+        .add_plugins(WireframePlugin::default())
         .add_plugins(AssetLoadersPlugin)
         .add_plugins(FrameTimeDiagnosticsPlugin::default())
         .add_plugins(RenderingDiagnosticsPlugin)

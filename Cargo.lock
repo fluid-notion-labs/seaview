@@ -4616,6 +4616,7 @@ dependencies = [
  "env_logger",
  "glob",
  "gltf",
+ "libc",
  "log",
  "meshopt",
  "nalgebra",

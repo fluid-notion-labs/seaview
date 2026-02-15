@@ -1,11 +1,13 @@
 //! Material system for Seaview
 //!
-//! This module provides a system that reactively applies MaterialConfig
-//! changes to the sequence mesh's StandardMaterial.
+//! This module provides systems that reactively apply MaterialConfig
+//! changes to the sequence mesh's StandardMaterial, and sync wireframe
+//! overlay state to Bevy's `WireframeConfig`.
 
-use bevy::prelude::*;
-use crate::app::ui::state::MaterialConfig;
+use crate::app::ui::state::{MaterialConfig, RenderConfig};
 use crate::lib::sequence::loader::SequenceMeshDisplay;
+use bevy::pbr::wireframe::WireframeConfig;
+use bevy::prelude::*;
 
 /// System that applies MaterialConfig changes to the mesh material in real time
 pub fn apply_material_config(
@@ -29,7 +31,8 @@ pub fn apply_material_config(
 
             // Emissive: combine color with intensity
             if config.emissive_intensity > 0.0 {
-                material.emissive = (config.emissive.to_linear() * config.emissive_intensity).into();
+                material.emissive =
+                    (config.emissive.to_linear() * config.emissive_intensity).into();
             } else {
                 material.emissive = Color::BLACK.into();
             }
@@ -48,5 +51,29 @@ pub fn apply_material_config(
                 AlphaMode::Opaque
             };
         }
+    }
+}
+
+/// System that syncs `RenderConfig::wireframe_enabled` to Bevy's `WireframeConfig::global`.
+///
+/// Only writes when the value actually changes, to avoid unnecessary change-detection triggers.
+pub fn sync_wireframe_config(
+    render_config: Res<RenderConfig>,
+    mut wireframe_config: ResMut<WireframeConfig>,
+) {
+    if !render_config.is_changed() {
+        return;
+    }
+
+    if wireframe_config.global != render_config.wireframe_enabled {
+        wireframe_config.global = render_config.wireframe_enabled;
+        debug!(
+            "Wireframe overlay {}",
+            if render_config.wireframe_enabled {
+                "enabled"
+            } else {
+                "disabled"
+            }
+        );
     }
 }

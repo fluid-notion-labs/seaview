@@ -37,8 +37,18 @@ use bevy::asset::{AssetEvent, LoadState, RenderAssetUsages};
 use bevy::gltf::{GltfAssetLabel, GltfLoaderSettings};
 use bevy::mesh::Mesh;
 use bevy::prelude::*;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
+
+/// Read current process RSS in MB from `/proc/self/statm`.
+/// Returns 0.0 on non-Linux or if the read fails.
+fn rss_mb() -> f64 {
+    std::fs::read_to_string("/proc/self/statm")
+        .ok()
+        .and_then(|s| s.split_whitespace().nth(1)?.parse::<u64>().ok())
+        .map(|pages| pages as f64 * 4096.0 / 1_048_576.0)
+        .unwrap_or(0.0)
+}
 
 use super::{compute_spawn_windows, frames_to_load, SequenceManager, Timeline};
 
@@ -265,12 +275,16 @@ impl SequenceAssets {
 #[derive(Resource, Default)]
 pub struct LoadQueue {
     queue: VecDeque<usize>,
+    /// Tracks indices already in the queue to prevent duplicate enqueues.
+    pending: HashSet<usize>,
 }
 
 impl LoadQueue {
-    /// Push a frame index to be loaded.
+    /// Push a frame index to be loaded (deduplicates automatically).
     fn push(&mut self, idx: usize) {
-        self.queue.push_back(idx);
+        if self.pending.insert(idx) {
+            self.queue.push_back(idx);
+        }
     }
 
     /// How many items are waiting.
@@ -286,6 +300,7 @@ impl LoadQueue {
     /// Clear all pending loads (used when resetting for a new sequence).
     fn clear(&mut self) {
         self.queue.clear();
+        self.pending.clear();
     }
 }
 
@@ -559,17 +574,28 @@ fn sync_section_loads(
     mut sequence_assets: ResMut<SequenceAssets>,
     timeline: Res<Timeline>,
     mut load_queue: ResMut<LoadQueue>,
+    mut prev_sections: Local<Vec<super::LoadSection>>,
+    mut meshes: ResMut<Assets<Mesh>>,
 ) {
-    // Early-out: nothing to do if no sequence or timeline hasn't changed.
+    // Early-out: nothing to do if no sequence loaded.
     if sequence_assets.total_frames == 0 {
         return;
     }
-    if !timeline.is_changed() {
+    // Only re-sync when sections actually changed (not on every playhead tick).
+    if timeline.sections == *prev_sections {
         return;
     }
+    *prev_sections = timeline.sections.clone();
     let Some(_format) = sequence_assets.format else {
         return;
     };
+
+    // Clear stale queue entries — frames from previously-active sections
+    // would otherwise be picked up by drain_load_queue and re-loaded even
+    // though their section is now inactive.
+    load_queue.clear();
+
+    let rss_before = rss_mb();
 
     let needed = frames_to_load(&timeline.sections, sequence_assets.total_frames);
 
@@ -590,12 +616,22 @@ fn sync_section_loads(
         is_needed[idx] = true;
     }
     let mut unloads = 0usize;
+    let mut handles_with_entities = 0usize;
+    let mut meshes_removed = 0usize;
     for idx in 0..sequence_assets.total_frames {
         if !is_needed[idx] && sequence_assets.frame_handles[idx].is_some() {
+            if sequence_assets.frame_entities[idx].is_some() {
+                handles_with_entities += 1;
+            }
             // Extract the asset id before mutating, to satisfy the borrow checker.
             let asset_id = sequence_assets.frame_handles[idx].as_ref().map(|h| h.id());
             if let Some(id) = asset_id {
                 sequence_assets.asset_id_to_frame.remove(&id);
+                // Force-remove the mesh from Assets<Mesh> immediately instead
+                // of relying on Bevy's deferred GC after handle drop.
+                if meshes.remove(id).is_some() {
+                    meshes_removed += 1;
+                }
             }
             sequence_assets.frame_handles[idx] = None;
             if sequence_assets.loaded_frames[idx] {
@@ -606,13 +642,36 @@ fn sync_section_loads(
         }
     }
 
+    // After bulk unloads, ask glibc to return freed pages to the OS.
+    // Without this, RSS stays high because malloc keeps pages in its arena
+    // for reuse rather than returning them via munmap.
+    //
+    // Gated behind the `mesh_unload_malloc_trim` feature because
+    // malloc_trim() can be expensive on highly-fragmented heaps and may
+    // not be desirable in all workloads.  Enable with:
+    //   cargo build --features mesh_unload_malloc_trim
+    #[cfg(feature = "mesh_unload_malloc_trim")]
+    if unloads > 0 {
+        #[cfg(target_os = "linux")]
+        unsafe {
+            libc::malloc_trim(0);
+        }
+    }
+
+    let rss_after = rss_mb();
+
     if loads_enqueued > 0 || unloads > 0 {
         sequence_assets.loading = true;
         info!(
-            "Section sync: {} loads enqueued, {} handles dropped (queue len: {})",
+            "Section sync: {} loads enqueued, {} handles dropped ({} had live entities, {} meshes removed), queue len: {} | RSS {:.1} → {:.1} MB (Δ {:.1})",
             loads_enqueued,
             unloads,
+            handles_with_entities,
+            meshes_removed,
             load_queue.len(),
+            rss_before,
+            rss_after,
+            rss_after - rss_before,
         );
     }
 }
@@ -635,6 +694,7 @@ fn drain_load_queue(
     let mut loaded_this_frame = 0usize;
 
     while let Some(idx) = load_queue.queue.pop_front() {
+        load_queue.pending.remove(&idx);
         if loaded_this_frame >= LOADS_PER_FRAME {
             break;
         }
@@ -876,6 +936,10 @@ fn manage_frame_window(
     //    Despawns are NOT throttled — freeing memory is always welcome.
     //    We also demote the mesh back to MAIN_WORLD only so Bevy's render
     //    asset system releases the GPU buffer.
+    let rss_before_despawn = rss_mb();
+    let mut despawns = 0usize;
+    let mut demote_ok = 0usize;
+    let mut demote_fail = 0usize;
     for &(old_lo, old_hi) in prev_windows.iter() {
         for idx in old_lo..old_hi {
             if in_windows(idx, &new_windows) {
@@ -886,12 +950,32 @@ fn manage_frame_window(
                     *vis = Visibility::Hidden;
                 }
                 commands.entity(entity).despawn();
-                sequence_assets.demote_from_gpu(idx, &mut meshes);
+                let has_handle = sequence_assets.frame_handles[idx].is_some();
+                if sequence_assets.demote_from_gpu(idx, &mut meshes) {
+                    demote_ok += 1;
+                } else {
+                    demote_fail += 1;
+                    if demote_fail <= 3 {
+                        warn!(
+                            "demote_from_gpu FAILED for frame {} (handle present: {})",
+                            idx, has_handle
+                        );
+                    }
+                }
                 if frame_bytes > 0 {
                     memory_budget.record_frame_unloaded(frame_bytes);
                 }
+                despawns += 1;
             }
         }
+    }
+    if despawns > 0 {
+        let rss_after_despawn = rss_mb();
+        info!(
+            "manage_frame_window: despawned {} entities (demote ok: {}, fail: {}) | RSS {:.1} → {:.1} MB (Δ {:.1})",
+            despawns, demote_ok, demote_fail,
+            rss_before_despawn, rss_after_despawn, rss_after_despawn - rss_before_despawn,
+        );
     }
 
     // 2. Spawn entities that are in new windows but were NOT in old windows.
@@ -948,9 +1032,20 @@ fn manage_frame_window(
 
     // Log window changes
     if new_windows != *prev_windows {
-        debug!(
-            "Frame windows changed: {:?} → {:?}, current frame: {}",
-            *prev_windows, new_windows, current
+        let active_handles = sequence_assets
+            .frame_handles
+            .iter()
+            .filter(|h| h.is_some())
+            .count();
+        let live_entities = sequence_assets
+            .frame_entities
+            .iter()
+            .filter(|e| e.is_some())
+            .count();
+        info!(
+            "Frame windows changed: {:?} → {:?}, current frame: {} | handles: {}, entities: {}, RSS: {:.1} MB",
+            *prev_windows, new_windows, current,
+            active_handles, live_entities, rss_mb(),
         );
     }
 

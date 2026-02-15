@@ -20,12 +20,16 @@ pub struct RenderConfig {
     /// The window spans `[current - window/2, current + window/2]`.
     /// A value of 1 means only the current frame is spawned (original behaviour).
     pub frame_window_size: usize,
+
+    /// Whether wireframe overlay is enabled (shows mesh triangles on top of material).
+    pub wireframe_enabled: bool,
 }
 
 impl Default for RenderConfig {
     fn default() -> Self {
         Self {
             frame_window_size: 5,
+            wireframe_enabled: false,
         }
     }
 }
