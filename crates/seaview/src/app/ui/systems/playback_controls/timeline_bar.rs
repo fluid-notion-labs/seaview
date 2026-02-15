@@ -7,6 +7,9 @@ use bevy_egui::egui;
 
 use crate::lib::sequence::Timeline;
 
+use super::TRACK_LEFT_MARGIN;
+use super::TRACK_RIGHT_RESERVE;
+
 /// Draw the timeline scrubber bar with a draggable handle.
 ///
 /// Returns the frame the user scrubbed to (if any interaction occurred).
@@ -19,12 +22,11 @@ pub fn draw_timeline_bar(
     let bar_height = 20.0;
     let handle_width = 12.0;
     let handle_height = 24.0;
-    let margin = 5.0;
 
-    let available_width = ui.available_width() - margin * 2.0;
-    let desired_size = egui::Vec2::new(available_width, handle_height);
+    ui.add_space(TRACK_LEFT_MARGIN);
+    let bar_width = (ui.available_width() - TRACK_RIGHT_RESERVE).max(0.0);
+    let desired_size = egui::Vec2::new(bar_width, handle_height);
 
-    ui.add_space(margin);
     let (rect, response) = ui.allocate_exact_size(desired_size, egui::Sense::click_and_drag());
 
     let max_frame = display_total_frames.saturating_sub(1).max(1);

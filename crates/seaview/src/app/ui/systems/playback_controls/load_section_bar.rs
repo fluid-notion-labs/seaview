@@ -17,6 +17,9 @@ use bevy_egui::egui;
 use crate::app::ui::state::LoadSectionEdge;
 use crate::lib::sequence::Timeline;
 
+use super::TRACK_LEFT_MARGIN;
+use super::TRACK_RIGHT_RESERVE;
+
 /// Persistent drag state tracked across frames.
 ///
 /// Stored in the parent system's `Local` so that a drag that starts on one
@@ -94,13 +97,12 @@ pub fn draw_load_section_bar(
 
     ui.add_space(2.0);
     ui.horizontal(|ui| {
-        ui.add_space(10.0);
+        ui.add_space(TRACK_LEFT_MARGIN);
 
         let bar_height = 14.0;
         let handle_width = 8.0;
-        // Reserve a little space on the right for the section-count label.
-        let label_width = 40.0;
-        let desired_size = egui::Vec2::new(ui.available_width() - 20.0 - label_width, bar_height);
+        let bar_width = (ui.available_width() - TRACK_RIGHT_RESERVE).max(0.0);
+        let desired_size = egui::Vec2::new(bar_width, bar_height);
         let (rect, response) = ui.allocate_exact_size(desired_size, egui::Sense::click_and_drag());
 
         let total = display_total_frames.max(1) as f32;

@@ -11,6 +11,15 @@ mod load_section_bar;
 mod timeline_bar;
 mod transport;
 
+/// Left margin (px) for the timeline and load-section track bars.
+/// Both bars use this so frame positions align vertically.
+pub(super) const TRACK_LEFT_MARGIN: f32 = 10.0;
+
+/// Right-side reserve (px) after the track bar — leaves room for the
+/// section-count label on the load-section bar.  The timeline bar uses
+/// the same value so both bars share identical width.
+pub(super) const TRACK_RIGHT_RESERVE: f32 = 54.0;
+
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 
