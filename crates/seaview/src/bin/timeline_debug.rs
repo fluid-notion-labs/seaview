@@ -18,10 +18,12 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use nvml_wrapper::Nvml;
-use regex::Regex;
 use sysinfo::System;
 
-use seaview::{distribute_sections, LoadSection};
+use seaview::{
+    discover_sequences, distribute_sections, LoadSection, MeshFileFormat, Sequence,
+    SequencePatterns,
+};
 
 // ---------------------------------------------------------------------------
 // CLI
@@ -148,122 +150,17 @@ fn parse_args() -> Args {
 }
 
 // ---------------------------------------------------------------------------
-// Sequence discovery (lightweight, no Bevy)
+// Helpers for library types
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MeshFormat {
-    Stl,
-    Gltf,
-    Glb,
-}
-
-impl MeshFormat {
-    fn from_extension(ext: &str) -> Option<Self> {
-        match ext.to_ascii_lowercase().as_str() {
-            "stl" => Some(Self::Stl),
-            "gltf" => Some(Self::Gltf),
-            "glb" => Some(Self::Glb),
-            _ => None,
-        }
-    }
-
-    fn label(&self) -> &'static str {
-        match self {
-            Self::Stl => "STL",
-            Self::Gltf => "glTF",
-            Self::Glb => "GLB",
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-struct FrameFile {
-    path: PathBuf,
-    frame_number: usize,
-    file_size: u64,
-}
-
-#[derive(Debug)]
-struct DiscoveredSequence {
-    name: String,
-    format: MeshFormat,
-    frames: Vec<FrameFile>,
-}
-
-fn discover_sequences(directory: &Path) -> Vec<DiscoveredSequence> {
-    let patterns: Vec<(Regex, usize)> = vec![
-        (Regex::new(r"^(.+?)[\._-]?(\d{3,6})\.stl$").unwrap(), 2),
-        (Regex::new(r"^(.+?)[\._-]?[Tt](\d+)\.stl$").unwrap(), 2),
-        (Regex::new(r"^(.+?)(\d{3,})\.stl$").unwrap(), 2),
-        (Regex::new(r"^(.+?)[\._-]?(\d{3,6})\.gltf$").unwrap(), 2),
-        (Regex::new(r"^(.+?)(\d{3,})\.gltf$").unwrap(), 2),
-        (Regex::new(r"^(.+?)[\._-]?(\d{3,6})\.glb$").unwrap(), 2),
-        (Regex::new(r"^(.+?)(\d{3,})\.glb$").unwrap(), 2),
-    ];
-
-    let mut groups: std::collections::HashMap<String, Vec<FrameFile>> =
-        std::collections::HashMap::new();
-
-    let entries = match std::fs::read_dir(directory) {
-        Ok(e) => e,
-        Err(e) => {
-            eprintln!("Cannot read directory {:?}: {}", directory, e);
-            return Vec::new();
-        }
-    };
-
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_file() {
-            continue;
-        }
-        let Some(filename) = path.file_name().and_then(|f| f.to_str()) else {
-            continue;
-        };
-
-        for (regex, frame_group) in &patterns {
-            if let Some(captures) = regex.captures(filename) {
-                if let (Some(base_match), Some(frame_match)) =
-                    (captures.get(1), captures.get(*frame_group))
-                {
-                    if let Ok(frame_number) = frame_match.as_str().parse::<usize>() {
-                        let key = base_match.as_str().to_string();
-                        let file_size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-                        groups.entry(key).or_default().push(FrameFile {
-                            path: path.clone(),
-                            frame_number,
-                            file_size,
-                        });
-                        break;
-                    }
-                }
-            }
-        }
-    }
-
-    let mut sequences = Vec::new();
-    for (name, mut frames) in groups {
-        if frames.len() < 2 {
-            continue;
-        }
-        frames.sort_by_key(|f| f.frame_number);
-
-        let format = frames
-            .first()
-            .and_then(|f| f.path.extension())
-            .and_then(|e| e.to_str())
-            .and_then(MeshFormat::from_extension)
-            .unwrap_or(MeshFormat::Glb);
-
-        sequences.push(DiscoveredSequence {
-            name,
-            format,
-            frames,
-        });
-    }
-    sequences.sort_by(|a, b| a.name.cmp(&b.name));
-    sequences
+/// Detect the mesh format of a sequence from its first frame's extension.
+fn detect_format(seq: &Sequence) -> MeshFileFormat {
+    seq.frames
+        .first()
+        .and_then(|f| f.path.extension())
+        .and_then(|e| e.to_str())
+        .and_then(MeshFileFormat::from_extension)
+        .unwrap_or(MeshFileFormat::Glb)
 }
 
 // ---------------------------------------------------------------------------
@@ -307,7 +204,7 @@ fn parse_stl_frame_size(path: &Path) -> Result<u64, String> {
     Ok(estimate_gpu_bytes(tri * 3, tri * 3))
 }
 
-fn sample_frame_size(seq: &DiscoveredSequence, sample_count: usize) -> u64 {
+fn sample_frame_size(seq: &Sequence, format: MeshFileFormat, sample_count: usize) -> u64 {
     let n = seq.frames.len();
     let count = sample_count.min(n).max(1);
 
@@ -322,9 +219,9 @@ fn sample_frame_size(seq: &DiscoveredSequence, sample_count: usize) -> u64 {
     let mut sizes: Vec<u64> = Vec::new();
     for &idx in &indices {
         let path = &seq.frames[idx].path;
-        let result = match seq.format {
-            MeshFormat::Glb | MeshFormat::Gltf => parse_glb_frame_size(path),
-            MeshFormat::Stl => parse_stl_frame_size(path),
+        let result = match format {
+            MeshFileFormat::Glb | MeshFileFormat::Gltf => parse_glb_frame_size(path),
+            MeshFileFormat::Stl => parse_stl_frame_size(path),
         };
         if let Ok(sz) = result {
             sizes.push(sz);
@@ -768,7 +665,15 @@ fn main() {
 
     // ── Discovery ─────────────────────────────────────────────────────────
     let t0 = Instant::now();
-    let sequences = discover_sequences(dir);
+    let patterns = SequencePatterns::default();
+    let orientation = seaview::coordinates::SourceOrientation::default();
+    let sequences = match discover_sequences(dir, false, &patterns, orientation) {
+        Ok(seqs) => seqs,
+        Err(e) => {
+            eprintln!("Error discovering sequences: {}", e);
+            std::process::exit(1);
+        }
+    };
     let discover_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
     if sequences.is_empty() {
@@ -786,6 +691,7 @@ fn main() {
     // ── Per-sequence ──────────────────────────────────────────────────────
     for seq in &sequences {
         let n = seq.frames.len();
+        let format = detect_format(seq);
         let total_disk: u64 = seq.frames.iter().map(|f| f.file_size).sum();
 
         println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
@@ -793,7 +699,7 @@ fn main() {
             "  Sequence: \"{}\"  |  {} frames  |  {}  |  {} on disk",
             seq.name,
             n,
-            seq.format.label(),
+            format.label(),
             human_bytes(total_disk),
         );
         println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
@@ -803,7 +709,7 @@ fn main() {
             "  Sampling {} frames for size estimate... ",
             args.sample_count
         );
-        let avg_frame_bytes = sample_frame_size(seq, args.sample_count);
+        let avg_frame_bytes = sample_frame_size(seq, format, args.sample_count);
         if avg_frame_bytes == 0 {
             println!("FAILED (no frames parsed)");
             continue;

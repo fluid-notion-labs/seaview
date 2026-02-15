@@ -35,7 +35,9 @@ use crate::app::ui::state::UiState;
 use crate::lib::memory_budget::MemoryBudget;
 
 // Re-export commonly used types from loader
-pub use loader::{FrameLoadedEvent, LoadSequenceRequest, LoadingStats, SequenceAssets};
+pub use loader::{
+    FrameLoadedEvent, LoadSequenceRequest, LoadingStats, MeshFileFormat, SequenceAssets,
+};
 pub use watch::{LoadingPhase, LoadingPhaseState, WatchConfig, WatchPlugin};
 
 // ---------------------------------------------------------------------------

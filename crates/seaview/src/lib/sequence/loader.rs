@@ -55,6 +55,15 @@ impl MeshFileFormat {
     pub fn is_gltf(&self) -> bool {
         matches!(self, Self::Gltf | Self::Glb)
     }
+
+    /// Human-readable label for display.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Stl => "STL",
+            Self::Gltf => "glTF",
+            Self::Glb => "GLB",
+        }
+    }
 }
 
 /// Plugin for mesh sequence loading
