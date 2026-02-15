@@ -108,16 +108,17 @@ impl LoadSection {
 
     /// Center the section on a frame, keeping the same size
     pub fn center_on(&mut self, frame: usize, total_frames: usize) {
-        let half = self.frame_count() / 2;
+        let size = self.frame_count();
+        let half = size / 2;
         let new_start = frame.saturating_sub(half);
-        let new_end = new_start + self.frame_count();
+        let new_end = new_start + size;
 
         if new_end <= total_frames {
             self.start = new_start;
             self.end = new_end;
         } else {
             self.end = total_frames;
-            self.start = self.end.saturating_sub(self.frame_count());
+            self.start = self.end.saturating_sub(size);
         }
     }
 }
@@ -141,7 +142,13 @@ impl Plugin for SequencePlugin {
             (advance_playback, playback::handle_keyboard_playback)
                 .before(sync_ui_from_sequence_manager),
         )
-        .add_systems(Update, (sync_ui_from_sequence_manager, update_load_section_from_budget));
+        .add_systems(
+            Update,
+            (
+                sync_ui_from_sequence_manager,
+                update_load_section_from_budget,
+            ),
+        );
     }
 }
 
@@ -172,9 +179,12 @@ fn update_load_section_from_budget(
     if load_section.start != old_start || load_section.end != old_end {
         debug!(
             "LoadSection clamped: [{}..{}) → [{}..{}) (total: {}, max: {})",
-            old_start, old_end,
-            load_section.start, load_section.end,
-            sequence_assets.total_frames, max_frames
+            old_start,
+            old_end,
+            load_section.start,
+            load_section.end,
+            sequence_assets.total_frames,
+            max_frames
         );
     }
 }
@@ -291,11 +301,7 @@ impl SequenceManager {
 
 /// Timer-based auto-advance. Reads `sequence_manager.speed` and
 /// `sequence_manager.loop_enabled`. Writes `sequence_manager.current_frame`.
-fn advance_playback(
-    mut sm: ResMut<SequenceManager>,
-    time: Res<Time>,
-    mut accumulator: Local<f32>,
-) {
+fn advance_playback(mut sm: ResMut<SequenceManager>, time: Res<Time>, mut accumulator: Local<f32>) {
     if !sm.is_playing || sm.current_sequence.is_none() {
         *accumulator = 0.0;
         return;
@@ -456,4 +462,201 @@ pub enum SequenceEvent {
     /// Error occurred
     #[allow(dead_code)]
     Error(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -----------------------------------------------------------------------
+    // LoadSection basics
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_load_section_new() {
+        let ls = LoadSection::new(10, 50);
+        assert_eq!(ls.start, 10);
+        assert_eq!(ls.end, 50);
+        assert_eq!(ls.frame_count(), 40);
+        assert!(ls.dragging.is_none());
+    }
+
+    #[test]
+    fn test_load_section_default_covers_everything() {
+        let ls = LoadSection::default();
+        assert_eq!(ls.start, 0);
+        assert_eq!(ls.end, usize::MAX);
+    }
+
+    #[test]
+    fn test_load_section_frame_count() {
+        assert_eq!(LoadSection::new(0, 100).frame_count(), 100);
+        assert_eq!(LoadSection::new(50, 50).frame_count(), 0);
+        assert_eq!(LoadSection::new(50, 30).frame_count(), 0); // saturating_sub
+    }
+
+    #[test]
+    fn test_load_section_contains() {
+        let ls = LoadSection::new(10, 20);
+        assert!(!ls.contains(9));
+        assert!(ls.contains(10));
+        assert!(ls.contains(15));
+        assert!(ls.contains(19));
+        assert!(!ls.contains(20)); // exclusive end
+        assert!(!ls.contains(100));
+    }
+
+    // -----------------------------------------------------------------------
+    // LoadSection::clamp
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_clamp_end_to_total_frames() {
+        let mut ls = LoadSection::new(0, 500);
+        ls.clamp(200, 1000);
+        assert_eq!(ls.start, 0);
+        assert_eq!(ls.end, 200);
+    }
+
+    #[test]
+    fn test_clamp_start_past_end() {
+        let mut ls = LoadSection::new(300, 200);
+        ls.clamp(500, 1000);
+        // start clamped to min(300, 200) = 200
+        assert_eq!(ls.start, 200);
+        assert_eq!(ls.end, 200);
+    }
+
+    #[test]
+    fn test_clamp_exceeds_max_frames() {
+        let mut ls = LoadSection::new(0, 500);
+        ls.clamp(500, 100);
+        assert_eq!(ls.start, 0);
+        assert_eq!(ls.end, 100);
+        assert_eq!(ls.frame_count(), 100);
+    }
+
+    #[test]
+    fn test_clamp_default_to_real_sequence() {
+        let mut ls = LoadSection::default(); // 0..usize::MAX
+        ls.clamp(812, 812);
+        assert_eq!(ls.start, 0);
+        assert_eq!(ls.end, 812);
+    }
+
+    #[test]
+    fn test_clamp_default_with_budget() {
+        let mut ls = LoadSection::default();
+        ls.clamp(812, 200);
+        assert_eq!(ls.start, 0);
+        assert_eq!(ls.end, 200);
+    }
+
+    #[test]
+    fn test_clamp_already_within_bounds() {
+        let mut ls = LoadSection::new(10, 50);
+        ls.clamp(500, 100);
+        assert_eq!(ls.start, 10);
+        assert_eq!(ls.end, 50);
+    }
+
+    // -----------------------------------------------------------------------
+    // LoadSection::set_start / set_end
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_set_start_normal() {
+        let mut ls = LoadSection::new(10, 100);
+        ls.set_start(20, 200);
+        assert_eq!(ls.start, 20);
+        assert_eq!(ls.end, 100);
+    }
+
+    #[test]
+    fn test_set_start_past_end() {
+        let mut ls = LoadSection::new(10, 50);
+        ls.set_start(80, 200);
+        // start clamped to end - 1 = 49
+        assert_eq!(ls.start, 49);
+    }
+
+    #[test]
+    fn test_set_start_exceeds_max_frames() {
+        let mut ls = LoadSection::new(50, 200);
+        ls.set_start(0, 50);
+        assert_eq!(ls.start, 0);
+        // end shrunk to start + max = 50
+        assert_eq!(ls.end, 50);
+    }
+
+    #[test]
+    fn test_set_end_normal() {
+        let mut ls = LoadSection::new(10, 100);
+        ls.set_end(200, 500, 300);
+        assert_eq!(ls.start, 10);
+        assert_eq!(ls.end, 200);
+    }
+
+    #[test]
+    fn test_set_end_past_total() {
+        let mut ls = LoadSection::new(10, 100);
+        ls.set_end(600, 500, 1000);
+        assert_eq!(ls.end, 500);
+    }
+
+    #[test]
+    fn test_set_end_before_start() {
+        let mut ls = LoadSection::new(50, 100);
+        ls.set_end(30, 500, 1000);
+        // end clamped to max(30, start + 1) = 51
+        assert_eq!(ls.end, 51);
+    }
+
+    #[test]
+    fn test_set_end_exceeds_max_frames() {
+        let mut ls = LoadSection::new(10, 100);
+        ls.set_end(400, 500, 50);
+        assert_eq!(ls.end, 400);
+        // start pushed forward: end - max = 350
+        assert_eq!(ls.start, 350);
+    }
+
+    // -----------------------------------------------------------------------
+    // LoadSection::center_on
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_center_on_middle() {
+        let mut ls = LoadSection::new(0, 100);
+        ls.center_on(250, 500);
+        assert_eq!(ls.start, 200);
+        assert_eq!(ls.end, 300);
+        assert_eq!(ls.frame_count(), 100);
+    }
+
+    #[test]
+    fn test_center_on_near_start() {
+        let mut ls = LoadSection::new(0, 100);
+        ls.center_on(10, 500);
+        // Would go to -40..60, but saturating_sub clamps to 0
+        assert_eq!(ls.start, 0);
+        assert_eq!(ls.end, 100);
+    }
+
+    #[test]
+    fn test_center_on_near_end() {
+        let mut ls = LoadSection::new(0, 100);
+        ls.center_on(480, 500);
+        // Would go to 430..530, but clamps to end of sequence
+        assert_eq!(ls.end, 500);
+        assert_eq!(ls.start, 400);
+        assert_eq!(ls.frame_count(), 100);
+    }
+
+    #[test]
+    fn test_center_on_preserves_size() {
+        let mut ls = LoadSection::new(0, 50);
+        ls.center_on(200, 1000);
+        assert_eq!(ls.frame_count(), 50);
+    }
 }

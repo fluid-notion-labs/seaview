@@ -327,11 +327,7 @@ impl From<&MaterialConfig> for MaterialSettings {
             emissive_intensity: cfg.emissive_intensity,
             double_sided: cfg.double_sided,
             alpha_mode,
-            alpha_cutoff: if cfg.opacity < 1.0 {
-                cfg.opacity
-            } else {
-                0.5
-            },
+            alpha_cutoff: if cfg.opacity < 1.0 { cfg.opacity } else { 0.5 },
         }
     }
 }
@@ -565,7 +561,9 @@ impl Settings {
     /// Look up the active camera, falling back to the first entry, then `None`.
     pub fn active_camera_settings(&self) -> Option<&CameraSettings> {
         let name = self.active_camera_name();
-        self.cameras.get(name).or_else(|| self.cameras.values().next())
+        self.cameras
+            .get(name)
+            .or_else(|| self.cameras.values().next())
     }
 
     /// Save a camera transform under the given name.
@@ -583,7 +581,9 @@ impl Settings {
         lighting_cfg: &NightLightingConfig,
         material_cfg: &MaterialConfig,
     ) {
-        let env = self.environment.get_or_insert_with(EnvironmentSettings::default);
+        let env = self
+            .environment
+            .get_or_insert_with(EnvironmentSettings::default);
         env.lighting = Some(LightingSettings::from(lighting_cfg));
         env.materials
             .insert("fluid".to_string(), MaterialSettings::from(material_cfg));
@@ -741,8 +741,7 @@ mod tests {
 
     #[test]
     fn test_camera_roundtrip() {
-        let transform =
-            Transform::from_xyz(10.0, 20.0, 30.0).looking_at(Vec3::ZERO, Vec3::Y);
+        let transform = Transform::from_xyz(10.0, 20.0, 30.0).looking_at(Vec3::ZERO, Vec3::Y);
         let cam = CameraSettings::from_transform(&transform);
         let recovered = cam.to_transform();
 
@@ -887,7 +886,10 @@ rotation = [-30.0, 90.0, 0.0]
         assert_eq!(cfg.cone_angle, recovered.cone_angle);
         assert_eq!(cfg.placement_algorithm, recovered.placement_algorithm);
         assert_eq!(cfg.enabled, recovered.enabled);
-        assert_eq!(cfg.global_lighting_enabled, recovered.global_lighting_enabled);
+        assert_eq!(
+            cfg.global_lighting_enabled,
+            recovered.global_lighting_enabled
+        );
         assert_eq!(cfg.intensity, recovered.intensity);
         assert_eq!(cfg.range, recovered.range);
         assert_eq!(cfg.show_markers, recovered.show_markers);
@@ -1301,10 +1303,7 @@ alpha_cutoff = 0.5
         // Re-serialize should keep both
         let reserialized = toml::to_string_pretty(&settings.clone()).unwrap();
         let recovered: Settings = toml::from_str(&reserialized).unwrap();
-        assert_eq!(
-            recovered.environment.unwrap().materials.len(),
-            2
-        );
+        assert_eq!(recovered.environment.unwrap().materials.len(), 2);
     }
 
     #[test]
@@ -1376,5 +1375,84 @@ dimensions = [75.0, 50.0, 75.0]
         assert!(settings.sequence.is_some());
         assert!(settings.playback.is_some());
         assert!(settings.mesh.is_some());
+    }
+
+    // -----------------------------------------------------------------------
+    // LoadSectionSettings
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_load_section_settings_default() {
+        let ls = LoadSectionSettings::default();
+        assert_eq!(ls.start, 0);
+        assert_eq!(ls.end, 100);
+        assert_eq!(ls.frame_count(), 100);
+    }
+
+    #[test]
+    fn test_load_section_settings_roundtrip() {
+        let ls = LoadSectionSettings::new(50, 200);
+        let toml_str = toml::to_string_pretty(&ls).unwrap();
+        let recovered: LoadSectionSettings = toml::from_str(&toml_str).unwrap();
+        assert_eq!(recovered.start, 50);
+        assert_eq!(recovered.end, 200);
+    }
+
+    #[test]
+    fn test_load_section_settings_in_settings() {
+        let settings = Settings {
+            load_section: Some(LoadSectionSettings::new(10, 300)),
+            ..Default::default()
+        };
+
+        let toml_str = toml::to_string_pretty(&settings).unwrap();
+        assert!(toml_str.contains("[load_section]"));
+        assert!(toml_str.contains("start = 10"));
+        assert!(toml_str.contains("end = 300"));
+
+        let recovered: Settings = toml::from_str(&toml_str).unwrap();
+        let ls = recovered.load_section.unwrap();
+        assert_eq!(ls.start, 10);
+        assert_eq!(ls.end, 300);
+    }
+
+    #[test]
+    fn test_load_section_settings_none_omitted() {
+        let settings = Settings {
+            load_section: None,
+            ..Default::default()
+        };
+        let toml_str = toml::to_string_pretty(&settings).unwrap();
+        assert!(!toml_str.contains("load_section"));
+    }
+
+    #[test]
+    fn test_load_section_settings_backward_compat() {
+        // Old files without load_section should parse fine
+        let toml_str = r#"
+[cameras.default]
+position = [1.0, 2.0, 3.0]
+rotation = [0.0, 0.0, 0.0]
+"#;
+        let settings: Settings = toml::from_str(toml_str).unwrap();
+        assert!(settings.load_section.is_none());
+    }
+
+    #[test]
+    fn test_load_section_settings_contains() {
+        let ls = LoadSectionSettings::new(10, 50);
+        assert!(!ls.contains(9));
+        assert!(ls.contains(10));
+        assert!(ls.contains(49));
+        assert!(!ls.contains(50));
+    }
+
+    #[test]
+    fn test_load_section_settings_clamp() {
+        let mut ls = LoadSectionSettings::new(0, 500);
+        ls.clamp(200, 100);
+        assert_eq!(ls.end, 100);
+        assert_eq!(ls.start, 0);
+        assert_eq!(ls.frame_count(), 100);
     }
 }
