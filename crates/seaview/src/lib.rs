@@ -14,6 +14,7 @@ pub mod lib {
     pub mod sequence;
     pub mod session;
     pub mod settings;
+    pub mod toast;
 }
 
 pub mod app {
@@ -39,3 +40,4 @@ pub use lib::sequence::{
     distribute_sections, FrameInfo, LoadSection, MeshFileFormat, Sequence, Timeline,
 };
 pub use lib::session::{self, Session, SessionManager, SessionPlugin};
+pub use lib::toast::{Toast, ToastLevel, ToastQueue};

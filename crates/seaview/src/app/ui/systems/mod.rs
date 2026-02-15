@@ -5,23 +5,32 @@
 use bevy::prelude::*;
 use bevy_egui::EguiPrimaryContextPass;
 
+pub mod environment_panel;
 mod event_handlers;
 mod material_system;
 mod menu_bar;
 mod playback_controls;
-pub mod environment_panel;
+mod status_bar;
+mod toast_events;
+mod toast_overlay;
 
+pub use environment_panel::*;
 pub use event_handlers::*;
 pub use material_system::*;
 pub use menu_bar::*;
 pub use playback_controls::*;
-pub use environment_panel::*;
+pub use status_bar::*;
+pub use toast_events::*;
+pub use toast_overlay::*;
 
 /// Plugin that registers all UI systems
 pub struct UiSystemsPlugin;
 
 impl Plugin for UiSystemsPlugin {
     fn build(&self, app: &mut App) {
+        // Insert the resource that tracks previous loading phase for transition detection
+        app.init_resource::<PreviousLoadingPhaseState>();
+
         // Register all UI systems to run in the EguiPrimaryContextPass schedule
         app.add_systems(
             EguiPrimaryContextPass,
@@ -32,6 +41,8 @@ impl Plugin for UiSystemsPlugin {
                 delete_confirmation_dialog_system,
                 message_display_system,
                 playback_controls_system,
+                toast_overlay_system,
+                status_bar_system,
             ),
         );
 
@@ -43,6 +54,7 @@ impl Plugin for UiSystemsPlugin {
                 handle_delete_session_events,
                 handle_create_session_events,
                 apply_material_config,
+                toast_events_system,
             ),
         );
     }

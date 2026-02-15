@@ -27,13 +27,16 @@ Issue **seaview-437** is the living session context. It is always open (P0) and 
 
 ## `!lc` Command
 
-`!lcc` means, load context and continue: !lc + continue
 
 When the user says **`!lc`**, check issue seaview-437:
 
 ```bash
 bd show seaview-437
 ```
+
+## `!lcc` Command
+
+`!lcc` means, load context and continue: !lc + continue
 
 ## `!sc` Command
 

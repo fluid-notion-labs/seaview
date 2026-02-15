@@ -7,6 +7,7 @@ use bevy::prelude::*;
 use uuid::Uuid;
 
 use crate::lib::sequence::SequenceAssets;
+use crate::lib::toast::ToastQueue;
 
 /// Configuration for the rendering frame window (ring buffer).
 ///
@@ -64,6 +65,13 @@ pub struct UiState {
 
     /// Which load-section edge the user is currently dragging (if any)
     pub load_section_dragging: Option<LoadSectionEdge>,
+
+    /// Toast notification queue
+    pub toasts: ToastQueue,
+
+    /// Monotonic clock for toast timestamps (seconds since app start).
+    /// Updated each frame by a system with `Time` access.
+    pub toast_clock: f64,
 }
 
 /// Which edge of the load section the user is dragging in the timeline UI
@@ -284,6 +292,8 @@ impl UiState {
                 ..Default::default()
             },
             loading: LoadingState::default(),
+            toasts: ToastQueue::default(),
+            toast_clock: 0.0,
             ..Default::default()
         }
     }
@@ -296,28 +306,47 @@ impl UiState {
         self.playback.is_playing = false;
     }
 
-    /// Show an error message
+    /// Show an error toast notification.
     pub fn show_error(&mut self, message: impl Into<String>) {
-        self.temp_state.error_message = Some(message.into());
-        error!(
-            "UI Error: {}",
-            self.temp_state.error_message.as_ref().unwrap()
-        );
+        let msg = message.into();
+        error!("UI Error: {}", msg);
+        // Push as toast — `now` will be 0.0 here since we don't have Time access,
+        // but the toast_events system will set a proper timestamp on next drain.
+        // Instead, use a sentinel: callers with Time access should use toasts directly.
+        self.toasts.error(msg, self.toast_clock);
     }
 
-    /// Show an info message
+    /// Show an info toast notification.
     pub fn show_info(&mut self, message: impl Into<String>) {
-        self.temp_state.info_message = Some(message.into());
-        debug!(
-            "UI Info: {}",
-            self.temp_state.info_message.as_ref().unwrap()
-        );
+        let msg = message.into();
+        debug!("UI Info: {}", msg);
+        self.toasts.info(msg, self.toast_clock);
     }
 
-    /// Clear all temporary messages
+    /// Show a success toast notification.
+    pub fn show_success(&mut self, message: impl Into<String>) {
+        let msg = message.into();
+        debug!("UI Success: {}", msg);
+        self.toasts.success(msg, self.toast_clock);
+    }
+
+    /// Show a warning toast notification.
+    pub fn show_warning(&mut self, message: impl Into<String>) {
+        let msg = message.into();
+        warn!("UI Warning: {}", msg);
+        self.toasts.warning(msg, self.toast_clock);
+    }
+
+    /// Clear all temporary messages (legacy — clears modal state).
     pub fn clear_messages(&mut self) {
         self.temp_state.error_message = None;
         self.temp_state.info_message = None;
+    }
+
+    /// Update the internal clock used for toast timestamps.
+    /// Call once per frame from a system that has access to `Time`.
+    pub fn update_toast_clock(&mut self, elapsed_secs: f64) {
+        self.toast_clock = elapsed_secs;
     }
 }
 
