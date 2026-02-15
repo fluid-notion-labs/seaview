@@ -16,9 +16,12 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use nvml_wrapper::Nvml;
-use sysinfo::System;
 
-use seaview::{discover_sequences, MeshFileFormat, Sequence, SequencePatterns};
+use seaview::{
+    discover_sequences, estimate_mesh_gpu_bytes, human_bytes, GlobalSettings, MemoryBudget,
+    MemorySettings, MeshFileFormat, NoVramDetector, NvmlBackend, RamDetector, Sequence,
+    SequencePatterns, SysInfoBackend,
+};
 
 // ---------------------------------------------------------------------------
 // CLI
@@ -123,17 +126,6 @@ struct MeshStats {
     parse_us: u64,
 }
 
-/// Estimate GPU memory from vertex + index counts (matches memory_budget.rs logic)
-fn estimate_gpu_bytes(vertex_count: usize, index_count: usize) -> u64 {
-    const BYTES_PER_VERTEX: usize = 12 + 12 + 8; // pos + normal + uv = 32
-    const BYTES_PER_INDEX: usize = 4;
-    const OVERHEAD: f64 = 1.1;
-
-    let vertex_bytes = vertex_count * BYTES_PER_VERTEX;
-    let index_bytes = index_count * BYTES_PER_INDEX;
-    ((vertex_bytes + index_bytes) as f64 * OVERHEAD) as u64
-}
-
 fn parse_glb_stats(path: &Path) -> Result<MeshStats, String> {
     let t0 = Instant::now();
     let file_bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
@@ -172,7 +164,7 @@ fn parse_glb_stats(path: &Path) -> Result<MeshStats, String> {
         vertex_count: total_vertices,
         index_count: total_indices,
         file_bytes,
-        estimated_gpu_bytes: estimate_gpu_bytes(total_vertices, total_indices),
+        estimated_gpu_bytes: estimate_mesh_gpu_bytes(total_vertices, total_indices),
         parse_us,
     })
 }
@@ -196,7 +188,7 @@ fn parse_stl_stats(path: &Path) -> Result<MeshStats, String> {
         vertex_count,
         index_count,
         file_bytes,
-        estimated_gpu_bytes: estimate_gpu_bytes(vertex_count, index_count),
+        estimated_gpu_bytes: estimate_mesh_gpu_bytes(vertex_count, index_count),
         parse_us,
     })
 }
@@ -221,47 +213,9 @@ fn load_local_settings(directory: &Path) -> Option<String> {
     }
 }
 
-fn load_global_settings() -> Option<String> {
-    // XDG_CONFIG_HOME
-    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
-        let path = PathBuf::from(xdg).join("seaview").join("seaview.toml");
-        if path.exists() {
-            return std::fs::read_to_string(&path).ok();
-        }
-    }
-    // ~/.config/seaview/seaview.toml
-    if let Some(home) = std::env::var("HOME").ok() {
-        let path = PathBuf::from(home)
-            .join(".config")
-            .join("seaview")
-            .join("seaview.toml");
-        if path.exists() {
-            return std::fs::read_to_string(&path).ok();
-        }
-    }
-    None
-}
-
 // ---------------------------------------------------------------------------
-// RAM detection
-// ---------------------------------------------------------------------------
-
-struct RamInfo {
-    total_bytes: u64,
-    available_bytes: u64,
-}
-
-fn detect_ram() -> RamInfo {
-    let mut sys = System::new_all();
-    sys.refresh_memory();
-    RamInfo {
-        total_bytes: sys.total_memory(),
-        available_bytes: sys.available_memory(),
-    }
-}
-
-// ---------------------------------------------------------------------------
-// VRAM detection (NVML)
+// VRAM detection — multi-GPU enumeration for display purposes.
+// Budget computation uses lib's NvmlBackend (device 0 only).
 // ---------------------------------------------------------------------------
 
 struct GpuInfo {
@@ -296,81 +250,8 @@ fn detect_gpus() -> Vec<GpuInfo> {
 }
 
 // ---------------------------------------------------------------------------
-// Budget computation
-// ---------------------------------------------------------------------------
-
-struct BudgetReport {
-    ram_total_gb: f64,
-    ram_available_gb: f64,
-    ram_budget_gb: f64,
-    ram_fraction: f32,
-    vram_total_bytes: Option<u64>,
-    vram_budget_bytes: Option<u64>,
-    gpu_fraction: f32,
-    /// Effective budget: RAM-only (VRAM managed by spawn window)
-    effective_budget_bytes: u64,
-    /// Per-frame estimate
-    frame_bytes: u64,
-    /// Max frames that fit
-    max_frames: usize,
-}
-
-fn compute_budget(
-    ram: &RamInfo,
-    vram_total: Option<u64>,
-    avg_frame_bytes: u64,
-    manual_budget_mb: Option<u64>,
-    ram_fraction: f32,
-    gpu_fraction: f32,
-) -> BudgetReport {
-    let gb = 1_073_741_824.0_f64;
-
-    let ram_budget_bytes = (ram.total_bytes as f64 * ram_fraction as f64) as u64;
-    let vram_budget_bytes = vram_total.map(|v| (v as f64 * gpu_fraction as f64) as u64);
-
-    let effective_budget_bytes = if let Some(mb) = manual_budget_mb {
-        mb * 1024 * 1024
-    } else {
-        // Effective budget is RAM-only. VRAM residency is controlled by
-        // the spawn-window system (promote_to_gpu / demote_from_gpu).
-        ram_budget_bytes
-    };
-
-    let max_frames = if avg_frame_bytes > 0 {
-        (effective_budget_bytes / avg_frame_bytes) as usize
-    } else {
-        usize::MAX
-    };
-
-    BudgetReport {
-        ram_total_gb: ram.total_bytes as f64 / gb,
-        ram_available_gb: ram.available_bytes as f64 / gb,
-        ram_budget_gb: ram_budget_bytes as f64 / gb,
-        ram_fraction,
-        vram_total_bytes: vram_total,
-        vram_budget_bytes,
-        gpu_fraction,
-        effective_budget_bytes,
-        frame_bytes: avg_frame_bytes,
-        max_frames,
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Output formatting
 // ---------------------------------------------------------------------------
-
-fn human_bytes(bytes: u64) -> String {
-    if bytes >= 1_073_741_824 {
-        format!("{:.2} GB", bytes as f64 / 1_073_741_824.0)
-    } else if bytes >= 1_048_576 {
-        format!("{:.2} MB", bytes as f64 / 1_048_576.0)
-    } else if bytes >= 1024 {
-        format!("{:.1} KB", bytes as f64 / 1024.0)
-    } else {
-        format!("{} B", bytes)
-    }
-}
 
 // ---------------------------------------------------------------------------
 // JSON output
@@ -380,13 +261,16 @@ fn print_json(
     seq: &Sequence,
     format: MeshFileFormat,
     sampled: &[MeshStats],
-    budget: &BudgetReport,
+    budget: &MemoryBudget,
+    mem_settings: &MemorySettings,
     load_section_start: usize,
     load_section_end: usize,
     local_toml: bool,
     global_toml: bool,
     total_parse_ms: f64,
 ) {
+    let gb = 1_073_741_824.0_f64;
+
     // Minimal JSON without serde_json — keep deps light
     println!("{{");
     println!("  \"sequence\": {{");
@@ -430,22 +314,26 @@ fn print_json(
     }
 
     println!("  \"budget\": {{");
-    println!("    \"ram_total_gb\": {:.2},", budget.ram_total_gb);
-    println!("    \"ram_available_gb\": {:.2},", budget.ram_available_gb);
-    println!("    \"ram_budget_gb\": {:.2},", budget.ram_budget_gb);
-    println!("    \"ram_fraction\": {},", budget.ram_fraction);
-    if let Some(vt) = budget.vram_total_bytes {
+    println!("    \"ram_total_gb\": {:.2},", budget.total_ram as f64 / gb);
+    println!(
+        "    \"ram_available_gb\": {:.2},",
+        budget.available_ram as f64 / gb
+    );
+    println!(
+        "    \"ram_budget_gb\": {:.2},",
+        budget.ram_budget as f64 / gb
+    );
+    println!("    \"ram_fraction\": {},", mem_settings.ram_fraction);
+    if let Some(vt) = budget.total_vram {
         println!("    \"vram_total_bytes\": {},", vt);
     }
-    if let Some(vb) = budget.vram_budget_bytes {
-        println!("    \"vram_budget_bytes\": {},", vb);
-    }
-    println!("    \"gpu_fraction\": {},", budget.gpu_fraction);
+    println!("    \"vram_budget_bytes\": {},", budget.vram_budget);
+    println!("    \"gpu_fraction\": {},", mem_settings.gpu_fraction);
     println!(
         "    \"effective_budget_bytes\": {},",
-        budget.effective_budget_bytes
+        budget.effective_budget()
     );
-    println!("    \"frame_bytes\": {},", budget.frame_bytes);
+    println!("    \"frame_bytes\": {},", budget.frame_size_estimate);
     println!("    \"max_frames\": {}", budget.max_frames);
     println!("  }},");
 
@@ -486,27 +374,11 @@ fn main() {
 
     // ── Settings ──────────────────────────────────────────────────────────
     let local_toml_str = load_local_settings(dir);
-    let global_toml_str = load_global_settings();
-
-    // Extract memory fractions from global config (best effort)
-    let (ram_fraction, gpu_fraction): (f32, f32) = global_toml_str
-        .as_deref()
-        .and_then(|s| {
-            let table: toml::Table = toml::from_str(s).ok()?;
-            let mem = table.get("memory")?.as_table()?;
-            let rf = mem
-                .get("ram_fraction")
-                .and_then(|v| v.as_float())
-                .map(|f| f as f32)
-                .unwrap_or(0.5);
-            let gf = mem
-                .get("gpu_fraction")
-                .and_then(|v| v.as_float())
-                .map(|f| f as f32)
-                .unwrap_or(0.5);
-            Some((rf, gf))
-        })
-        .unwrap_or((0.5, 0.5));
+    let global_settings = GlobalSettings::load().unwrap_or_default();
+    let has_global_toml = global_settings.memory.is_some() || global_settings.defaults.is_some();
+    let mem_settings = global_settings.memory.clone().unwrap_or_default();
+    let ram_fraction = mem_settings.ram_fraction;
+    let gpu_fraction = mem_settings.gpu_fraction;
 
     // Extract load_section from local config (best effort)
     let (cfg_ls_start, cfg_ls_end) = local_toml_str
@@ -536,11 +408,7 @@ fn main() {
         );
         println!(
             "Global config: {}",
-            if global_toml_str.is_some() {
-                "found ✓"
-            } else {
-                "none"
-            }
+            if has_global_toml { "found ✓" } else { "none" }
         );
         if cfg_ls_start != 0 || cfg_ls_end != usize::MAX {
             println!("Config load_section: [{}..{})", cfg_ls_start, cfg_ls_end);
@@ -577,26 +445,26 @@ fn main() {
         println!();
     }
 
-    // ── RAM ───────────────────────────────────────────────────────────────
-    let ram = detect_ram();
+    // ── Hardware detection (via lib) ──────────────────────────────────────
+    let ram_backend = SysInfoBackend::new();
+    let nvml_backend = NvmlBackend::new(); // Option<NvmlBackend>
 
     if human {
         println!(
             "RAM: {:.1} GB total, {:.1} GB available",
-            ram.total_bytes as f64 / 1_073_741_824.0,
-            ram.available_bytes as f64 / 1_073_741_824.0,
+            ram_backend.total_ram_bytes() as f64 / 1_073_741_824.0,
+            ram_backend.available_ram_bytes() as f64 / 1_073_741_824.0,
         );
         println!(
             "     fraction={:.0}% → budget {:.1} GB",
             ram_fraction * 100.0,
-            ram.total_bytes as f64 * ram_fraction as f64 / 1_073_741_824.0,
+            ram_backend.total_ram_bytes() as f64 * ram_fraction as f64 / 1_073_741_824.0,
         );
         println!();
     }
 
-    // ── GPU / VRAM ────────────────────────────────────────────────────────
+    // ── GPU / VRAM (multi-GPU enumeration for display) ────────────────────
     let gpus = detect_gpus();
-    // Use first GPU for budget (future: user-selectable)
     let primary_gpu = gpus.first();
 
     if human {
@@ -624,8 +492,6 @@ fn main() {
         }
         println!();
     }
-
-    let vram_total = primary_gpu.map(|g| g.total_vram);
 
     // ── Per-sequence analysis ─────────────────────────────────────────────
     for seq in &sequences {
@@ -792,15 +658,16 @@ fn main() {
             println!();
         }
 
-        // ── Budget ────────────────────────────────────────────────────────
-        let budget = compute_budget(
-            &ram,
-            vram_total,
-            avg_gpu,
-            args.budget_mb,
-            ram_fraction,
-            gpu_fraction,
-        );
+        // ── Budget (via lib) ──────────────────────────────────────────────
+        let mut budget = if let Some(mb) = args.budget_mb {
+            MemoryBudget::with_manual_budget(mb)
+        } else {
+            match &nvml_backend {
+                Some(nvml) => MemoryBudget::detect(&ram_backend, nvml, &mem_settings),
+                None => MemoryBudget::detect(&ram_backend, &NoVramDetector, &mem_settings),
+            }
+        };
+        budget.update_frame_estimate(avg_gpu);
 
         // ── Load section ──────────────────────────────────────────────────
         let mut ls_start = cfg_ls_start;
@@ -814,6 +681,7 @@ fn main() {
 
         let total_gpu_estimate = avg_gpu as u128 * n as u128;
         let loaded_gpu_estimate = avg_gpu as u128 * ls_count as u128;
+        let effective_budget = budget.effective_budget();
 
         if human {
             println!("  ┌─ Memory Budget ──────────────────────────────────────────┐");
@@ -822,32 +690,32 @@ fn main() {
                     "  │  Mode:           manual ({} MB)                        │",
                     mb
                 );
-            } else if budget.vram_budget_bytes.is_some() {
-                println!("  │  Mode:           auto (min of RAM, VRAM)                │");
+            } else if budget.total_vram.is_some() {
+                println!("  │  Mode:           auto (RAM budget, VRAM via spawn window)│");
             } else {
                 println!("  │  Mode:           auto (RAM only, no VRAM detected)      │");
             }
-            if let Some(vb) = budget.vram_budget_bytes {
+            if budget.total_vram.is_some() {
                 println!(
                     "  │  RAM budget:      {:>9}  ({:.0}% of {:.1} GB)       │",
-                    human_bytes((ram.total_bytes as f64 * ram_fraction as f64) as u64),
+                    human_bytes(budget.ram_budget),
                     ram_fraction * 100.0,
-                    budget.ram_total_gb,
+                    budget.total_ram as f64 / 1_073_741_824.0,
                 );
                 println!(
                     "  │  VRAM budget:     {:>9}  ({:.0}% of {:.1} GB)       │",
-                    human_bytes(vb),
-                    budget.gpu_fraction * 100.0,
-                    budget.vram_total_bytes.unwrap_or(0) as f64 / 1_073_741_824.0,
+                    human_bytes(budget.vram_budget),
+                    gpu_fraction * 100.0,
+                    budget.total_vram.unwrap_or(0) as f64 / 1_073_741_824.0,
                 );
             }
             println!(
                 "  │  Effective budget: {:>9}                            │",
-                human_bytes(budget.effective_budget_bytes)
+                human_bytes(budget.effective_budget())
             );
             println!(
                 "  │  Per-frame (avg):  {:>9}                            │",
-                human_bytes(budget.frame_bytes)
+                human_bytes(budget.frame_size_estimate)
             );
             println!(
                 "  │  Max frames:       {:>6}                               │",
@@ -870,8 +738,8 @@ fn main() {
                 human_bytes(loaded_gpu_estimate as u64),
                 ls_count
             );
-            let pct = if budget.effective_budget_bytes > 0 {
-                loaded_gpu_estimate as f64 / budget.effective_budget_bytes as f64 * 100.0
+            let pct = if effective_budget > 0 {
+                loaded_gpu_estimate as f64 / effective_budget as f64 * 100.0
             } else {
                 0.0
             };
@@ -914,10 +782,11 @@ fn main() {
                 format,
                 &sampled,
                 &budget,
+                &mem_settings,
                 ls_start,
                 ls_end,
                 local_toml_str.is_some(),
-                global_toml_str.is_some(),
+                has_global_toml,
                 total_parse_ms,
             );
         }

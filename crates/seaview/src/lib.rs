@@ -30,9 +30,10 @@ pub use lib::lighting::{self, EnvironmentLightConfig, LightingRig, NightLighting
 pub use lib::mesh_info::{MeshDimensions, MeshInfoPlugin, RecomputeMeshBounds};
 // pub use lib::network::{self, MeshReceiver, ReceivedMesh};
 pub use lib::asset_loaders::{self, AssetLoadersPlugin};
+pub use lib::global_settings::{GlobalSettings, MemorySettings};
 pub use lib::memory_budget::{
-    estimate_mesh_gpu_bytes, estimate_mesh_gpu_bytes_from_vertices, MemoryBudget,
-    MemoryBudgetPlugin, NvmlBackend, RamDetector, SysInfoBackend, VramDetector,
+    estimate_mesh_gpu_bytes, estimate_mesh_gpu_bytes_from_vertices, human_bytes, MemoryBudget,
+    MemoryBudgetPlugin, NoVramDetector, NvmlBackend, RamDetector, SysInfoBackend, VramDetector,
 };
 pub use lib::sequence::{
     self, compute_spawn_window,

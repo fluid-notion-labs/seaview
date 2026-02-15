@@ -17,12 +17,10 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use nvml_wrapper::Nvml;
-use sysinfo::System;
-
 use seaview::{
-    discover_sequences, distribute_sections, LoadSection, MeshFileFormat, Sequence,
-    SequencePatterns,
+    discover_sequences, distribute_sections, estimate_mesh_gpu_bytes, human_bytes, GlobalSettings,
+    LoadSection, MemoryBudget, MeshFileFormat, NoVramDetector, NvmlBackend, RamDetector, Sequence,
+    SequencePatterns, SysInfoBackend, VramDetector,
 };
 
 // ---------------------------------------------------------------------------
@@ -167,15 +165,6 @@ fn detect_format(seq: &Sequence) -> MeshFileFormat {
 // Mesh parsing (headless)
 // ---------------------------------------------------------------------------
 
-fn estimate_gpu_bytes(vertex_count: usize, index_count: usize) -> u64 {
-    const BYTES_PER_VERTEX: usize = 12 + 12 + 8; // pos + normal + uv = 32
-    const BYTES_PER_INDEX: usize = 4;
-    const OVERHEAD: f64 = 1.1;
-    let vertex_bytes = vertex_count * BYTES_PER_VERTEX;
-    let index_bytes = index_count * BYTES_PER_INDEX;
-    ((vertex_bytes + index_bytes) as f64 * OVERHEAD) as u64
-}
-
 fn parse_glb_frame_size(path: &Path) -> Result<u64, String> {
     let (document, _buffers, _) = gltf::import(path).map_err(|e| format!("gltf import: {}", e))?;
 
@@ -193,7 +182,7 @@ fn parse_glb_frame_size(path: &Path) -> Result<u64, String> {
         }
     }
 
-    Ok(estimate_gpu_bytes(total_vertices, total_indices))
+    Ok(estimate_mesh_gpu_bytes(total_vertices, total_indices))
 }
 
 fn parse_stl_frame_size(path: &Path) -> Result<u64, String> {
@@ -201,7 +190,7 @@ fn parse_stl_frame_size(path: &Path) -> Result<u64, String> {
     let mut reader = std::io::BufReader::new(&mut file);
     let stl = stl_io::read_stl(&mut reader).map_err(|e| format!("STL parse: {}", e))?;
     let tri = stl.faces.len();
-    Ok(estimate_gpu_bytes(tri * 3, tri * 3))
+    Ok(estimate_mesh_gpu_bytes(tri * 3, tri * 3))
 }
 
 fn sample_frame_size(seq: &Sequence, format: MeshFileFormat, sample_count: usize) -> u64 {
@@ -236,45 +225,6 @@ fn sample_frame_size(seq: &Sequence, format: MeshFileFormat, sample_count: usize
 }
 
 // ---------------------------------------------------------------------------
-// Hardware detection
-// ---------------------------------------------------------------------------
-
-struct HwInfo {
-    ram_total: u64,
-    ram_available: u64,
-    gpu_name: Option<String>,
-    vram_total: Option<u64>,
-    vram_free: Option<u64>,
-}
-
-fn detect_hardware() -> HwInfo {
-    let mut sys = System::new_all();
-    sys.refresh_memory();
-
-    let mut gpu_name = None;
-    let mut vram_total = None;
-    let mut vram_free = None;
-
-    if let Ok(nvml) = Nvml::init() {
-        if let Ok(device) = nvml.device_by_index(0) {
-            gpu_name = device.name().ok();
-            if let Ok(mem) = device.memory_info() {
-                vram_total = Some(mem.total);
-                vram_free = Some(mem.free);
-            }
-        }
-    }
-
-    HwInfo {
-        ram_total: sys.total_memory(),
-        ram_available: sys.available_memory(),
-        gpu_name,
-        vram_total,
-        vram_free,
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Load windows
 // ---------------------------------------------------------------------------
 
@@ -300,58 +250,9 @@ fn load_local_settings(directory: &Path) -> Option<String> {
     }
 }
 
-fn load_global_settings() -> Option<String> {
-    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
-        let path = PathBuf::from(xdg).join("seaview").join("seaview.toml");
-        if path.exists() {
-            return std::fs::read_to_string(&path).ok();
-        }
-    }
-    if let Ok(home) = std::env::var("HOME") {
-        let path = PathBuf::from(home)
-            .join(".config")
-            .join("seaview")
-            .join("seaview.toml");
-        if path.exists() {
-            return std::fs::read_to_string(&path).ok();
-        }
-    }
-    None
-}
-
-fn extract_fractions(global_toml: Option<&str>) -> (f32, f32) {
-    global_toml
-        .and_then(|s| {
-            let table: toml::Table = toml::from_str(s).ok()?;
-            let mem = table.get("memory")?.as_table()?;
-            let rf = mem
-                .get("ram_fraction")
-                .and_then(|v| v.as_float())
-                .unwrap_or(0.5) as f32;
-            let gf = mem
-                .get("gpu_fraction")
-                .and_then(|v| v.as_float())
-                .unwrap_or(0.5) as f32;
-            Some((rf, gf))
-        })
-        .unwrap_or((0.5, 0.5))
-}
-
 // ---------------------------------------------------------------------------
 // Terminal rendering
 // ---------------------------------------------------------------------------
-
-fn human_bytes(bytes: u64) -> String {
-    if bytes >= 1_073_741_824 {
-        format!("{:.2} GB", bytes as f64 / 1_073_741_824.0)
-    } else if bytes >= 1_048_576 {
-        format!("{:.1} MB", bytes as f64 / 1_048_576.0)
-    } else if bytes >= 1024 {
-        format!("{:.1} KB", bytes as f64 / 1024.0)
-    } else {
-        format!("{} B", bytes)
-    }
-}
 
 /// Render a single-line ASCII timeline bar.
 ///
@@ -609,11 +510,14 @@ fn main() {
 
     // ── Settings ──────────────────────────────────────────────────────────
     let _local_toml_str = load_local_settings(dir);
-    let global_toml_str = load_global_settings();
-    let (ram_fraction, gpu_fraction) = extract_fractions(global_toml_str.as_deref());
+    let global_settings = GlobalSettings::load().unwrap_or_default();
+    let mem_settings = global_settings.memory.clone().unwrap_or_default();
+    let ram_fraction = mem_settings.ram_fraction;
+    let gpu_fraction = mem_settings.gpu_fraction;
 
-    // ── Hardware ──────────────────────────────────────────────────────────
-    let hw = detect_hardware();
+    // ── Hardware detection (via lib) ──────────────────────────────────────
+    let ram_backend = SysInfoBackend::new();
+    let nvml_backend = NvmlBackend::new();
 
     println!("╔══════════════════════════════════════════════════════════════════╗");
     println!("║                  Seaview Timeline Debug                         ║");
@@ -621,46 +525,45 @@ fn main() {
     println!();
     println!(
         "  RAM:  {:.1} GB total, {:.1} GB available (budget {:.0}% = {:.1} GB)",
-        hw.ram_total as f64 / 1_073_741_824.0,
-        hw.ram_available as f64 / 1_073_741_824.0,
+        ram_backend.total_ram_bytes() as f64 / 1_073_741_824.0,
+        ram_backend.available_ram_bytes() as f64 / 1_073_741_824.0,
         ram_fraction * 100.0,
-        hw.ram_total as f64 * ram_fraction as f64 / 1_073_741_824.0,
+        ram_backend.total_ram_bytes() as f64 * ram_fraction as f64 / 1_073_741_824.0,
     );
-    if let (Some(name), Some(vt), Some(vf)) = (&hw.gpu_name, hw.vram_total, hw.vram_free) {
+    if let Some(ref nvml) = nvml_backend {
+        let vram_total = nvml.total_vram_bytes().unwrap_or(0);
         println!(
-            "  GPU:  {} — {:.1} GB total, {:.1} GB free (budget {:.0}% = {:.1} GB)",
-            name,
-            vt as f64 / 1_073_741_824.0,
-            vf as f64 / 1_073_741_824.0,
+            "  GPU:  {} — {:.1} GB total (budget {:.0}% = {:.1} GB)",
+            nvml.device_name(),
+            vram_total as f64 / 1_073_741_824.0,
             gpu_fraction * 100.0,
-            vt as f64 * gpu_fraction as f64 / 1_073_741_824.0,
+            vram_total as f64 * gpu_fraction as f64 / 1_073_741_824.0,
         );
     } else {
         println!("  GPU:  NVML unavailable — no VRAM detection");
     }
     println!();
 
-    // ── Effective budget ──────────────────────────────────────────────────
-    let ram_budget = (hw.ram_total as f64 * ram_fraction as f64) as u64;
-    let vram_budget = hw
-        .vram_total
-        .map(|v| (v as f64 * gpu_fraction as f64) as u64);
-
-    let effective_budget = if let Some(mb) = args.budget_mb {
-        let b = mb * 1024 * 1024;
-        println!("  Budget: {} (manual override)", human_bytes(b));
+    // ── Budget (via lib) ──────────────────────────────────────────────────
+    let budget = if let Some(mb) = args.budget_mb {
+        let b = MemoryBudget::with_manual_budget(mb);
+        println!(
+            "  Budget: {} (manual override)",
+            human_bytes(b.effective_budget())
+        );
         b
     } else {
-        let b = match vram_budget {
-            Some(vb) => ram_budget.min(vb),
-            None => ram_budget,
+        let b = match &nvml_backend {
+            Some(nvml) => MemoryBudget::detect(&ram_backend, nvml, &mem_settings),
+            None => MemoryBudget::detect(&ram_backend, &NoVramDetector, &mem_settings),
         };
         println!(
-            "  Budget: {} (effective = min of RAM, VRAM)",
-            human_bytes(b)
+            "  Budget: {} (effective = RAM budget)",
+            human_bytes(b.effective_budget())
         );
         b
     };
+    let effective_budget = budget.effective_budget();
     println!();
 
     // ── Discovery ─────────────────────────────────────────────────────────

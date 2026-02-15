@@ -43,6 +43,25 @@ pub trait VramDetector: Send + Sync {
     fn device_name(&self) -> String;
 }
 
+/// Fallback VRAM detector used when no GPU detection backend is available
+/// (e.g. non-NVIDIA GPU, NVML unavailable). Returns `None` for all queries,
+/// causing `MemoryBudget::detect` to fall back to RAM-only budgeting.
+pub struct NoVramDetector;
+
+impl VramDetector for NoVramDetector {
+    fn total_vram_bytes(&self) -> Option<u64> {
+        None
+    }
+
+    fn available_vram_bytes(&self) -> Option<u64> {
+        None
+    }
+
+    fn device_name(&self) -> String {
+        "Unknown".to_string()
+    }
+}
+
 // ============================================================================
 // SysInfo Backend (RAM)
 // ============================================================================
@@ -356,6 +375,25 @@ impl MemoryBudget {
         } else {
             (self.used_bytes as f64 / budget as f64) as f32
         }
+    }
+}
+
+// ============================================================================
+// Formatting Utilities
+// ============================================================================
+
+/// Format a byte count as a human-readable string (e.g. "1.23 GB", "4.5 MB").
+///
+/// Used by debug binaries and anywhere a memory size needs display formatting.
+pub fn human_bytes(bytes: u64) -> String {
+    if bytes >= 1_073_741_824 {
+        format!("{:.2} GB", bytes as f64 / 1_073_741_824.0)
+    } else if bytes >= 1_048_576 {
+        format!("{:.1} MB", bytes as f64 / 1_048_576.0)
+    } else if bytes >= 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{} B", bytes)
     }
 }
 
