@@ -21,6 +21,8 @@ use nvml_wrapper::Nvml;
 use regex::Regex;
 use sysinfo::System;
 
+use seaview::{distribute_sections, LoadSection};
+
 // ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
@@ -379,91 +381,12 @@ fn detect_hardware() -> HwInfo {
 // Load windows
 // ---------------------------------------------------------------------------
 
-/// A contiguous range of frames to keep in memory.
-#[derive(Debug, Clone, Copy)]
-struct LoadWindow {
-    start: usize,
-    end: usize, // exclusive
-}
-
-impl LoadWindow {
-    fn count(&self) -> usize {
-        self.end.saturating_sub(self.start)
-    }
-
-    fn contains(&self, frame: usize) -> bool {
-        frame >= self.start && frame < self.end
-    }
-}
-
-/// Distribute `num_windows` windows of equal size across `total_frames`,
-/// consuming at most `max_frames` total loaded frames.
-fn distribute_windows(
-    total_frames: usize,
-    max_frames: usize,
-    num_windows: usize,
-) -> Vec<LoadWindow> {
-    if num_windows == 0 || total_frames == 0 || max_frames == 0 {
-        return Vec::new();
-    }
-
-    let budget = max_frames.min(total_frames);
-    let per_window = (budget / num_windows).max(1);
-
-    if num_windows == 1 {
-        return vec![LoadWindow {
-            start: 0,
-            end: per_window.min(total_frames),
-        }];
-    }
-
-    // Evenly space windows across the total timeline
-    let mut windows = Vec::with_capacity(num_windows);
-    for i in 0..num_windows {
-        // Center of the i-th slot
-        let center = if num_windows == 1 {
-            total_frames / 2
-        } else {
-            // Place centers so that they span from near-start to near-end
-            let slot_size = total_frames as f64 / num_windows as f64;
-            (slot_size * (i as f64 + 0.5)) as usize
-        };
-
-        let half = per_window / 2;
-        let mut start = center.saturating_sub(half);
-        let mut end = start + per_window;
-
-        // Clamp to bounds
-        if end > total_frames {
-            end = total_frames;
-            start = end.saturating_sub(per_window);
-        }
-
-        windows.push(LoadWindow { start, end });
-    }
-
-    // Resolve overlaps: push later windows right if they collide
-    for i in 1..windows.len() {
-        if windows[i].start < windows[i - 1].end {
-            let shift = windows[i - 1].end;
-            let count = windows[i].count();
-            windows[i].start = shift;
-            windows[i].end = (shift + count).min(total_frames);
-        }
-    }
-
-    windows
-}
-
 /// Parse explicit ranges and clamp to total_frames
-fn parse_explicit_windows(ranges: &[(usize, usize)], total_frames: usize) -> Vec<LoadWindow> {
+fn parse_explicit_windows(ranges: &[(usize, usize)], total_frames: usize) -> Vec<LoadSection> {
     ranges
         .iter()
-        .map(|&(s, e)| LoadWindow {
-            start: s.min(total_frames),
-            end: e.min(total_frames),
-        })
-        .filter(|w| w.count() > 0)
+        .map(|&(s, e)| LoadSection::new(s.min(total_frames), e.min(total_frames)))
+        .filter(|w| w.frame_count() > 0)
         .collect()
 }
 
@@ -544,7 +467,7 @@ fn human_bytes(bytes: u64) -> String {
 ///   `▏`  playhead on unloaded segment
 fn render_timeline(
     total_frames: usize,
-    windows: &[LoadWindow],
+    windows: &[LoadSection],
     playhead: Option<usize>,
     width: usize,
 ) -> Vec<String> {
@@ -599,7 +522,7 @@ fn render_timeline(
 
         for (i, w) in windows.iter().enumerate() {
             let col_start = 1 + (w.start as f64 / total_frames as f64 * bar_width as f64) as usize;
-            let label = format!("W{}: {}-{} ({})", i, w.start, w.end, w.count());
+            let label = format!("W{}: {}-{} ({})", i, w.start, w.end, w.frame_count());
 
             // Place label starting at col_start, don't overflow
             let start_col = col_start.min(anno.len().saturating_sub(label.len()));
@@ -620,7 +543,7 @@ fn render_timeline(
 /// Render a detailed multi-line view with per-window breakdown.
 fn render_detail_view(
     total_frames: usize,
-    windows: &[LoadWindow],
+    windows: &[LoadSection],
     playhead: Option<usize>,
     frame_bytes: u64,
     budget_bytes: u64,
@@ -628,7 +551,7 @@ fn render_detail_view(
 ) -> Vec<String> {
     let mut lines = Vec::new();
 
-    let total_loaded: usize = windows.iter().map(|w| w.count()).sum();
+    let total_loaded: usize = windows.iter().map(|w| w.frame_count()).sum();
     let loaded_bytes = frame_bytes as u128 * total_loaded as u128;
     let total_bytes = frame_bytes as u128 * total_frames as u128;
 
@@ -681,9 +604,9 @@ fn render_detail_view(
     lines.push("  ├─────┼──────────────────┼────────┼──────────┼────────────┤".to_string());
 
     for (i, w) in windows.iter().enumerate() {
-        let mem = frame_bytes as u128 * w.count() as u128;
+        let mem = frame_bytes as u128 * w.frame_count() as u128;
         let pct = if total_frames > 0 {
-            w.count() as f64 / total_frames as f64 * 100.0
+            w.frame_count() as f64 / total_frames as f64 * 100.0
         } else {
             0.0
         };
@@ -692,7 +615,7 @@ fn render_detail_view(
             i,
             w.start,
             w.end,
-            w.count(),
+            w.frame_count(),
             human_bytes(mem as u64),
             pct,
         ));
@@ -743,21 +666,18 @@ fn render_detail_view(
     }
 
     // Zoomed view of each window
-    if windows.len() > 1 || (windows.len() == 1 && total_frames > windows[0].count() * 3) {
+    if windows.len() > 1 || (windows.len() == 1 && total_frames > windows[0].frame_count() * 3) {
         lines.push(String::new());
         lines.push("  Window detail:".to_string());
         for (i, w) in windows.iter().enumerate() {
             // Show context: 10% padding on each side
-            let pad = (w.count() as f64 * 0.3).max(10.0) as usize;
+            let pad = (w.frame_count() as f64 * 0.3).max(10.0) as usize;
             let ctx_start = w.start.saturating_sub(pad);
             let ctx_end = (w.end + pad).min(total_frames);
             let ctx_total = ctx_end - ctx_start;
 
             // Remap this window into the context range
-            let local_windows = vec![LoadWindow {
-                start: w.start - ctx_start,
-                end: w.end - ctx_start,
-            }];
+            let local_windows = vec![LoadSection::new(w.start - ctx_start, w.end - ctx_start)];
             let local_playhead = playhead
                 .filter(|&ph| ph >= ctx_start && ph < ctx_end)
                 .map(|ph| ph - ctx_start);
@@ -906,7 +826,7 @@ fn main() {
         // ── Build windows ─────────────────────────────────────────────────
         let windows = if let Some(ref ranges) = args.explicit_ranges {
             let ws = parse_explicit_windows(ranges, n);
-            let total_loaded: usize = ws.iter().map(|w| w.count()).sum();
+            let total_loaded: usize = ws.iter().map(|w| w.frame_count()).sum();
             if total_loaded > max_frames {
                 println!(
                     "  ⚠ Explicit ranges request {} frames but budget allows {} — showing anyway",
@@ -915,7 +835,7 @@ fn main() {
             }
             ws
         } else {
-            distribute_windows(n, max_frames, args.num_windows)
+            distribute_sections(n, max_frames, args.num_windows)
         };
 
         let bar_width = args.term_width.saturating_sub(6).max(20);
@@ -940,8 +860,8 @@ fn main() {
                 if max_frames < num_w * 2 {
                     break;
                 }
-                let alt_windows = distribute_windows(n, max_frames, num_w);
-                let alt_total: usize = alt_windows.iter().map(|w| w.count()).sum();
+                let alt_windows = distribute_sections(n, max_frames, num_w);
+                let alt_total: usize = alt_windows.iter().map(|w| w.frame_count()).sum();
                 println!();
                 println!(
                     "  {} windows ({} frames loaded, {:.1}% coverage):",
