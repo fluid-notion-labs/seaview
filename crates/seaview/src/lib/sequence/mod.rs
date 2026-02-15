@@ -12,10 +12,115 @@ use bevy::prelude::*;
 use std::path::PathBuf;
 
 use crate::app::ui::state::UiState;
+use crate::lib::memory_budget::MemoryBudget;
 
 // Re-export commonly used types from loader
 pub use loader::{FrameLoadedEvent, LoadSequenceRequest, LoadingStats, SequenceAssets};
 pub use watch::{LoadingPhase, LoadingPhaseState, WatchConfig, WatchPlugin};
+
+// ---------------------------------------------------------------------------
+// Load Section — runtime resource for frame range in memory
+// ---------------------------------------------------------------------------
+
+/// Resource defining which frames should be kept in memory.
+///
+/// This is the runtime representation that the loader uses to decide
+/// which frames to spawn/despawn. It's synced with `LoadSectionSettings`
+/// from the per-directory config.
+#[derive(Resource, Debug, Clone)]
+pub struct LoadSection {
+    /// Start frame index (inclusive)
+    pub start: usize,
+    /// End frame index (exclusive)
+    pub end: usize,
+    /// Whether the user is currently dragging an edge
+    pub dragging: Option<LoadSectionEdge>,
+}
+
+/// Which edge of the load section is being dragged
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoadSectionEdge {
+    Start,
+    End,
+}
+
+impl Default for LoadSection {
+    fn default() -> Self {
+        Self {
+            start: 0,
+            end: usize::MAX, // Will be clamped to actual sequence length
+            dragging: None,
+        }
+    }
+}
+
+impl LoadSection {
+    /// Create a new load section
+    pub fn new(start: usize, end: usize) -> Self {
+        Self {
+            start,
+            end,
+            dragging: None,
+        }
+    }
+
+    /// Get the number of frames in this section
+    pub fn frame_count(&self) -> usize {
+        self.end.saturating_sub(self.start)
+    }
+
+    /// Check if a frame index is within this section
+    pub fn contains(&self, frame: usize) -> bool {
+        frame >= self.start && frame < self.end
+    }
+
+    /// Clamp the section to valid bounds given total frames and max allowed
+    pub fn clamp(&mut self, total_frames: usize, max_frames: usize) {
+        // Ensure end doesn't exceed total
+        self.end = self.end.min(total_frames);
+        // Ensure start is before end
+        self.start = self.start.min(self.end);
+        // Ensure we don't exceed max frames
+        let current_count = self.frame_count();
+        if current_count > max_frames {
+            // Shrink from the end
+            self.end = self.start + max_frames;
+        }
+    }
+
+    /// Set the start edge, respecting constraints
+    pub fn set_start(&mut self, new_start: usize, max_frames: usize) {
+        self.start = new_start.min(self.end.saturating_sub(1));
+        // Ensure we don't exceed max frames
+        if self.frame_count() > max_frames {
+            self.end = self.start + max_frames;
+        }
+    }
+
+    /// Set the end edge, respecting constraints
+    pub fn set_end(&mut self, new_end: usize, total_frames: usize, max_frames: usize) {
+        self.end = new_end.min(total_frames).max(self.start + 1);
+        // Ensure we don't exceed max frames
+        if self.frame_count() > max_frames {
+            self.start = self.end.saturating_sub(max_frames);
+        }
+    }
+
+    /// Center the section on a frame, keeping the same size
+    pub fn center_on(&mut self, frame: usize, total_frames: usize) {
+        let half = self.frame_count() / 2;
+        let new_start = frame.saturating_sub(half);
+        let new_end = new_start + self.frame_count();
+
+        if new_end <= total_frames {
+            self.start = new_start;
+            self.end = new_end;
+        } else {
+            self.end = total_frames;
+            self.start = self.end.saturating_sub(self.frame_count());
+        }
+    }
+}
 
 /// Plugin for mesh sequence management
 pub struct SequencePlugin;
@@ -29,13 +134,48 @@ impl Plugin for SequencePlugin {
             watch::WatchPlugin,
         ))
         .init_resource::<SequenceManager>()
+        .init_resource::<LoadSection>()
         .add_message::<SequenceEvent>()
         .add_systems(
             Update,
             (advance_playback, playback::handle_keyboard_playback)
                 .before(sync_ui_from_sequence_manager),
         )
-        .add_systems(Update, sync_ui_from_sequence_manager);
+        .add_systems(Update, (sync_ui_from_sequence_manager, update_load_section_from_budget));
+    }
+}
+
+/// System to update load section when memory budget changes
+fn update_load_section_from_budget(
+    mut load_section: ResMut<LoadSection>,
+    memory_budget: Res<MemoryBudget>,
+    sequence_assets: Res<SequenceAssets>,
+) {
+    // Only update if we have valid data and the section needs clamping
+    if sequence_assets.total_frames == 0 {
+        return;
+    }
+
+    let max_frames = if memory_budget.max_frames < usize::MAX {
+        memory_budget.max_frames
+    } else {
+        sequence_assets.total_frames
+    };
+
+    let old_start = load_section.start;
+    let old_end = load_section.end;
+
+    // Clamp the load section to valid bounds
+    load_section.clamp(sequence_assets.total_frames, max_frames);
+
+    // Log if section changed
+    if load_section.start != old_start || load_section.end != old_end {
+        debug!(
+            "LoadSection clamped: [{}..{}) → [{}..{}) (total: {}, max: {})",
+            old_start, old_end,
+            load_section.start, load_section.end,
+            sequence_assets.total_frames, max_frames
+        );
     }
 }
 

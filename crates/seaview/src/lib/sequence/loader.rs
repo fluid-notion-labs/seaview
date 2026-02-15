@@ -11,15 +11,23 @@
 //!
 //! File format is detected by extension at load time so that a single sequence
 //! can only contain one format (mixing is not supported).
+//!
+//! ## Memory Budget Integration
+//!
+//! The loader integrates with [`MemoryBudget`] to:
+//! - Estimate frame size from the first loaded mesh
+//! - Track memory usage as frames are spawned/despawned
+//! - Respect budget limits when managing the frame window
 
 use bevy::asset::{AssetEvent, LoadState};
 use bevy::gltf::GltfAssetLabel;
 use bevy::prelude::*;
 use std::path::PathBuf;
 
-use super::SequenceManager;
+use super::{LoadSection, SequenceManager};
 
 use crate::app::ui::state::RenderConfig;
+use crate::lib::memory_budget::{estimate_mesh_gpu_bytes_from_vertices, MemoryBudget};
 
 /// Recognised mesh file formats for sequence loading.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,14 +65,8 @@ impl Plugin for SequenceLoaderPlugin {
         app.init_resource::<SequenceAssets>()
             .add_message::<FrameLoadedEvent>()
             .add_message::<LoadSequenceRequest>()
-            .add_systems(
-                Update,
-                (handle_load_requests, track_asset_loading).chain(),
-            )
-            .add_systems(
-                PostUpdate,
-                manage_frame_window,
-            );
+            .add_systems(Update, (handle_load_requests, track_asset_loading).chain())
+            .add_systems(PostUpdate, manage_frame_window);
     }
 }
 
@@ -93,6 +95,8 @@ pub struct SequenceAssets {
     pub shared_material: Option<Handle<StandardMaterial>>,
     /// Cached coordinate transform (set once when sequence loads)
     pub coord_transform: Transform,
+    /// Estimated GPU memory per frame in bytes (set after first frame loads)
+    pub estimated_frame_bytes: u64,
 }
 
 impl SequenceAssets {
@@ -108,6 +112,7 @@ impl SequenceAssets {
         self.frame_entities.clear();
         self.shared_material = None;
         self.coord_transform = Transform::default();
+        self.estimated_frame_bytes = 0;
     }
 
     /// Check if all frames are loaded
@@ -242,14 +247,19 @@ fn handle_load_requests(
     mut load_requests: MessageReader<LoadSequenceRequest>,
     mut sequence_assets: ResMut<SequenceAssets>,
     asset_server: Res<AssetServer>,
+    mut load_section: ResMut<super::LoadSection>,
+    memory_budget: Res<MemoryBudget>,
 ) {
     for request in load_requests.read() {
-        debug!("Loading sequence with {} frames", request.frame_paths.len());
+        info!(
+            "═══ LOADING SEQUENCE: {} frames ═══",
+            request.frame_paths.len()
+        );
 
         // Detect file format from the first frame.
         let format = match detect_sequence_format(&request.frame_paths) {
             Some(fmt) => {
-                debug!("Detected sequence format: {:?}", fmt);
+                info!("Detected format: {:?}", fmt);
                 fmt
             }
             None => {
@@ -283,6 +293,20 @@ fn handle_load_requests(
         sequence_assets.frame_entities = vec![None; n];
         sequence_assets.loaded_frames = vec![false; n];
 
+        // Initialize LoadSection to cover the full sequence (or max budget)
+        let max_frames = if memory_budget.max_frames < usize::MAX {
+            memory_budget.max_frames
+        } else {
+            n
+        };
+        load_section.start = 0;
+        load_section.end = n.min(max_frames);
+        load_section.dragging = None;
+        info!(
+            "LoadSection initialized: frames 0..{} (total: {}, budget max: {})",
+            load_section.end, n, max_frames
+        );
+
         // Store base path from first frame
         if let Some(first_path) = request.frame_paths.first() {
             sequence_assets.base_path = first_path.parent().map(|p| p.to_path_buf());
@@ -298,17 +322,18 @@ fn handle_load_requests(
 
             trace!(
                 "Frame {}: Loading '{}' as {:?} from path {:?}",
-                idx, filename, format, path
+                idx,
+                filename,
+                format,
+                path
             );
 
             let handle = load_mesh_handle(&asset_server, filename, format);
             sequence_assets.frame_handles.push(handle);
         }
 
-        debug!("Mesh display entity will be created when first frame loads");
-
-        debug!(
-            "Started loading {} {:?} frames from {:?}",
+        info!(
+            "Asset loading started: {} {:?} frames from {:?}",
             sequence_assets.total_frames, format, sequence_assets.base_path
         );
     }
@@ -325,6 +350,8 @@ fn track_asset_loading(
     asset_server: Res<AssetServer>,
     sequence_manager: Res<SequenceManager>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    meshes: Res<Assets<Mesh>>,
+    mut memory_budget: ResMut<MemoryBudget>,
 ) {
     if !sequence_assets.loading {
         return;
@@ -333,54 +360,74 @@ fn track_asset_loading(
     for event in events.read() {
         match event {
             AssetEvent::LoadedWithDependencies { id } => {
-                // Find which frame this corresponds to
-                for (index, handle) in sequence_assets.frame_handles.iter().enumerate() {
-                    if handle.id() == *id {
-                        sequence_assets.loaded_count += 1;
-                        sequence_assets.loaded_frames[index] = true;
+                // Find which frame this corresponds to - collect info first to avoid borrow issues
+                let found = sequence_assets
+                    .frame_handles
+                    .iter()
+                    .enumerate()
+                    .find(|(_, handle)| handle.id() == *id)
+                    .map(|(index, handle)| (index, handle.clone()));
 
-                        frame_loaded_events.write(FrameLoadedEvent {
-                            frame_index: index,
-                            success: true,
-                        });
+                if let Some((index, handle)) = found {
+                    sequence_assets.loaded_count += 1;
+                    sequence_assets.loaded_frames[index] = true;
 
-                        // Create shared material on first loaded frame
-                        if sequence_assets.shared_material.is_none() {
-                            sequence_assets.shared_material = Some(materials.add(StandardMaterial {
-                                base_color: Color::srgb(0.3, 0.5, 0.8),
-                                perceptual_roughness: 0.4,
-                                metallic: 0.1,
-                                cull_mode: None, // Double-sided rendering
-                                ..default()
-                            }));
-                        }
+                    frame_loaded_events.write(FrameLoadedEvent {
+                        frame_index: index,
+                        success: true,
+                    });
 
-                        // Cache coordinate transform on first loaded frame
-                        if index == 0 {
-                            if let Some(sequence) = sequence_manager.current_sequence() {
-                                sequence_assets.coord_transform =
-                                    sequence.source_orientation.to_transform();
-                                debug!(
-                                    "Applying coordinate transformation: {}",
-                                    sequence.source_orientation.description()
-                                );
-                            }
-                        }
+                    // Create shared material on first loaded frame
+                    if sequence_assets.shared_material.is_none() {
+                        sequence_assets.shared_material = Some(materials.add(StandardMaterial {
+                            base_color: Color::srgb(0.3, 0.5, 0.8),
+                            perceptual_roughness: 0.4,
+                            metallic: 0.1,
+                            cull_mode: None, // Double-sided rendering
+                            ..default()
+                        }));
+                    }
 
-                        // Log progress at intervals
-                        let progress = sequence_assets.progress();
-                        if sequence_assets.loaded_count % 10 == 0
-                            || sequence_assets.loaded_count == sequence_assets.total_frames
-                        {
-                            debug!(
-                                "Loading progress: {}/{} ({:.1}%)",
-                                sequence_assets.loaded_count,
-                                sequence_assets.total_frames,
-                                progress * 100.0
+                    // Estimate frame size from first loaded mesh for memory budgeting
+                    if sequence_assets.estimated_frame_bytes == 0 {
+                        if let Some(mesh) = meshes.get(&handle) {
+                            let vertex_count = mesh.count_vertices();
+                            let estimated_bytes =
+                                estimate_mesh_gpu_bytes_from_vertices(vertex_count);
+                            sequence_assets.estimated_frame_bytes = estimated_bytes;
+                            memory_budget.update_frame_estimate(estimated_bytes);
+                            info!(
+                                "Frame size estimate: {} vertices ≈ {:.1} MB, max {} frames in budget",
+                                vertex_count,
+                                estimated_bytes as f64 / 1_048_576.0,
+                                memory_budget.max_frames
                             );
                         }
+                    }
 
-                        break;
+                    // Cache coordinate transform on first loaded frame
+                    if index == 0 {
+                        if let Some(sequence) = sequence_manager.current_sequence() {
+                            sequence_assets.coord_transform =
+                                sequence.source_orientation.to_transform();
+                            debug!(
+                                "Applying coordinate transformation: {}",
+                                sequence.source_orientation.description()
+                            );
+                        }
+                    }
+
+                    // Log progress at intervals
+                    let progress = sequence_assets.progress();
+                    if sequence_assets.loaded_count % 10 == 0
+                        || sequence_assets.loaded_count == sequence_assets.total_frames
+                    {
+                        info!(
+                            "Loading progress: {}/{} ({:.1}%)",
+                            sequence_assets.loaded_count,
+                            sequence_assets.total_frames,
+                            progress * 100.0
+                        );
                     }
                 }
             }
@@ -391,16 +438,12 @@ fn track_asset_loading(
     // Check if loading is complete
     if sequence_assets.is_fully_loaded() && sequence_assets.loading {
         sequence_assets.loading = false;
-        info!(
-            "════════════════════════════════════════════════════════════════"
-        );
+        info!("════════════════════════════════════════════════════════════════");
         info!(
             "✓ SEQUENCE LOADING COMPLETE: {} frames loaded",
             sequence_assets.loaded_count,
         );
-        info!(
-            "════════════════════════════════════════════════════════════════"
-        );
+        info!("════════════════════════════════════════════════════════════════");
     }
 
     // Check for failed loads with detailed information
@@ -452,9 +495,11 @@ fn manage_frame_window(
     mut commands: Commands,
     mut sequence_assets: ResMut<SequenceAssets>,
     sequence_manager: Res<SequenceManager>,
+    load_section: Res<LoadSection>,
     render_config: Res<RenderConfig>,
     mut visibility_query: Query<&mut Visibility, With<SequenceMeshDisplay>>,
     mut prev_window: Local<(usize, usize)>,
+    mut memory_budget: ResMut<MemoryBudget>,
 ) {
     if sequence_assets.total_frames == 0 {
         return;
@@ -465,9 +510,19 @@ fn manage_frame_window(
     };
 
     let current = sequence_manager.current_frame;
+
+    // Entity spawning uses RenderConfig::frame_window_size (small sliding window
+    // around the current frame) to keep entity count low. The LoadSection controls
+    // which frames are *loaded as assets* (budget-level), but we only *spawn*
+    // entities for a small window within that range.
     let window = render_config.frame_window_size;
-    let (win_lo, win_hi) = sequence_assets.window_range(current, window);
+    let (raw_lo, raw_hi) = sequence_assets.window_range(current, window);
+    // Clamp the spawn window to the LoadSection range (only spawn frames that are within budget)
+    let section_end = load_section.end.min(sequence_assets.total_frames);
+    let win_lo = raw_lo.max(load_section.start);
+    let win_hi = raw_hi.min(section_end);
     let transform = sequence_assets.coord_transform;
+    let frame_bytes = sequence_assets.estimated_frame_bytes;
 
     let (old_lo, old_hi) = *prev_window;
 
@@ -482,6 +537,10 @@ fn manage_frame_window(
                 *vis = Visibility::Hidden;
             }
             commands.entity(entity).despawn();
+            // Track memory freed
+            if frame_bytes > 0 {
+                memory_budget.record_frame_unloaded(frame_bytes);
+            }
         }
     }
     let evict_right_start = old_lo.max(win_hi);
@@ -491,6 +550,10 @@ fn manage_frame_window(
                 *vis = Visibility::Hidden;
             }
             commands.entity(entity).despawn();
+            // Track memory freed
+            if frame_bytes > 0 {
+                memory_budget.record_frame_unloaded(frame_bytes);
+            }
         }
     }
 
@@ -526,7 +589,24 @@ fn manage_frame_window(
             .id();
 
         sequence_assets.frame_entities[idx] = Some(entity);
-        trace!("Spawned frame {} entity {:?} (window [{}, {}))", idx, entity, win_lo, win_hi);
+
+        // Track memory used
+        if frame_bytes > 0 {
+            memory_budget.record_frame_loaded(frame_bytes);
+        }
+
+        debug!(
+            "Spawned frame {} entity {:?} (window [{}, {}))",
+            idx, entity, win_lo, win_hi
+        );
+    }
+
+    // Log window changes
+    if (win_lo, win_hi) != (old_lo, old_hi) {
+        debug!(
+            "Frame window changed: [{}..{}) → [{}..{}), current frame: {}",
+            old_lo, old_hi, win_lo, win_hi, current
+        );
     }
 
     // 3. Set visibility on all already-existing entities in the window.

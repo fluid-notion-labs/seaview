@@ -8,6 +8,7 @@ pub mod lib {
     pub mod coordinates;
     pub mod global_settings;
     pub mod lighting;
+    pub mod memory_budget;
     pub mod mesh_info;
     // pub mod network;
     pub mod sequence;
@@ -28,5 +29,9 @@ pub use lib::lighting::{self, NightLightingConfig, NightLightingPlugin};
 pub use lib::mesh_info::{MeshDimensions, MeshInfoPlugin, RecomputeMeshBounds};
 // pub use lib::network::{self, MeshReceiver, ReceivedMesh};
 pub use lib::asset_loaders::{self, AssetLoadersPlugin};
-pub use lib::sequence;
+pub use lib::memory_budget::{
+    estimate_mesh_gpu_bytes, estimate_mesh_gpu_bytes_from_vertices, MemoryBudget,
+    MemoryBudgetPlugin, RamDetector, SysInfoBackend, VramDetector, WgpuBackend,
+};
+pub use lib::sequence::{self, LoadSection, LoadSectionEdge};
 pub use lib::session::{self, Session, SessionManager, SessionPlugin};

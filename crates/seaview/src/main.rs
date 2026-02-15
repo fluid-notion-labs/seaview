@@ -4,7 +4,7 @@ use bevy::pbr::{DefaultOpaqueRendererMethod, ScreenSpaceReflections};
 use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 use seaview::lib::lighting::GlobalLight;
-use seaview::{AssetLoadersPlugin, MeshDimensions, MeshInfoPlugin, NightLightingConfig, NightLightingPlugin, SeaviewUiPlugin, SessionPlugin};
+use seaview::{AssetLoadersPlugin, MeshDimensions, MeshInfoPlugin, MemoryBudgetPlugin, NightLightingConfig, NightLightingPlugin, SeaviewUiPlugin, SessionPlugin};
 
 use seaview::app::cli::Args;
 use seaview::app::systems::camera::{
@@ -161,9 +161,11 @@ fn main() {
         .add_plugins(SequencePlugin)
         // .add_plugins(BrpExtrasPlugin)
         .add_plugins(SessionPlugin)
+        .add_plugins(MemoryBudgetPlugin)
         .add_plugins(SeaviewUiPlugin)
         .add_plugins(NightLightingPlugin)
         .add_plugins(MeshInfoPlugin)
+        .add_plugins(seaview::app::systems::AppSystemsPlugin)
         .insert_resource(args)
         .insert_resource(source_orientation)
         .insert_resource(settings_resource)

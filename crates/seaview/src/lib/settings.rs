@@ -131,6 +131,75 @@ impl Default for MeshBoundsSettings {
 }
 
 // ---------------------------------------------------------------------------
+// Load Section — frame range to keep in memory
+// ---------------------------------------------------------------------------
+
+/// Settings for the loaded frame range.
+///
+/// Defines which frames are kept in memory. The range is stored as
+/// frame indices `[start, end)` (exclusive end).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LoadSectionSettings {
+    /// Start frame index (inclusive)
+    pub start: usize,
+    /// End frame index (exclusive)
+    pub end: usize,
+}
+
+impl Default for LoadSectionSettings {
+    fn default() -> Self {
+        Self {
+            start: 0,
+            end: 100, // Default to first 100 frames
+        }
+    }
+}
+
+impl LoadSectionSettings {
+    /// Create a new load section
+    pub fn new(start: usize, end: usize) -> Self {
+        Self { start, end }
+    }
+
+    /// Get the number of frames in this section
+    pub fn frame_count(&self) -> usize {
+        self.end.saturating_sub(self.start)
+    }
+
+    /// Check if a frame index is within this section
+    pub fn contains(&self, frame: usize) -> bool {
+        frame >= self.start && frame < self.end
+    }
+
+    /// Clamp the section to valid bounds given total frames and max allowed
+    pub fn clamp(&mut self, total_frames: usize, max_frames: usize) {
+        // Ensure end doesn't exceed total
+        self.end = self.end.min(total_frames);
+        // Ensure start is before end
+        self.start = self.start.min(self.end);
+        // Ensure we don't exceed max frames
+        let current_count = self.frame_count();
+        if current_count > max_frames {
+            // Shrink from the end
+            self.end = self.start + max_frames;
+        }
+    }
+
+    /// Expand the section by the given amount on each side, respecting limits
+    pub fn expand(&mut self, amount: usize, total_frames: usize, max_frames: usize) {
+        let new_start = self.start.saturating_sub(amount);
+        let new_end = (self.end + amount).min(total_frames);
+        let new_count = new_end - new_start;
+
+        if new_count <= max_frames {
+            self.start = new_start;
+            self.end = new_end;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Environment — Lighting bridge
 // ---------------------------------------------------------------------------
 
@@ -378,6 +447,11 @@ pub struct Settings {
     /// Visual appearance: lighting, materials, (future) props/bg/post.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub environment: Option<EnvironmentSettings>,
+
+    // -- memory / loading -------------------------------------------------
+    /// Load section defining which frames to keep in memory.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub load_section: Option<LoadSectionSettings>,
 }
 
 impl Settings {
@@ -708,6 +782,7 @@ mod tests {
             }),
             mesh: None,
             environment: None,
+            load_section: None,
         };
 
         let toml_str = toml::to_string_pretty(&settings).unwrap();
@@ -1169,6 +1244,7 @@ alpha_cutoff = 0.5
                     m
                 },
             }),
+            load_section: None,
         };
 
         settings.save_to_dir(&dir).unwrap();

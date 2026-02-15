@@ -36,6 +36,7 @@ thiserror = "1.0"
 glob = "0.3"
 gltf = { version = "1.4", features = ["import"] }
 threadpool = "1.8"
+sysinfo = "0.37"
 
 [dev-dependencies]
 tempfile = "3.8"
@@ -57,6 +58,8 @@ sysinfo_plugin = ["bevy/sysinfo_plugin"]
 bevy_dev_tools = ["bevy/bevy_dev_tools"]
 # Convenience: enable all perf debugging features (except tracy)
 perf = ["trace_chrome", "sysinfo_plugin"]
+# NVIDIA Management Library for accurate VRAM detection (requires NVML installed)
+nvml = []
 
 
 # [[bin]]
