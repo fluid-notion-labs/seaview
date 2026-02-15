@@ -4,7 +4,10 @@ use bevy::pbr::{DefaultOpaqueRendererMethod, ScreenSpaceReflections};
 use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 use seaview::lib::lighting::GlobalLight;
-use seaview::{AssetLoadersPlugin, MeshDimensions, MeshInfoPlugin, MemoryBudgetPlugin, NightLightingConfig, NightLightingPlugin, SeaviewUiPlugin, SessionPlugin};
+use seaview::{
+    AssetLoadersPlugin, MemoryBudgetPlugin, MeshDimensions, MeshInfoPlugin, NightLightingConfig,
+    NightLightingPlugin, SeaviewUiPlugin, SessionPlugin,
+};
 
 use seaview::app::cli::Args;
 use seaview::app::systems::camera::{
@@ -16,12 +19,17 @@ use seaview::app::ui::state::MaterialConfig;
 use seaview::lib::coordinates::SourceOrientation;
 use seaview::lib::global_settings::GlobalSettings;
 use seaview::lib::sequence::{
-    discovery::DiscoverSequenceRequest, LoadSequenceRequest, LoadingPhase, LoadingPhaseState,
-    SequencePlugin, WatchConfig,
+    discovery::DiscoverSequenceRequest, LoadSection, LoadSequenceRequest, LoadingPhase,
+    LoadingPhaseState, SequencePlugin, Timeline, WatchConfig,
 };
-use seaview::lib::settings::{
-    resolve_settings_dir, SaveViewEvent, Settings, SettingsResource,
-};
+use seaview::lib::settings::{resolve_settings_dir, SaveViewEvent, Settings, SettingsResource};
+
+/// Resource that holds saved load sections from `seaview.toml` until the
+/// sequence is loaded and the Timeline is ready to accept them.
+///
+/// A one-shot system consumes this after `timeline.total_frames > 0`.
+#[derive(Resource)]
+struct PendingSavedSections(Vec<LoadSection>);
 
 fn main() {
     // Parse command line arguments
@@ -172,7 +180,11 @@ fn main() {
         .insert_resource(global_settings)
         .add_message::<CenterOnMeshEvent>()
         .add_message::<SaveViewEvent>()
-        .add_systems(Startup, (setup, handle_input_path, setup_cursor, init_watch_config))
+        .add_systems(
+            Startup,
+            (setup, handle_input_path, setup_cursor, init_watch_config),
+        )
+        .add_systems(Update, (restore_saved_sections,))
         .add_systems(
             Update,
             (
@@ -202,10 +214,7 @@ fn init_watch_config(
         .as_ref()
         .and_then(|pb| pb.watch);
 
-    let watch_from_global = global_settings
-        .defaults
-        .as_ref()
-        .and_then(|d| d.watch);
+    let watch_from_global = global_settings.defaults.as_ref().and_then(|d| d.watch);
 
     let watch_enabled = watch_from_dir_settings
         .or(watch_from_global)
@@ -295,12 +304,7 @@ fn setup(
         .playback
         .as_ref()
         .and_then(|pb| pb.speed)
-        .or_else(|| {
-            global_settings
-                .defaults
-                .as_ref()
-                .and_then(|d| d.speed)
-        });
+        .or_else(|| global_settings.defaults.as_ref().and_then(|d| d.speed));
     if let Some(speed) = speed {
         sequence_manager.speed = speed;
         debug!("Applied playback speed: {}", speed);
@@ -321,6 +325,16 @@ fn setup(
     if let Some(loop_enabled) = loop_enabled {
         sequence_manager.loop_enabled = loop_enabled;
         debug!("Applied loop setting: {}", loop_enabled);
+    }
+
+    // -- Load sections: stash for deferred application -------------------------
+    let saved_sections = settings_res.settings.get_load_sections();
+    if !saved_sections.is_empty() {
+        debug!(
+            "Stashing {} saved load section(s) for deferred restore",
+            saved_sections.len()
+        );
+        commands.insert_resource(PendingSavedSections(saved_sections));
     }
 
     // Add a directional light for overall illumination
@@ -397,6 +411,58 @@ fn setup_cursor(mut cursor_query: Query<&mut CursorOptions, With<PrimaryWindow>>
     }
 }
 
+/// One-shot system: once the sequence is loaded (`total_frames > 0`), apply
+/// the saved load sections from `seaview.toml` and remove the resource so
+/// this never runs again.
+fn restore_saved_sections(
+    mut commands: Commands,
+    pending: Option<Res<PendingSavedSections>>,
+    mut timeline: ResMut<Timeline>,
+    memory_budget: Res<seaview::lib::memory_budget::MemoryBudget>,
+) {
+    let Some(pending) = pending else { return };
+    if timeline.total_frames == 0 {
+        return; // sequence not loaded yet — wait
+    }
+
+    let max_frames = if memory_budget.max_frames < usize::MAX {
+        memory_budget.max_frames
+    } else {
+        timeline.total_frames
+    };
+
+    // Replace the default single section with the saved layout
+    let mut sections: Vec<LoadSection> = pending
+        .0
+        .iter()
+        .cloned()
+        .map(|mut s| {
+            s.clamp(timeline.total_frames, max_frames);
+            s
+        })
+        .filter(|s| s.frame_count() > 0)
+        .collect();
+
+    if sections.is_empty() {
+        // All saved sections were out of range — keep the default
+        debug!("Saved sections out of range for current sequence, keeping default");
+    } else {
+        sections.sort_by_key(|s| s.start);
+        info!(
+            "Restored {} load section(s) from seaview.toml: {:?}",
+            sections.len(),
+            sections
+                .iter()
+                .map(|s| format!("[{}..{})", s.start, s.end))
+                .collect::<Vec<_>>()
+        );
+        timeline.sections = sections;
+    }
+
+    // Consume the resource so this system becomes a no-op
+    commands.remove_resource::<PendingSavedSections>();
+}
+
 /// System that handles save view requests.
 ///
 /// Persists camera (under the active name), playback, coordinates,
@@ -410,32 +476,37 @@ fn handle_save_view(
     lighting_cfg: Res<NightLightingConfig>,
     material_cfg: Res<MaterialConfig>,
     watch_config: Res<WatchConfig>,
+    timeline: Res<Timeline>,
 ) {
     for _event in save_events.read() {
         if let Ok(transform) = camera_query.single() {
             // Camera — save under the active name (defaults to "default")
-            settings_res
-                .settings
-                .set_camera_from_transform(transform);
+            settings_res.settings.set_camera_from_transform(transform);
 
             // Playback + coordinates + watch
-            settings_res
-                .settings
-                .set_playback(sequence_manager.speed, sequence_manager.loop_enabled, watch_config.enabled);
-            settings_res.settings.sequence =
-                Some(seaview::lib::settings::SequenceSettings {
-                    source_coordinates: Some(source_orientation.to_string()),
-                });
+            settings_res.settings.set_playback(
+                sequence_manager.speed,
+                sequence_manager.loop_enabled,
+                watch_config.enabled,
+            );
+            settings_res.settings.sequence = Some(seaview::lib::settings::SequenceSettings {
+                source_coordinates: Some(source_orientation.to_string()),
+            });
 
             // Environment — lighting + material
             settings_res
                 .settings
                 .set_environment(&lighting_cfg, &material_cfg);
 
+            // Load sections — persist multi-section layout
+            settings_res.settings.set_load_sections(&timeline.sections);
+
             match settings_res.save() {
                 Ok(()) => {
-                    debug!("💾 View saved to seaview.toml (camera='{}', environment included)",
-                        settings_res.settings.active_camera_name());
+                    debug!(
+                        "💾 View saved to seaview.toml (camera='{}', environment included)",
+                        settings_res.settings.active_camera_name()
+                    );
                 }
                 Err(e) => {
                     error!("Failed to save view: {}", e);
@@ -477,7 +548,8 @@ fn handle_input_path(
                     debug!("Loading single mesh file: {:?}", path);
 
                     // Create a minimal sequence so coordinate transform is applied
-                    let filename = path.file_name()
+                    let filename = path
+                        .file_name()
                         .and_then(|n| n.to_str())
                         .unwrap_or("mesh")
                         .to_string();
@@ -491,7 +563,10 @@ fn handle_input_path(
                     );
                     sequence.add_frame(seaview::sequence::FrameInfo::new(path.clone(), 0));
 
-                    debug!("Using coordinate system: {}", source_orientation.description());
+                    debug!(
+                        "Using coordinate system: {}",
+                        source_orientation.description()
+                    );
                     sequence_manager.load_sequence(sequence);
 
                     // Load as a single-frame "sequence"
