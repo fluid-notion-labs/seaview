@@ -293,6 +293,7 @@ fn handle_incremental_load(
             sequence_assets.frame_handles.push(None);
             sequence_assets.loaded_frames.push(false);
             sequence_assets.frame_entities.push(None);
+            sequence_assets.gltf_handles.push(None);
         }
 
         // Update total frames and mark as loading so sync_section_loads
