@@ -192,9 +192,9 @@ impl Default for LightGroupGenConfig {
 impl LightGroupGenConfig {
     /// Generate a [`LightGroup`] by placing lights according to this config.
     ///
-    /// `bounds_min` / `bounds_max` describe the XZ area that has already been
-    /// scaled by `coverage_pct` (the caller is responsible for computing
-    /// placement bounds from mesh dimensions, just like the v1 system).
+    /// `bounds_min` / `bounds_max` describe the XZ placement area (already
+    /// scaled by `coverage_pct` — use [`compute_placement_bounds`] to derive
+    /// them from mesh dimensions).
     pub fn generate(
         &self,
         group_name: impl Into<String>,
@@ -224,6 +224,90 @@ impl LightGroupGenConfig {
         let mut group = LightGroup::new(group_name);
         group.lights = lights;
         group
+    }
+
+    /// Generate a [`LightGroup`] using mesh AABB bounds for placement.
+    ///
+    /// Computes placement bounds from `mesh_min` / `mesh_max` (the mesh's
+    /// axis-aligned bounding box on XZ) and this config's `coverage_pct`,
+    /// then delegates to [`Self::generate`].
+    ///
+    /// Pass `None` for both min/max when no mesh is loaded — a ±100 m
+    /// fallback area is used.
+    pub fn generate_for_mesh(
+        &self,
+        group_name: impl Into<String>,
+        mesh_min: Option<Vec3>,
+        mesh_max: Option<Vec3>,
+    ) -> LightGroup {
+        let (bounds_min, bounds_max) =
+            compute_placement_bounds(mesh_min, mesh_max, self.coverage_pct);
+        self.generate(group_name, bounds_min, bounds_max)
+    }
+
+    /// Like [`Self::generate_for_mesh`] but auto-generates the group name
+    /// from the placement algorithm and the current group count in the rig.
+    ///
+    /// Example: `"Uniform Grid #2"`.
+    pub fn generate_for_mesh_auto_named(
+        &self,
+        rig: &LightingRig,
+        mesh_min: Option<Vec3>,
+        mesh_max: Option<Vec3>,
+    ) -> LightGroup {
+        let name = auto_group_name(self.placement_algorithm, rig);
+        self.generate_for_mesh(name, mesh_min, mesh_max)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Placement-bounds helper (pure, no ECS)
+// ---------------------------------------------------------------------------
+
+/// Compute the XZ placement bounds from an optional mesh AABB and a coverage
+/// percentage.
+///
+/// * `coverage_pct` of 100 means the lights exactly span the mesh footprint.
+/// * Values above 100 extend beyond the mesh; below 100 cover a smaller area.
+/// * When `mesh_min` / `mesh_max` are `None` a default ±100 m square is used.
+pub fn compute_placement_bounds(
+    mesh_min: Option<Vec3>,
+    mesh_max: Option<Vec3>,
+    coverage_pct: f32,
+) -> (Vec2, Vec2) {
+    let scale = coverage_pct / 100.0;
+
+    if let (Some(mn), Some(mx)) = (mesh_min, mesh_max) {
+        let cx = (mn.x + mx.x) * 0.5;
+        let cz = (mn.z + mx.z) * 0.5;
+        let hx = (mx.x - mn.x) * 0.5 * scale;
+        let hz = (mx.z - mn.z) * 0.5 * scale;
+        (Vec2::new(cx - hx, cz - hz), Vec2::new(cx + hx, cz + hz))
+    } else {
+        let fallback = 100.0 * scale;
+        (
+            Vec2::new(-fallback, -fallback),
+            Vec2::new(fallback, fallback),
+        )
+    }
+}
+
+/// Generate an auto-name for a new group based on the placement algorithm
+/// and how many groups already exist in the rig.
+///
+/// Counts existing groups whose name starts with the algorithm's display
+/// name to produce a unique suffix, e.g. `"Uniform Grid #2"`.
+pub fn auto_group_name(algorithm: PlacementAlgorithm, rig: &LightingRig) -> String {
+    let prefix = algorithm.name();
+    let existing = rig
+        .groups
+        .iter()
+        .filter(|g| g.name.starts_with(prefix))
+        .count();
+    if existing == 0 {
+        format!("{} #1", prefix)
+    } else {
+        format!("{} #{}", prefix, existing + 1)
     }
 }
 
@@ -372,6 +456,14 @@ mod tests {
         g
     }
 
+    /// Mesh AABB used by generation tests: a 200×200 m square centred at origin.
+    fn test_mesh_bounds() -> (Option<Vec3>, Option<Vec3>) {
+        (
+            Some(Vec3::new(-100.0, 0.0, -100.0)),
+            Some(Vec3::new(100.0, 50.0, 100.0)),
+        )
+    }
+
     // -- Light tests -------------------------------------------------------
 
     #[test]
@@ -475,6 +567,41 @@ mod tests {
     }
 
     #[test]
+    fn gen_config_generate_for_mesh() {
+        let cfg = LightGroupGenConfig {
+            num_lights: 4,
+            coverage_pct: 100.0,
+            ..Default::default()
+        };
+        let (mn, mx) = test_mesh_bounds();
+        let group = cfg.generate_for_mesh("Mesh Test", mn, mx);
+        assert_eq!(group.lights.len(), 4);
+        assert_eq!(group.name, "Mesh Test");
+
+        // All positions should be within mesh XZ bounds
+        for l in &group.lights {
+            assert!(l.position.x >= -100.0 && l.position.x <= 100.0);
+            assert!(l.position.y >= -100.0 && l.position.y <= 100.0);
+        }
+    }
+
+    #[test]
+    fn gen_config_generate_for_mesh_no_mesh() {
+        let cfg = LightGroupGenConfig {
+            num_lights: 4,
+            coverage_pct: 100.0,
+            ..Default::default()
+        };
+        let group = cfg.generate_for_mesh("Fallback", None, None);
+        assert_eq!(group.lights.len(), 4);
+        // Fallback bounds are ±100
+        for l in &group.lights {
+            assert!(l.position.x >= -100.0 && l.position.x <= 100.0);
+            assert!(l.position.y >= -100.0 && l.position.y <= 100.0);
+        }
+    }
+
+    #[test]
     fn gen_config_applies_defaults_to_lights() {
         let cfg = LightGroupGenConfig {
             num_lights: 2,
@@ -527,6 +654,156 @@ mod tests {
         assert_eq!(group.lights[0].name, "Light 1");
         assert_eq!(group.lights[1].name, "Light 2");
         assert_eq!(group.lights[2].name, "Light 3");
+    }
+
+    // -- compute_placement_bounds tests ------------------------------------
+
+    #[test]
+    fn placement_bounds_with_mesh() {
+        let (mn, mx) = test_mesh_bounds();
+        let (lo, hi) = compute_placement_bounds(mn, mx, 100.0);
+        assert!((lo.x - (-100.0)).abs() < 0.01);
+        assert!((lo.y - (-100.0)).abs() < 0.01);
+        assert!((hi.x - 100.0).abs() < 0.01);
+        assert!((hi.y - 100.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn placement_bounds_coverage_expands() {
+        let (mn, mx) = test_mesh_bounds();
+        let (lo, hi) = compute_placement_bounds(mn, mx, 150.0);
+        // 150% of 200m span = 300m, half-extent = 150
+        assert!((lo.x - (-150.0)).abs() < 0.01);
+        assert!((hi.x - 150.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn placement_bounds_no_mesh_fallback() {
+        let (lo, hi) = compute_placement_bounds(None, None, 100.0);
+        assert!((lo.x - (-100.0)).abs() < 0.01);
+        assert!((hi.x - 100.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn placement_bounds_no_mesh_scaled() {
+        let (lo, hi) = compute_placement_bounds(None, None, 200.0);
+        assert!((lo.x - (-200.0)).abs() < 0.01);
+        assert!((hi.x - 200.0).abs() < 0.01);
+    }
+
+    // -- auto_group_name tests ---------------------------------------------
+
+    #[test]
+    fn auto_name_first_group() {
+        let rig = LightingRig::new();
+        let name = auto_group_name(PlacementAlgorithm::UniformGrid, &rig);
+        assert_eq!(name, "Uniform Grid #1");
+    }
+
+    #[test]
+    fn auto_name_increments() {
+        let mut rig = LightingRig::new();
+        rig.add_group(LightGroup::new("Uniform Grid #1"));
+        let name = auto_group_name(PlacementAlgorithm::UniformGrid, &rig);
+        assert_eq!(name, "Uniform Grid #2");
+    }
+
+    #[test]
+    fn auto_name_different_algorithms_independent() {
+        let mut rig = LightingRig::new();
+        rig.add_group(LightGroup::new("Uniform Grid #1"));
+        let name = auto_group_name(PlacementAlgorithm::HexagonalPacking, &rig);
+        assert_eq!(name, "Hexagonal Packing #1");
+    }
+
+    #[test]
+    fn generate_for_mesh_auto_named_integration() {
+        let mut rig = LightingRig::new();
+        let cfg = LightGroupGenConfig::default();
+        let (mn, mx) = test_mesh_bounds();
+
+        let g1 = cfg.generate_for_mesh_auto_named(&rig, mn, mx);
+        assert_eq!(g1.name, "Uniform Grid #1");
+        assert_eq!(g1.lights.len(), cfg.num_lights);
+        rig.add_group(g1);
+
+        let g2 = cfg.generate_for_mesh_auto_named(&rig, mn, mx);
+        assert_eq!(g2.name, "Uniform Grid #2");
+        rig.add_group(g2);
+
+        assert_eq!(rig.groups.len(), 2);
+    }
+
+    // -- Per-algorithm generation tests ------------------------------------
+
+    #[test]
+    fn generate_uniform_grid() {
+        let cfg = LightGroupGenConfig {
+            placement_algorithm: PlacementAlgorithm::UniformGrid,
+            num_lights: 9,
+            ..Default::default()
+        };
+        let (mn, mx) = test_mesh_bounds();
+        let g = cfg.generate_for_mesh("UG", mn, mx);
+        assert_eq!(g.lights.len(), 9);
+    }
+
+    #[test]
+    fn generate_hexagonal_packing() {
+        let cfg = LightGroupGenConfig {
+            placement_algorithm: PlacementAlgorithm::HexagonalPacking,
+            num_lights: 7,
+            ..Default::default()
+        };
+        let (mn, mx) = test_mesh_bounds();
+        let g = cfg.generate_for_mesh("Hex", mn, mx);
+        assert_eq!(g.lights.len(), 7);
+    }
+
+    #[test]
+    fn generate_poisson_disk() {
+        let cfg = LightGroupGenConfig {
+            placement_algorithm: PlacementAlgorithm::PoissonDisk,
+            num_lights: 5,
+            ..Default::default()
+        };
+        let (mn, mx) = test_mesh_bounds();
+        let g = cfg.generate_for_mesh("Poisson", mn, mx);
+        assert_eq!(g.lights.len(), 5);
+    }
+
+    #[test]
+    fn generate_single_row() {
+        let cfg = LightGroupGenConfig {
+            placement_algorithm: PlacementAlgorithm::SingleRow,
+            num_lights: 6,
+            ..Default::default()
+        };
+        let (mn, mx) = test_mesh_bounds();
+        let g = cfg.generate_for_mesh("Row", mn, mx);
+        assert_eq!(g.lights.len(), 6);
+        // All lights should share the same Z (centre of bounds)
+        let z0 = g.lights[0].position.y;
+        for l in &g.lights {
+            assert!((l.position.y - z0).abs() < 0.01);
+        }
+    }
+
+    #[test]
+    fn generate_single_column() {
+        let cfg = LightGroupGenConfig {
+            placement_algorithm: PlacementAlgorithm::SingleColumn,
+            num_lights: 6,
+            ..Default::default()
+        };
+        let (mn, mx) = test_mesh_bounds();
+        let g = cfg.generate_for_mesh("Col", mn, mx);
+        assert_eq!(g.lights.len(), 6);
+        // All lights should share the same X (centre of bounds)
+        let x0 = g.lights[0].position.x;
+        for l in &g.lights {
+            assert!((l.position.x - x0).abs() < 0.01);
+        }
     }
 
     // -- LightingRig tests -------------------------------------------------

@@ -6,6 +6,7 @@
 use bevy::prelude::*;
 use std::f32::consts::FRAC_PI_2;
 
+use super::rig::compute_placement_bounds;
 use super::{
     EnvironmentLightConfig, GlobalLight, NightLight, NightLightMarker, NightLightingConfig,
 };
@@ -23,32 +24,10 @@ fn cone_to_inner_angle(cone_angle_degrees: f32) -> f32 {
     cone_to_outer_angle(cone_angle_degrees) * 0.8
 }
 
-/// Compute the XZ placement bounds from the mesh AABB and the coverage percentage.
-///
-/// `coverage_pct` of 100 means the lights exactly span the mesh footprint.
-/// Values above 100 extend beyond the mesh; below 100 cover a smaller area.
-/// Falls back to a default ±100 square when no mesh dimensions are available.
-fn compute_placement_bounds(mesh_dims: &MeshDimensions, coverage_pct: f32) -> (Vec2, Vec2) {
-    let scale = coverage_pct / 100.0;
-
-    if let (Some(mn), Some(mx)) = (mesh_dims.min, mesh_dims.max) {
-        // Centre of the mesh on the XZ plane
-        let cx = (mn.x + mx.x) * 0.5;
-        let cz = (mn.z + mx.z) * 0.5;
-
-        // Half-extents scaled by coverage
-        let hx = (mx.x - mn.x) * 0.5 * scale;
-        let hz = (mx.z - mn.z) * 0.5 * scale;
-
-        (Vec2::new(cx - hx, cz - hz), Vec2::new(cx + hx, cz + hz))
-    } else {
-        // Fallback when no mesh is loaded
-        let fallback = 100.0 * scale;
-        (
-            Vec2::new(-fallback, -fallback),
-            Vec2::new(fallback, fallback),
-        )
-    }
+/// Thin wrapper: compute XZ placement bounds from [`MeshDimensions`] and a
+/// coverage percentage, delegating to the pure function in [`super::rig`].
+fn placement_bounds(mesh_dims: &MeshDimensions, coverage_pct: f32) -> (Vec2, Vec2) {
+    compute_placement_bounds(mesh_dims.min, mesh_dims.max, coverage_pct)
 }
 
 /// System that updates night lights based on configuration changes
@@ -137,7 +116,7 @@ fn spawn_lights(
     config: &NightLightingConfig,
     mesh_dims: &MeshDimensions,
 ) {
-    let (bounds_min, bounds_max) = compute_placement_bounds(mesh_dims, config.coverage_pct);
+    let (bounds_min, bounds_max) = placement_bounds(mesh_dims, config.coverage_pct);
 
     // Calculate light positions using the configured algorithm
     let positions =
@@ -186,7 +165,7 @@ fn update_light_transform(
     config: &NightLightingConfig,
     mesh_dims: &MeshDimensions,
 ) {
-    let (bounds_min, bounds_max) = compute_placement_bounds(mesh_dims, config.coverage_pct);
+    let (bounds_min, bounds_max) = placement_bounds(mesh_dims, config.coverage_pct);
 
     // Calculate light positions
     let positions =
@@ -262,7 +241,7 @@ fn update_markers(
         }
     } else if marker_count == 0 && config.num_lights > 0 {
         // Markers were toggled on - spawn them
-        let (bounds_min, bounds_max) = compute_placement_bounds(mesh_dims, config.coverage_pct);
+        let (bounds_min, bounds_max) = placement_bounds(mesh_dims, config.coverage_pct);
 
         let positions = config.placement_algorithm.calculate_positions(
             config.num_lights,
@@ -282,7 +261,7 @@ fn update_markers(
             );
         }
     } else {
-        let (bounds_min, bounds_max) = compute_placement_bounds(mesh_dims, config.coverage_pct);
+        let (bounds_min, bounds_max) = placement_bounds(mesh_dims, config.coverage_pct);
 
         // Calculate light positions
         let positions = config.placement_algorithm.calculate_positions(

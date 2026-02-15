@@ -12,7 +12,9 @@ pub mod rig;
 pub mod systems;
 
 pub use placement::PlacementAlgorithm;
-pub use rig::{Light, LightGroup, LightGroupGenConfig, LightingRig};
+pub use rig::{
+    auto_group_name, compute_placement_bounds, Light, LightGroup, LightGroupGenConfig, LightingRig,
+};
 
 /// Units for light intensity display and input
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
