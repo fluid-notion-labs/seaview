@@ -65,6 +65,10 @@ perf = ["trace_chrome", "sysinfo_plugin"]
 name = "debug_loader"
 path = "src/bin/debug_loader.rs"
 
+[[bin]]
+name = "timeline_debug"
+path = "src/bin/timeline_debug.rs"
+
 # [[bin]]
 # name = "optimize_stl_sequence"
 # path = "src/bin/optimize_stl_sequence.rs"
