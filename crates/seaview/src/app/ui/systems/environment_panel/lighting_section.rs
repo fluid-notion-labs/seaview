@@ -13,6 +13,7 @@
 
 use bevy::prelude::*;
 use bevy_egui::egui;
+use uuid::Uuid;
 
 use crate::lib::lighting::{
     Light, LightGroup, LightGroupGenConfig, LightingRig, PlacementAlgorithm,
@@ -42,6 +43,31 @@ impl Default for GenerateGroupState {
 }
 
 // ---------------------------------------------------------------------------
+// Light-map interaction state
+// ---------------------------------------------------------------------------
+
+/// Persistent state for the 2D light map drag/hover interaction.
+///
+/// Stored via `egui` data so it survives across frames without a `Local<>`.
+#[derive(Clone, Default)]
+struct LightMapInteraction {
+    /// Light currently being dragged: `(group_id, light_id)`.
+    dragged: Option<(Uuid, Uuid)>,
+    /// Light currently hovered (closest within hit radius).
+    hovered: Option<(Uuid, Uuid)>,
+}
+
+/// Snap `value` to the nearest multiple of `grid` when Shift is held.
+fn snap(value: f32, grid: f32) -> f32 {
+    (value / grid).round() * grid
+}
+
+const HIT_RADIUS_PX: f32 = 10.0;
+const DOT_RADIUS: f32 = 4.0;
+const DOT_RADIUS_HOVER: f32 = 6.0;
+const SNAP_GRID: f32 = 5.0;
+
+// ---------------------------------------------------------------------------
 // Public entry point
 // ---------------------------------------------------------------------------
 
@@ -56,7 +82,7 @@ pub fn render_lighting_controls(
     gen_state: &mut GenerateGroupState,
 ) {
     // ── Light map (top) ───────────────────────────────────────────────
-    render_light_map(ui, rig, mesh_dims);
+    render_light_map(ui, rig, mesh_dims, ui.input(|i| i.modifiers));
     ui.add_space(5.0);
 
     // Summary line
@@ -391,8 +417,15 @@ fn render_generate_panel(
 
 /// Renders a top-down light map showing the domain AABB, coverage boundaries,
 /// cone footprints, and light positions — reading from the v2 [`LightingRig`].
-fn render_light_map(ui: &mut egui::Ui, rig: &LightingRig, mesh_dims: &MeshDimensions) {
-    // Compute mesh AABB (domain) in XZ
+fn render_light_map(
+    ui: &mut egui::Ui,
+    rig: &mut LightingRig,
+    mesh_dims: &MeshDimensions,
+    modifiers: egui::Modifiers,
+) {
+    // ------------------------------------------------------------------
+    // 1. Compute view bounds (before any mutation this frame)
+    // ------------------------------------------------------------------
     let (domain_min, domain_max) = if let (Some(mn), Some(mx)) = (mesh_dims.min, mesh_dims.max) {
         (
             bevy::math::Vec2::new(mn.x, mn.z),
@@ -405,7 +438,6 @@ fn render_light_map(ui: &mut egui::Ui, rig: &LightingRig, mesh_dims: &MeshDimens
         )
     };
 
-    // Compute a bounding box around all light positions and the domain
     let mut view_min = domain_min;
     let mut view_max = domain_max;
     for (_group, light) in rig.all_lights() {
@@ -430,125 +462,279 @@ fn render_light_map(ui: &mut egui::Ui, rig: &LightingRig, mesh_dims: &MeshDimens
     let view_w = (view_max.x - view_min.x).max(1.0);
     let view_h = (view_max.y - view_min.y).max(1.0);
 
-    // Draw the map
+    // ------------------------------------------------------------------
+    // 2. Allocate interactive rect
+    // ------------------------------------------------------------------
     let map_size = ui.available_width().min(280.0);
-    let (rect, _response) =
-        ui.allocate_exact_size(egui::Vec2::splat(map_size), egui::Sense::hover());
+    let (rect, response) =
+        ui.allocate_exact_size(egui::Vec2::splat(map_size), egui::Sense::click_and_drag());
 
+    // Coordinate transforms
     let to_px = |wx: f32, wz: f32| -> egui::Pos2 {
         egui::pos2(
             rect.min.x + ((wx - view_min.x) / view_w) * map_size,
             rect.min.y + ((wz - view_min.y) / view_h) * map_size,
         )
     };
+    let from_px = |px: f32, py: f32| -> bevy::math::Vec2 {
+        bevy::math::Vec2::new(
+            view_min.x + ((px - rect.min.x) / map_size) * view_w,
+            view_min.y + ((py - rect.min.y) / map_size) * view_h,
+        )
+    };
 
-    if ui.is_rect_visible(rect) {
-        let painter = ui.painter_at(rect);
+    // ------------------------------------------------------------------
+    // 3. Load / initialise interaction state from egui memory
+    // ------------------------------------------------------------------
+    let map_id = response.id;
+    let mut istate: LightMapInteraction = ui
+        .data(|d| d.get_temp::<LightMapInteraction>(map_id))
+        .unwrap_or_default();
 
-        // Background
-        painter.rect_filled(rect, 4.0, egui::Color32::from_gray(20));
-
-        // --- Domain AABB ---
-        let dom_tl = to_px(domain_min.x, domain_min.y);
-        let dom_br = to_px(domain_max.x, domain_max.y);
-        let dom_rect = egui::Rect::from_min_max(dom_tl, dom_br);
-        painter.rect_filled(
-            dom_rect,
-            1.0,
-            egui::Color32::from_rgba_unmultiplied(180, 180, 180, 15),
-        );
-        painter.rect_stroke(
-            dom_rect,
-            1.0,
-            egui::Stroke::new(
-                1.5,
-                egui::Color32::from_rgba_unmultiplied(200, 200, 200, 200),
-            ),
-            egui::StrokeKind::Outside,
-        );
-        // Domain label
-        if let Some(dims) = mesh_dims.dimensions {
-            painter.text(
-                egui::pos2(dom_br.x - 3.0, dom_br.y - 2.0),
-                egui::Align2::RIGHT_BOTTOM,
-                format!("Domain {:.0}×{:.0}", dims.x, dims.z),
-                egui::FontId::proportional(7.5),
-                egui::Color32::from_rgba_unmultiplied(200, 200, 200, 160),
-            );
+    // ------------------------------------------------------------------
+    // 4. Hit-test: find closest light to pointer
+    // ------------------------------------------------------------------
+    // Build a flat list of (group_id, light_id, screen_pos) for hit testing.
+    struct LightHit {
+        group_id: Uuid,
+        light_id: Uuid,
+        screen: egui::Pos2,
+    }
+    let mut hits: Vec<LightHit> = Vec::new();
+    for group in rig.groups.iter() {
+        for light in &group.lights {
+            let sp = to_px(light.position.x, light.position.y);
+            hits.push(LightHit {
+                group_id: group.id,
+                light_id: light.id,
+                screen: sp,
+            });
         }
+    }
 
-        // --- Light dots and cone projections ---
-        let px_per_unit = map_size / ((view_w + view_h) * 0.5);
+    // Find the light nearest to the current pointer, within HIT_RADIUS_PX.
+    let pointer_pos = response.hover_pos();
+    let nearest: Option<(Uuid, Uuid, f32)> = pointer_pos.and_then(|pp| {
+        hits.iter()
+            .map(|h| {
+                let d = h.screen.distance(pp);
+                (h.group_id, h.light_id, d)
+            })
+            .filter(|(_, _, d)| *d <= HIT_RADIUS_PX)
+            .min_by(|a, b| a.2.partial_cmp(&b.2).unwrap())
+    });
 
-        // Group colours for visual distinction
-        let group_palette: &[egui::Color32] = &[
-            egui::Color32::from_rgb(255, 200, 80),
-            egui::Color32::from_rgb(100, 180, 255),
-            egui::Color32::from_rgb(180, 120, 255),
-            egui::Color32::from_rgb(120, 255, 160),
-            egui::Color32::from_rgb(255, 120, 120),
-            egui::Color32::from_rgb(255, 160, 220),
-        ];
+    // Update hover
+    istate.hovered = nearest.map(|(gid, lid, _)| (gid, lid));
 
-        for (group_idx, group) in rig.groups.iter().enumerate() {
-            let palette_color = group_palette[group_idx % group_palette.len()];
+    // ------------------------------------------------------------------
+    // 5. Interaction: ctrl-click toggles visibility, drag repositions
+    // ------------------------------------------------------------------
 
-            for light in &group.lights {
-                let is_effective_visible = group.visible && light.visible;
-                let alpha_mult: f32 = if is_effective_visible { 1.0 } else { 0.25 };
+    // Ctrl-click → toggle per-light visibility
+    if response.clicked() && modifiers.command {
+        if let Some((gid, lid)) = istate.hovered {
+            rig.toggle_light_visibility(gid, lid);
+        }
+    }
 
-                let center = to_px(light.position.x, light.position.y);
+    // Drag start → latch the hovered light
+    if response.drag_started() && !modifiers.command {
+        istate.dragged = istate.hovered;
+    }
 
-                // Cone ground radius
-                let cone_world_radius = light.height * (light.cone_angle / 2.0).to_radians().tan();
-                let cone_px = (cone_world_radius * px_per_unit).min(map_size * 0.4);
+    // Dragging → move the light
+    if response.dragged() {
+        if let Some((gid, lid)) = istate.dragged {
+            if let Some(pp) = pointer_pos {
+                let mut world = from_px(pp.x, pp.y);
+                if modifiers.shift {
+                    world.x = snap(world.x, SNAP_GRID);
+                    world.y = snap(world.y, SNAP_GRID);
+                }
+                if let Some(group) = rig.group_mut(gid) {
+                    if let Some(light) = group.light_mut(lid) {
+                        light.position = world;
+                    }
+                }
+            }
+        }
+    }
 
-                // Glow circle
-                let glow_alpha = (25.0 * alpha_mult) as u8;
-                painter.circle_filled(
-                    center,
-                    cone_px,
+    // Drag end → release
+    if response.drag_stopped() {
+        istate.dragged = None;
+    }
+
+    // ------------------------------------------------------------------
+    // 6. Cursor feedback
+    // ------------------------------------------------------------------
+    if istate.dragged.is_some() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+    } else if istate.hovered.is_some() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+    }
+
+    // ------------------------------------------------------------------
+    // 7. Store interaction state back into egui memory
+    // ------------------------------------------------------------------
+    ui.data_mut(|d| d.insert_temp(map_id, istate.clone()));
+
+    // ------------------------------------------------------------------
+    // 8. Paint
+    // ------------------------------------------------------------------
+    if !ui.is_rect_visible(rect) {
+        return;
+    }
+
+    let painter = ui.painter_at(rect);
+
+    // Background
+    painter.rect_filled(rect, 4.0, egui::Color32::from_gray(20));
+
+    // --- Domain AABB ---
+    let dom_tl = to_px(domain_min.x, domain_min.y);
+    let dom_br = to_px(domain_max.x, domain_max.y);
+    let dom_rect = egui::Rect::from_min_max(dom_tl, dom_br);
+    painter.rect_filled(
+        dom_rect,
+        1.0,
+        egui::Color32::from_rgba_unmultiplied(180, 180, 180, 15),
+    );
+    painter.rect_stroke(
+        dom_rect,
+        1.0,
+        egui::Stroke::new(
+            1.5,
+            egui::Color32::from_rgba_unmultiplied(200, 200, 200, 200),
+        ),
+        egui::StrokeKind::Outside,
+    );
+    if let Some(dims) = mesh_dims.dimensions {
+        painter.text(
+            egui::pos2(dom_br.x - 3.0, dom_br.y - 2.0),
+            egui::Align2::RIGHT_BOTTOM,
+            format!("Domain {:.0}×{:.0}", dims.x, dims.z),
+            egui::FontId::proportional(7.5),
+            egui::Color32::from_rgba_unmultiplied(200, 200, 200, 160),
+        );
+    }
+
+    // --- Light dots and cone projections ---
+    let px_per_unit = map_size / ((view_w + view_h) * 0.5);
+
+    let group_palette: &[egui::Color32] = &[
+        egui::Color32::from_rgb(255, 200, 80),
+        egui::Color32::from_rgb(100, 180, 255),
+        egui::Color32::from_rgb(180, 120, 255),
+        egui::Color32::from_rgb(120, 255, 160),
+        egui::Color32::from_rgb(255, 120, 120),
+        egui::Color32::from_rgb(255, 160, 220),
+    ];
+
+    for (group_idx, group) in rig.groups.iter().enumerate() {
+        let palette_color = group_palette[group_idx % group_palette.len()];
+
+        for light in &group.lights {
+            let is_effective_visible = group.visible && light.visible;
+            let alpha_mult: f32 = if is_effective_visible { 1.0 } else { 0.25 };
+            let is_hovered = istate.hovered == Some((group.id, light.id));
+            let is_dragged = istate.dragged == Some((group.id, light.id));
+
+            let center = to_px(light.position.x, light.position.y);
+
+            // Cone ground radius
+            let cone_world_radius = light.height * (light.cone_angle / 2.0).to_radians().tan();
+            let cone_px = (cone_world_radius * px_per_unit).min(map_size * 0.4);
+
+            // Glow circle
+            let glow_alpha = (25.0 * alpha_mult) as u8;
+            painter.circle_filled(
+                center,
+                cone_px,
+                egui::Color32::from_rgba_unmultiplied(
+                    palette_color.r(),
+                    palette_color.g(),
+                    palette_color.b(),
+                    glow_alpha,
+                ),
+            );
+
+            // Cone edge ring
+            painter.circle_stroke(
+                center,
+                cone_px,
+                egui::Stroke::new(
+                    0.5,
                     egui::Color32::from_rgba_unmultiplied(
                         palette_color.r(),
                         palette_color.g(),
                         palette_color.b(),
-                        glow_alpha,
+                        (50.0 * alpha_mult) as u8,
                     ),
-                );
+                ),
+            );
 
-                // Cone edge ring
+            // Light dot — size and style vary with hover/drag/visibility
+            let dot_radius = if is_hovered || is_dragged {
+                DOT_RADIUS_HOVER
+            } else {
+                DOT_RADIUS
+            };
+            let dot_alpha = (255.0 * alpha_mult) as u8;
+            let dot_color = egui::Color32::from_rgba_unmultiplied(
+                palette_color.r(),
+                palette_color.g(),
+                palette_color.b(),
+                dot_alpha,
+            );
+
+            if is_effective_visible {
+                // Solid dot for visible lights
+                painter.circle_filled(center, dot_radius, dot_color);
+            } else {
+                // Hollow ring for hidden lights
+                painter.circle_stroke(center, dot_radius, egui::Stroke::new(1.5, dot_color));
+            }
+
+            // Hover highlight ring
+            if is_hovered || is_dragged {
                 painter.circle_stroke(
                     center,
-                    cone_px,
+                    dot_radius + 3.0,
                     egui::Stroke::new(
-                        0.5,
-                        egui::Color32::from_rgba_unmultiplied(
-                            palette_color.r(),
-                            palette_color.g(),
-                            palette_color.b(),
-                            (50.0 * alpha_mult) as u8,
-                        ),
+                        1.0,
+                        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 140),
                     ),
                 );
+            }
 
-                // Light dot
-                let dot_alpha = (255.0 * alpha_mult) as u8;
-                let dot_color = egui::Color32::from_rgba_unmultiplied(
-                    palette_color.r(),
-                    palette_color.g(),
-                    palette_color.b(),
-                    dot_alpha,
+            // Light name label on hover
+            if is_hovered && !is_dragged {
+                painter.text(
+                    egui::pos2(center.x, center.y - dot_radius - 4.0),
+                    egui::Align2::CENTER_BOTTOM,
+                    &light.name,
+                    egui::FontId::proportional(8.0),
+                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 200),
                 );
-                painter.circle_filled(center, 3.0, dot_color);
             }
         }
-
-        // Border
-        painter.rect_stroke(
-            rect,
-            4.0,
-            egui::Stroke::new(1.0, egui::Color32::from_gray(50)),
-            egui::StrokeKind::Outside,
-        );
     }
+
+    // Border
+    painter.rect_stroke(
+        rect,
+        4.0,
+        egui::Stroke::new(1.0, egui::Color32::from_gray(50)),
+        egui::StrokeKind::Outside,
+    );
+
+    // Interaction hint below the map
+    ui.add_space(2.0);
+    ui.label(
+        egui::RichText::new("Drag to move · Ctrl-click to toggle · Shift snaps to grid")
+            .small()
+            .color(egui::Color32::from_gray(100)),
+    );
 }
