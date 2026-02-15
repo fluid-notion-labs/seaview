@@ -224,9 +224,120 @@ impl Timeline {
         self.sections.iter().find(|s| s.contains(frame))
     }
 
+    /// Find the index + ref of the section containing `frame`, or `None`.
+    pub fn section_containing_indexed(&self, frame: usize) -> Option<(usize, &LoadSection)> {
+        self.sections
+            .iter()
+            .enumerate()
+            .find(|(_, s)| s.contains(frame))
+    }
+
     /// Total number of loaded frames across all sections.
     pub fn total_loaded(&self) -> usize {
         self.sections.iter().map(|s| s.frame_count()).sum()
+    }
+
+    // -- Multi-section management -------------------------------------------
+
+    /// Add a new section at `center`, splitting the remaining budget evenly.
+    ///
+    /// Returns the index of the new section, or `None` if there is no room
+    /// (budget exhausted or `total_frames == 0`).
+    pub fn add_section(&mut self, center: usize, max_frames: usize) -> Option<usize> {
+        if self.total_frames == 0 || max_frames == 0 {
+            return None;
+        }
+
+        let used: usize = self.sections.iter().map(|s| s.frame_count()).sum();
+        let remaining = max_frames.saturating_sub(used);
+        if remaining < 2 {
+            return None; // Need at least 2 frames for a useful section
+        }
+
+        // New section gets the remaining budget, centered on `center`
+        let half = remaining / 2;
+        let start = center.saturating_sub(half);
+        let end = (start + remaining).min(self.total_frames);
+        let start = end.saturating_sub(remaining); // re-anchor if clamped
+
+        let mut new_section = LoadSection::new(start, end);
+        new_section.clamp(self.total_frames, remaining);
+
+        // Resolve overlaps: shrink any existing section that overlaps the new one
+        for existing in &mut self.sections {
+            // If the new section overlaps an existing one, shrink the existing
+            if new_section.start < existing.end && new_section.end > existing.start {
+                // Shrink whichever side has less overlap
+                let overlap_from_left = existing.end.saturating_sub(new_section.start);
+                let overlap_from_right = new_section.end.saturating_sub(existing.start);
+                if overlap_from_left <= overlap_from_right {
+                    existing.end = new_section.start;
+                } else {
+                    existing.start = new_section.end;
+                }
+                if existing.start >= existing.end {
+                    existing.end = existing.start; // degenerate — will be cleaned up
+                }
+            }
+        }
+
+        // Remove degenerate sections (zero-length)
+        self.sections.retain(|s| s.frame_count() > 0);
+
+        self.sections.push(new_section);
+
+        // Keep sections sorted by start frame
+        self.sections.sort_by_key(|s| s.start);
+
+        Some(self.sections.len() - 1)
+    }
+
+    /// Remove the section at `index`.
+    ///
+    /// If this was the last section, a new default section covering `[0, max)`
+    /// is inserted so the vec is never empty.
+    pub fn remove_section(&mut self, index: usize, max_frames: usize) {
+        if index < self.sections.len() {
+            self.sections.remove(index);
+        }
+        if self.sections.is_empty() {
+            let loaded = self.total_frames.min(max_frames);
+            self.sections.push(LoadSection::new(0, loaded));
+        }
+    }
+
+    /// Return the next loaded frame at or after `frame`, searching across all
+    /// sections.  Returns `None` if no section contains any frame ≥ `frame`.
+    pub fn next_loaded_frame(&self, frame: usize) -> Option<usize> {
+        // If the frame is inside a section, return it directly
+        if self.section_containing(frame).is_some() {
+            return Some(frame);
+        }
+        // Otherwise find the nearest section that starts after `frame`
+        self.sections
+            .iter()
+            .filter(|s| s.start >= frame)
+            .map(|s| s.start)
+            .min()
+    }
+
+    /// Return the previous loaded frame at or before `frame`, searching
+    /// across all sections.  Returns `None` if no section contains any
+    /// frame ≤ `frame`.
+    pub fn prev_loaded_frame(&self, frame: usize) -> Option<usize> {
+        if self.section_containing(frame).is_some() {
+            return Some(frame);
+        }
+        self.sections
+            .iter()
+            .filter(|s| s.end > 0 && s.end.saturating_sub(1) <= frame)
+            .map(|s| s.end - 1)
+            .max()
+    }
+
+    /// Check whether `frame` falls inside any loaded section.
+    pub fn is_frame_loaded(&self, frame: usize) -> bool {
+        self.sections.iter().any(|s| s.contains(frame))
     }
 
     // -- Budget enforcement -------------------------------------------------
@@ -261,6 +372,22 @@ impl Timeline {
         let loaded = total_frames.min(max_frames);
         self.sections = vec![LoadSection::new(0, loaded)];
     }
+
+    /// Reset the timeline to `num_sections` evenly-distributed sections.
+    pub fn init_multi_section(
+        &mut self,
+        total_frames: usize,
+        max_frames: usize,
+        num_sections: usize,
+    ) {
+        self.total_frames = total_frames;
+        self.playhead = 0;
+        self.sections = distribute_sections(total_frames, max_frames, num_sections);
+        if self.sections.is_empty() {
+            let loaded = total_frames.min(max_frames);
+            self.sections = vec![LoadSection::new(0, loaded)];
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -291,6 +418,35 @@ pub fn compute_spawn_window(
     } else {
         (lo, hi)
     }
+}
+
+/// Compute spawn windows across **all** sections in a timeline.
+///
+/// For each section that overlaps the render window centred on `playhead`,
+/// returns a `(lo, hi)` range.  The caller should spawn entities for the
+/// union of all returned ranges and despawn everything else.
+///
+/// This is the multi-section generalisation of [`compute_spawn_window`].
+pub fn compute_spawn_windows(
+    playhead: usize,
+    window_size: usize,
+    sections: &[LoadSection],
+    total_frames: usize,
+) -> Vec<(usize, usize)> {
+    let mut windows = Vec::with_capacity(sections.len());
+    for section in sections {
+        let (lo, hi) = compute_spawn_window(
+            playhead,
+            window_size,
+            section.start,
+            section.end,
+            total_frames,
+        );
+        if lo < hi {
+            windows.push((lo, hi));
+        }
+    }
+    windows
 }
 
 /// Distribute `num_sections` load sections of equal size across
@@ -1129,5 +1285,150 @@ mod tests {
                 sections[i],
             );
         }
+    }
+
+    // ===================================================================
+    // Multi-section management
+    // ===================================================================
+
+    #[test]
+    fn test_add_section_basic() {
+        let mut tl = Timeline::new(100, 30);
+        // First section is [0, 30)
+        assert_eq!(tl.sections.len(), 1);
+
+        // Add a section centred on frame 70, with 50 budget total
+        let idx = tl.add_section(70, 50);
+        assert!(idx.is_some());
+        assert_eq!(tl.sections.len(), 2);
+        // New section should be near frame 70
+        let new = &tl.sections[1];
+        assert!(new.contains(70));
+    }
+
+    #[test]
+    fn test_add_section_no_budget() {
+        let mut tl = Timeline::new(100, 30);
+        // Section 0 uses all 30 frames of budget
+        assert_eq!(tl.add_section(70, 30), None);
+    }
+
+    #[test]
+    fn test_add_section_tiny_budget() {
+        let mut tl = Timeline::new(100, 10);
+        // Budget is 10, section uses 10, remaining is 0
+        assert_eq!(tl.add_section(50, 10), None);
+        // Even with budget=11, remaining=1 which is < 2
+        assert_eq!(tl.add_section(50, 11), None);
+    }
+
+    #[test]
+    fn test_remove_section() {
+        let mut tl = Timeline::new(100, 100);
+        tl.sections = vec![LoadSection::new(0, 30), LoadSection::new(50, 80)];
+        tl.remove_section(0, 100);
+        assert_eq!(tl.sections.len(), 1);
+        assert_eq!(tl.sections[0].start, 50);
+    }
+
+    #[test]
+    fn test_remove_last_section_restores_default() {
+        let mut tl = Timeline::new(100, 40);
+        tl.sections = vec![LoadSection::new(10, 20)];
+        tl.remove_section(0, 40);
+        // Should restore a default section
+        assert_eq!(tl.sections.len(), 1);
+        assert_eq!(tl.sections[0].start, 0);
+        assert_eq!(tl.sections[0].end, 40);
+    }
+
+    #[test]
+    fn test_next_loaded_frame() {
+        let mut tl = Timeline::new(100, 100);
+        tl.sections = vec![LoadSection::new(10, 20), LoadSection::new(50, 60)];
+        // Inside a section → same frame
+        assert_eq!(tl.next_loaded_frame(15), Some(15));
+        // In a gap → jump to next section start
+        assert_eq!(tl.next_loaded_frame(25), Some(50));
+        // Before all sections → first section start
+        assert_eq!(tl.next_loaded_frame(5), Some(10));
+        // After all sections → None
+        assert_eq!(tl.next_loaded_frame(60), None);
+    }
+
+    #[test]
+    fn test_prev_loaded_frame() {
+        let mut tl = Timeline::new(100, 100);
+        tl.sections = vec![LoadSection::new(10, 20), LoadSection::new(50, 60)];
+        // Inside a section → same frame
+        assert_eq!(tl.prev_loaded_frame(55), Some(55));
+        // In a gap → jump to prev section end-1
+        assert_eq!(tl.prev_loaded_frame(30), Some(19));
+        // Before all sections → None
+        assert_eq!(tl.prev_loaded_frame(5), None);
+    }
+
+    #[test]
+    fn test_is_frame_loaded() {
+        let mut tl = Timeline::new(100, 100);
+        tl.sections = vec![LoadSection::new(10, 20), LoadSection::new(50, 60)];
+        assert!(tl.is_frame_loaded(15));
+        assert!(tl.is_frame_loaded(55));
+        assert!(!tl.is_frame_loaded(30));
+        assert!(!tl.is_frame_loaded(5));
+    }
+
+    #[test]
+    fn test_init_multi_section() {
+        let mut tl = Timeline::default();
+        tl.init_multi_section(100, 40, 2);
+        assert_eq!(tl.sections.len(), 2);
+        let total: usize = tl.sections.iter().map(|s| s.frame_count()).sum();
+        assert!(total <= 40);
+    }
+
+    #[test]
+    fn test_section_containing_indexed() {
+        let mut tl = Timeline::new(100, 100);
+        tl.sections = vec![LoadSection::new(0, 30), LoadSection::new(50, 80)];
+        assert_eq!(tl.section_containing_indexed(10).map(|(i, _)| i), Some(0));
+        assert_eq!(tl.section_containing_indexed(60).map(|(i, _)| i), Some(1));
+        assert_eq!(tl.section_containing_indexed(35), None);
+    }
+
+    // ===================================================================
+    // compute_spawn_windows (multi-section)
+    // ===================================================================
+
+    #[test]
+    fn test_spawn_windows_single_section() {
+        let sections = vec![LoadSection::new(0, 100)];
+        let wins = compute_spawn_windows(50, 10, &sections, 100);
+        assert_eq!(wins.len(), 1);
+        assert_eq!(wins[0], (45, 56));
+    }
+
+    #[test]
+    fn test_spawn_windows_multi_section_playhead_in_first() {
+        let sections = vec![LoadSection::new(0, 30), LoadSection::new(60, 90)];
+        let wins = compute_spawn_windows(15, 10, &sections, 100);
+        // Only the first section overlaps the render window around frame 15
+        assert_eq!(wins.len(), 1);
+        assert!(wins[0].1 <= 30);
+    }
+
+    #[test]
+    fn test_spawn_windows_playhead_in_gap() {
+        let sections = vec![LoadSection::new(0, 30), LoadSection::new(60, 90)];
+        // Playhead at 45 (in the gap) with a huge window should catch both sections
+        let wins = compute_spawn_windows(45, 100, &sections, 100);
+        assert_eq!(wins.len(), 2);
+    }
+
+    #[test]
+    fn test_spawn_windows_empty_sections() {
+        let sections: Vec<LoadSection> = vec![];
+        let wins = compute_spawn_windows(50, 10, &sections, 100);
+        assert!(wins.is_empty());
     }
 }
