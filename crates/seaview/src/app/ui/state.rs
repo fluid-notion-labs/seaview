@@ -201,7 +201,10 @@ pub struct CollapsibleState {
     /// Whether the network status section is open
     pub network_status_open: bool,
 
-    /// Whether the lighting rig section is open
+    /// Whether the environment light section is open
+    pub environment_light_open: bool,
+
+    /// Whether the lighting rig (spot lights) section is open
     pub lighting_rig_open: bool,
 
     /// Whether the material section is open
@@ -219,6 +222,7 @@ impl Default for CollapsibleState {
         Self {
             sessions_open: true,
             network_status_open: true,
+            environment_light_open: true,
             lighting_rig_open: true,
             material_open: true,
             perf_open: true,

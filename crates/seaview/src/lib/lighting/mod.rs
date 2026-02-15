@@ -91,6 +91,39 @@ impl LightIntensityUnit {
 #[derive(Component)]
 pub struct GlobalLight;
 
+/// Configuration for the environment (global) lighting: directional lights,
+/// point lights, and ambient light.  Lives in its own resource so the
+/// "Environment Light" UI section is independent of the spot-light rig.
+#[derive(Resource, Clone, Debug)]
+pub struct EnvironmentLightConfig {
+    /// Master toggle — hides/shows directional + point + ambient lights.
+    pub enabled: bool,
+
+    /// Ambient light colour.
+    pub ambient_color: Color,
+
+    /// Ambient light brightness (Bevy `GlobalAmbientLight.brightness`).
+    pub ambient_brightness: f32,
+
+    /// Directional light illuminance (lux).
+    pub directional_illuminance: f32,
+
+    /// Directional light colour.
+    pub directional_color: Color,
+}
+
+impl Default for EnvironmentLightConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            ambient_color: Color::WHITE,
+            ambient_brightness: 500.0,
+            directional_illuminance: 10000.0,
+            directional_color: Color::WHITE,
+        }
+    }
+}
+
 /// Resource that configures the night lighting system
 #[derive(Resource, Clone, Debug, Serialize, Deserialize)]
 pub struct NightLightingConfig {
@@ -109,9 +142,6 @@ pub struct NightLightingConfig {
 
     /// Whether the lighting system is enabled
     pub enabled: bool,
-
-    /// Whether global scene lights (directional + point + ambient) are enabled
-    pub global_lighting_enabled: bool,
 
     /// Light intensity in LUMENS (Bevy's native unit).
     /// Use `intensity_display_value` and `intensity_unit` for UI display/input.
@@ -176,7 +206,6 @@ impl Default for NightLightingConfig {
             cone_angle,
             placement_algorithm: PlacementAlgorithm::UniformGrid,
             enabled: true,
-            global_lighting_enabled: true,
             intensity: intensity_lumens,
             intensity_display_value: display_value,
             intensity_unit: unit,
@@ -209,11 +238,12 @@ pub struct NightLightingPlugin;
 impl Plugin for NightLightingPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(NightLightingConfig::default())
+            .insert_resource(EnvironmentLightConfig::default())
             .add_systems(
                 Update,
                 (
                     systems::update_night_lights,
-                    systems::toggle_global_lights,
+                    systems::apply_environment_light,
                 ),
             );
     }

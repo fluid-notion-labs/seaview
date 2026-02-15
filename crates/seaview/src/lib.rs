@@ -26,7 +26,7 @@ pub mod app {
 // Re-export commonly used types from lib modules
 pub use app::ui::SeaviewUiPlugin;
 pub use lib::coordinates;
-pub use lib::lighting::{self, NightLightingConfig, NightLightingPlugin};
+pub use lib::lighting::{self, EnvironmentLightConfig, NightLightingConfig, NightLightingPlugin};
 pub use lib::mesh_info::{MeshDimensions, MeshInfoPlugin, RecomputeMeshBounds};
 // pub use lib::network::{self, MeshReceiver, ReceivedMesh};
 pub use lib::asset_loaders::{self, AssetLoadersPlugin};

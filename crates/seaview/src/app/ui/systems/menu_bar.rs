@@ -1,19 +1,32 @@
 //! Menu bar system for Seaview
 //!
 //! This module implements the top menu bar with File, View, and Help menus.
+//! Also handles global keyboard shortcuts (Ctrl+S) at the egui level so they
+//! work even when an egui widget has focus.
 
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 
 use crate::app::ui::state::UiState;
+use crate::lib::settings::SaveViewEvent;
 
 /// System that renders the top menu bar
 pub fn menu_bar_system(
     mut contexts: EguiContexts,
     mut ui_state: ResMut<UiState>,
     mut exit: MessageWriter<AppExit>,
+    mut save_view_events: MessageWriter<SaveViewEvent>,
 ) {
     let ctx = contexts.ctx_mut().unwrap();
+
+    // Global keyboard shortcut: Ctrl+S to save view.
+    // Checked at the egui level so it works even when an egui widget has
+    // focus (sliders, text fields, etc.) — Bevy's ButtonInput<KeyCode>
+    // doesn't see key events that egui absorbs.
+    if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::S)) {
+        save_view_events.write(SaveViewEvent);
+        debug!("💾 Save view triggered via Ctrl+S (egui)");
+    }
 
     egui::TopBottomPanel::top("menu_bar")
         .exact_height(ui_state.panel_sizes.menu_bar_height)
@@ -98,10 +111,7 @@ pub fn menu_bar_system(
 }
 
 /// System that shows the new session dialog
-pub fn new_session_dialog_system(
-    mut _contexts: EguiContexts,
-    mut _ui_state: ResMut<UiState>,
-) {
+pub fn new_session_dialog_system(mut _contexts: EguiContexts, mut _ui_state: ResMut<UiState>) {
     // Stub — session creation is no longer exposed in the UI.
     // Kept as a no-op to satisfy the system registration in UiSystemsPlugin.
 }

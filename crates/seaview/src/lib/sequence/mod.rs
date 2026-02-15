@@ -54,6 +54,10 @@ pub struct LoadSection {
     pub start: usize,
     /// End frame index (exclusive)
     pub end: usize,
+    /// Whether this section is active (frames loaded into memory).
+    /// Inactive sections are bookmarks — visible in the UI but greyed out,
+    /// no memory cost.
+    pub active: bool,
 }
 
 impl Default for LoadSection {
@@ -61,14 +65,19 @@ impl Default for LoadSection {
         Self {
             start: 0,
             end: usize::MAX, // Will be clamped to actual sequence length
+            active: true,
         }
     }
 }
 
 impl LoadSection {
-    /// Create a new load section
+    /// Create a new load section (active by default)
     pub fn new(start: usize, end: usize) -> Self {
-        Self { start, end }
+        Self {
+            start,
+            end,
+            active: true,
+        }
     }
 
     /// Get the number of frames in this section
@@ -76,9 +85,15 @@ impl LoadSection {
         self.end.saturating_sub(self.start)
     }
 
-    /// Check if a frame index is within this section
+    /// Check if a frame index is within this section's range.
+    /// Note: this checks the *range* regardless of active status.
     pub fn contains(&self, frame: usize) -> bool {
         frame >= self.start && frame < self.end
+    }
+
+    /// Centre frame of this section.
+    pub fn center(&self) -> usize {
+        self.start + self.frame_count() / 2
     }
 
     /// Clamp the section to valid bounds given total frames and max allowed
@@ -95,30 +110,16 @@ impl LoadSection {
         }
     }
 
-    /// Set the start edge, respecting constraints.
-    ///
-    /// Caps at `end - max_frames` so dragging the start handle never moves
-    /// the end (no "sliding" behaviour).
-    pub fn set_start(&mut self, new_start: usize, max_frames: usize) {
-        // Don't allow start past end - 1
-        let clamped = new_start.min(self.end.saturating_sub(1));
-        // Don't allow the section to exceed budget — cap start instead of
-        // moving end, so the opposite handle stays put.
-        let min_start = self.end.saturating_sub(max_frames);
-        self.start = clamped.max(min_start);
+    /// Set the start edge.  No budget constraint — sections can be any size.
+    /// Only prevents start from going past end.
+    pub fn set_start(&mut self, new_start: usize) {
+        self.start = new_start.min(self.end.saturating_sub(1));
     }
 
-    /// Set the end edge, respecting constraints.
-    ///
-    /// Caps at `start + max_frames` so dragging the end handle never moves
-    /// the start (no "sliding" behaviour).
-    pub fn set_end(&mut self, new_end: usize, total_frames: usize, max_frames: usize) {
-        // Don't allow end past total or before start + 1
-        let clamped = new_end.min(total_frames).max(self.start + 1);
-        // Don't allow the section to exceed budget — cap end instead of
-        // moving start, so the opposite handle stays put.
-        let max_end = self.start + max_frames;
-        self.end = clamped.min(max_end);
+    /// Set the end edge.  No budget constraint — sections can be any size.
+    /// Only prevents end from going before start or past total_frames.
+    pub fn set_end(&mut self, new_end: usize, total_frames: usize) {
+        self.end = new_end.min(total_frames).max(self.start + 1);
     }
 
     /// Move the section so it starts at `new_start`, keeping the same size.
@@ -238,7 +239,7 @@ impl Timeline {
 
     /// Find the section containing `frame`, or `None`.
     pub fn section_containing(&self, frame: usize) -> Option<&LoadSection> {
-        self.sections.iter().find(|s| s.contains(frame))
+        self.sections.iter().find(|s| s.active && s.contains(frame))
     }
 
     /// Find the index + ref of the section containing `frame`, or `None`.
@@ -246,67 +247,176 @@ impl Timeline {
         self.sections
             .iter()
             .enumerate()
+            .find(|(_, s)| s.active && s.contains(frame))
+    }
+
+    /// Like `section_containing_indexed` but matches ANY section (active or
+    /// inactive).  Used by the UI for hit-testing.
+    pub fn section_containing_indexed_any(&self, frame: usize) -> Option<(usize, &LoadSection)> {
+        self.sections
+            .iter()
+            .enumerate()
             .find(|(_, s)| s.contains(frame))
     }
 
-    /// Total number of loaded frames across all sections.
+    /// Total number of loaded frames across all **active** sections.
     pub fn total_loaded(&self) -> usize {
-        self.sections.iter().map(|s| s.frame_count()).sum()
+        self.sections
+            .iter()
+            .filter(|s| s.active)
+            .map(|s| s.frame_count())
+            .sum()
     }
 
     // -- Multi-section management -------------------------------------------
 
-    /// Add a new section at `center`, splitting the remaining budget evenly.
+    /// Add a new section centred on `center`.
     ///
-    /// Returns the index of the new section, or `None` if there is no room
-    /// (budget exhausted or `total_frames == 0`).
+    /// No budget constraints — the section is created at a reasonable default
+    /// size and marked **active**.  The caller should follow up with
+    /// [`enforce_budget`] to deactivate distant sections if needed.
+    ///
+    /// Returns the index of the new section, or `None` if `total_frames == 0`
+    /// or there is no gap to place it in.
     pub fn add_section(&mut self, center: usize, max_frames: usize) -> Option<usize> {
-        if self.total_frames == 0 || max_frames == 0 {
+        if self.total_frames == 0 {
             return None;
         }
 
-        let used: usize = self.sections.iter().map(|s| s.frame_count()).sum();
-        let remaining = max_frames.saturating_sub(used);
-        if remaining < 2 {
-            return None; // Need at least 2 frames for a useful section
-        }
+        // Default size: average of existing sections, or 10% of total, at least 2.
+        let avg_existing = if self.sections.is_empty() {
+            (self.total_frames / 10).max(2)
+        } else {
+            let total_used: usize = self.sections.iter().map(|s| s.frame_count()).sum();
+            (total_used / self.sections.len()).max(2)
+        };
+        let section_size = avg_existing.min(self.total_frames).max(2);
 
-        // New section gets the remaining budget, centered on `center`
-        let half = remaining / 2;
+        let half = section_size / 2;
         let start = center.saturating_sub(half);
-        let end = (start + remaining).min(self.total_frames);
-        let start = end.saturating_sub(remaining); // re-anchor if clamped
+        let end = (start + section_size).min(self.total_frames);
+        let start = end.saturating_sub(section_size); // re-anchor if clamped
 
-        let mut new_section = LoadSection::new(start, end);
-        new_section.clamp(self.total_frames, remaining);
+        let new_section = LoadSection::new(start, end);
 
-        // Resolve overlaps: shrink any existing section that overlaps the new one
-        for existing in &mut self.sections {
-            // If the new section overlaps an existing one, shrink the existing
-            if new_section.start < existing.end && new_section.end > existing.start {
-                // Shrink whichever side has less overlap
-                let overlap_from_left = existing.end.saturating_sub(new_section.start);
-                let overlap_from_right = new_section.end.saturating_sub(existing.start);
-                if overlap_from_left <= overlap_from_right {
-                    existing.end = new_section.start;
-                } else {
-                    existing.start = new_section.end;
-                }
-                if existing.start >= existing.end {
-                    existing.end = existing.start; // degenerate — will be cleaned up
-                }
+        // Minimum gap (in frames) to leave between sections so their edge
+        // handles don't overlap in the UI.  Use ~0.5% of total frames,
+        // clamped to [1, 20].
+        let min_gap = (self.total_frames / 200).clamp(1, 20);
+
+        // Find the tightest left and right bounds imposed by existing sections.
+        let mut left_bound = 0usize;
+        let mut right_bound = self.total_frames;
+        for existing in &self.sections {
+            if existing.end <= center {
+                left_bound = left_bound.max(existing.end + min_gap);
+            }
+            if existing.start >= center {
+                right_bound = right_bound.min(existing.start.saturating_sub(min_gap));
+            }
+            if existing.start < center && existing.end > center {
+                return None;
             }
         }
 
-        // Remove degenerate sections (zero-length)
-        self.sections.retain(|s| s.frame_count() > 0);
+        if left_bound >= right_bound || right_bound.saturating_sub(left_bound) < 2 {
+            return None; // No room between neighbours
+        }
 
-        self.sections.push(new_section);
+        // Clamp new section into the available slot.
+        let mut ns = new_section;
+        ns.start = ns.start.max(left_bound);
+        ns.end = ns.end.min(right_bound);
+        if ns.start >= ns.end {
+            ns.start = left_bound;
+            ns.end = right_bound.min(left_bound + section_size);
+        }
+        if ns.frame_count() < 2 {
+            return None;
+        }
 
-        // Keep sections sorted by start frame
+        let new_start = ns.start;
+        let new_end = ns.end;
+
+        self.sections.push(ns);
         self.sections.sort_by_key(|s| s.start);
 
-        Some(self.sections.len() - 1)
+        let idx = self
+            .sections
+            .iter()
+            .position(|s| s.start == new_start && s.end == new_end)
+            .unwrap_or(self.sections.len() - 1);
+
+        // Auto-activate and enforce budget (may deactivate distant sections).
+        self.sections[idx].active = true;
+        self.enforce_budget(max_frames);
+
+        Some(idx)
+    }
+
+    /// Add a minimal section starting at `start_frame`.
+    ///
+    /// Creates a section just 2 frames wide (or as small as the gap allows).
+    /// Designed for the drag-to-paint gesture: the caller creates the section
+    /// here, then immediately enters a drag on the `End` edge so the user
+    /// can sweep rightward to size it.
+    ///
+    /// No budget constraints on size — budget is enforced via visibility.
+    ///
+    /// Returns the index of the new section in the (sorted) `sections` vec,
+    /// or `None` if there is no room.
+    pub fn add_section_at(&mut self, start_frame: usize, max_frames: usize) -> Option<usize> {
+        if self.total_frames == 0 {
+            return None;
+        }
+
+        // Minimum gap between sections (same as add_section).
+        let min_gap = (self.total_frames / 200).clamp(1, 20);
+
+        // Find the slot the new section must fit into.
+        let mut left_bound = 0usize;
+        let mut right_bound = self.total_frames;
+        for existing in &self.sections {
+            if existing.end <= start_frame {
+                left_bound = left_bound.max(existing.end + min_gap);
+            }
+            if existing.start > start_frame {
+                right_bound = right_bound.min(existing.start.saturating_sub(min_gap));
+            }
+            if existing.contains(start_frame) {
+                return None;
+            }
+        }
+
+        let clamped_start = start_frame.max(left_bound);
+        if clamped_start >= right_bound || right_bound.saturating_sub(clamped_start) < 2 {
+            return None;
+        }
+
+        // Minimal section: just 2 frames (user will drag the End edge).
+        let initial_size = 2.min(right_bound - clamped_start);
+        if initial_size < 2 {
+            return None;
+        }
+        let new_section = LoadSection::new(clamped_start, clamped_start + initial_size);
+
+        let new_start = new_section.start;
+        let new_end = new_section.end;
+
+        self.sections.push(new_section);
+        self.sections.sort_by_key(|s| s.start);
+
+        let idx = self
+            .sections
+            .iter()
+            .position(|s| s.start == new_start && s.end == new_end)
+            .unwrap_or(self.sections.len() - 1);
+
+        // Auto-activate and enforce budget.
+        self.sections[idx].active = true;
+        self.enforce_budget(max_frames);
+
+        Some(idx)
     }
 
     /// Remove the section at `index`.
@@ -326,14 +436,14 @@ impl Timeline {
     /// Return the next loaded frame at or after `frame`, searching across all
     /// sections.  Returns `None` if no section contains any frame ≥ `frame`.
     pub fn next_loaded_frame(&self, frame: usize) -> Option<usize> {
-        // If the frame is inside a section, return it directly
+        // If the frame is inside an active section, return it directly
         if self.section_containing(frame).is_some() {
             return Some(frame);
         }
-        // Otherwise find the nearest section that starts after `frame`
+        // Otherwise find the nearest active section that starts after `frame`
         self.sections
             .iter()
-            .filter(|s| s.start >= frame)
+            .filter(|s| s.active && s.start >= frame)
             .map(|s| s.start)
             .min()
     }
@@ -347,36 +457,135 @@ impl Timeline {
         }
         self.sections
             .iter()
-            .filter(|s| s.end > 0 && s.end.saturating_sub(1) <= frame)
+            .filter(|s| s.active && s.end > 0 && s.end.saturating_sub(1) <= frame)
             .map(|s| s.end - 1)
             .max()
     }
 
-    /// Check whether `frame` falls inside any loaded section.
+    /// Check whether `frame` falls inside any **active** loaded section.
     pub fn is_frame_loaded(&self, frame: usize) -> bool {
+        self.sections.iter().any(|s| s.active && s.contains(frame))
+    }
+
+    /// Check whether `frame` falls inside ANY section (active or inactive).
+    pub fn is_frame_in_any_section(&self, frame: usize) -> bool {
         self.sections.iter().any(|s| s.contains(frame))
     }
 
     // -- Budget enforcement -------------------------------------------------
 
-    /// Clamp every section to fit within `total_frames` and `max_frames`
-    /// budget. This is the pure logic behind the `update_timeline_budget`
-    /// system.
+    /// Enforce the memory budget by toggling section **active** flags.
+    ///
+    /// Sections are never resized — only deactivated (furthest from playhead
+    /// first) until the total active frame count fits within `max_frames`.
+    /// This is the pure logic behind the `update_timeline_budget` system.
     pub fn enforce_budget(&mut self, max_frames: usize) {
-        if self.sections.len() == 1 {
-            self.sections[0].clamp(self.total_frames, max_frames);
+        // Clamp each section to total_frames (no section can extend past the
+        // end of the sequence).
+        for section in &mut self.sections {
+            if section.end > self.total_frames {
+                section.end = self.total_frames;
+            }
+            if section.start > section.end {
+                section.start = section.end;
+            }
+        }
+
+        // Check whether active sections exceed the budget.
+        let active_loaded: usize = self
+            .sections
+            .iter()
+            .filter(|s| s.active)
+            .map(|s| s.frame_count())
+            .sum();
+
+        if active_loaded <= max_frames {
+            return; // Within budget — nothing to do.
+        }
+
+        // Deactivate sections furthest from the playhead until we fit.
+        // Build a list of active section indices sorted by distance from
+        // playhead (furthest first).
+        let playhead = self.playhead;
+        let mut active_indices: Vec<usize> = self
+            .sections
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.active)
+            .map(|(i, _)| i)
+            .collect();
+
+        active_indices.sort_by(|&a, &b| {
+            let da = self.sections[a].center().abs_diff(playhead);
+            let db = self.sections[b].center().abs_diff(playhead);
+            db.cmp(&da) // furthest first
+        });
+
+        let mut current_loaded = active_loaded;
+        for &idx in &active_indices {
+            if current_loaded <= max_frames {
+                break;
+            }
+            // Don't deactivate the section the playhead is in.
+            if self.sections[idx].contains(playhead) {
+                continue;
+            }
+            current_loaded -= self.sections[idx].frame_count();
+            self.sections[idx].active = false;
+        }
+    }
+
+    /// Activate section at `index`, deactivating the furthest-from-playhead
+    /// active section(s) if needed to stay within `max_frames` budget.
+    pub fn activate_section(&mut self, index: usize, max_frames: usize) {
+        if index >= self.sections.len() || self.sections[index].active {
+            return;
+        }
+        self.sections[index].active = true;
+
+        // Check if we've blown the budget and need to deactivate others.
+        let active_loaded: usize = self
+            .sections
+            .iter()
+            .filter(|s| s.active)
+            .map(|s| s.frame_count())
+            .sum();
+
+        if active_loaded <= max_frames {
             return;
         }
 
-        // Multi-section: give each section an equal share of the budget,
-        // then clamp individually.
-        let per_section = if self.sections.is_empty() {
-            0
-        } else {
-            (max_frames / self.sections.len()).max(1)
-        };
-        for section in &mut self.sections {
-            section.clamp(self.total_frames, per_section);
+        // Deactivate furthest-from-playhead active sections (excluding the
+        // one we just activated and the one containing the playhead).
+        let playhead = self.playhead;
+        let mut candidates: Vec<usize> = self
+            .sections
+            .iter()
+            .enumerate()
+            .filter(|(i, s)| s.active && *i != index && !s.contains(playhead))
+            .map(|(i, _)| i)
+            .collect();
+
+        candidates.sort_by(|&a, &b| {
+            let da = self.sections[a].center().abs_diff(playhead);
+            let db = self.sections[b].center().abs_diff(playhead);
+            db.cmp(&da) // furthest first
+        });
+
+        let mut current_loaded = active_loaded;
+        for &idx in &candidates {
+            if current_loaded <= max_frames {
+                break;
+            }
+            current_loaded -= self.sections[idx].frame_count();
+            self.sections[idx].active = false;
+        }
+    }
+
+    /// Deactivate section at `index`.
+    pub fn deactivate_section(&mut self, index: usize) {
+        if index < self.sections.len() {
+            self.sections[index].active = false;
         }
     }
 
@@ -452,6 +661,9 @@ pub fn compute_spawn_windows(
 ) -> Vec<(usize, usize)> {
     let mut windows = Vec::with_capacity(sections.len());
     for section in sections {
+        if !section.active {
+            continue;
+        }
         let (lo, hi) = compute_spawn_window(
             playhead,
             window_size,
@@ -527,6 +739,9 @@ pub fn distribute_sections(
 pub fn frames_to_load(sections: &[LoadSection], total_frames: usize) -> Vec<usize> {
     let mut out = Vec::new();
     for section in sections {
+        if !section.active {
+            continue;
+        }
         let end = section.end.min(total_frames);
         let start = section.start.min(end);
         out.extend(start..end);
@@ -576,16 +791,36 @@ fn update_timeline_budget(
         return;
     }
 
-    // Keep timeline.total_frames in sync (watch mode can add frames)
-    timeline.total_frames = sequence_assets.total_frames;
-
     let max_frames = if memory_budget.max_frames < usize::MAX {
         memory_budget.max_frames
     } else {
         sequence_assets.total_frames
     };
 
-    // Snapshot for change detection
+    // Check whether the timeline actually needs updating before taking a
+    // mutable borrow — avoids triggering Bevy change-detection every frame
+    // which would cause `sync_section_loads` to re-evaluate needlessly.
+    let needs_total_sync = timeline.total_frames != sequence_assets.total_frames;
+
+    let active_loaded: usize = timeline
+        .sections
+        .iter()
+        .filter(|s| s.active)
+        .map(|s| s.frame_count())
+        .sum();
+    let any_past_end = timeline
+        .sections
+        .iter()
+        .any(|s| s.end > sequence_assets.total_frames);
+    let needs_budget_enforce = active_loaded > max_frames || any_past_end;
+
+    if !needs_total_sync && !needs_budget_enforce {
+        return; // Nothing to do — skip DerefMut to avoid change-detection churn.
+    }
+
+    // Now take the mutable borrow.
+    timeline.total_frames = sequence_assets.total_frames;
+
     let old_sections = timeline.sections.clone();
 
     timeline.enforce_budget(max_frames);
@@ -971,7 +1206,7 @@ mod tests {
     #[test]
     fn test_set_start_normal() {
         let mut ls = LoadSection::new(10, 100);
-        ls.set_start(20, 200);
+        ls.set_start(20);
         assert_eq!(ls.start, 20);
         assert_eq!(ls.end, 100);
     }
@@ -979,24 +1214,24 @@ mod tests {
     #[test]
     fn test_set_start_past_end() {
         let mut ls = LoadSection::new(10, 50);
-        ls.set_start(80, 200);
+        ls.set_start(80);
         // start clamped to end - 1 = 49
         assert_eq!(ls.start, 49);
     }
 
     #[test]
-    fn test_set_start_exceeds_max_frames() {
+    fn test_set_start_free_sizing() {
+        // No budget constraint — start can go as low as 0
         let mut ls = LoadSection::new(50, 200);
-        ls.set_start(0, 50);
-        // start capped at end - max = 150 (end stays put)
-        assert_eq!(ls.start, 150);
+        ls.set_start(0);
+        assert_eq!(ls.start, 0);
         assert_eq!(ls.end, 200);
     }
 
     #[test]
     fn test_set_end_normal() {
         let mut ls = LoadSection::new(10, 100);
-        ls.set_end(200, 500, 300);
+        ls.set_end(200, 500);
         assert_eq!(ls.start, 10);
         assert_eq!(ls.end, 200);
     }
@@ -1004,24 +1239,24 @@ mod tests {
     #[test]
     fn test_set_end_past_total() {
         let mut ls = LoadSection::new(10, 100);
-        ls.set_end(600, 500, 1000);
+        ls.set_end(600, 500);
         assert_eq!(ls.end, 500);
     }
 
     #[test]
     fn test_set_end_before_start() {
         let mut ls = LoadSection::new(50, 100);
-        ls.set_end(30, 500, 1000);
+        ls.set_end(30, 500);
         // end clamped to max(30, start + 1) = 51
         assert_eq!(ls.end, 51);
     }
 
     #[test]
-    fn test_set_end_exceeds_max_frames() {
+    fn test_set_end_free_sizing() {
+        // No budget constraint — end can go up to total_frames
         let mut ls = LoadSection::new(10, 100);
-        ls.set_end(400, 500, 50);
-        // end capped at start + max = 60 (start stays put)
-        assert_eq!(ls.end, 60);
+        ls.set_end(400, 500);
+        assert_eq!(ls.end, 400);
         assert_eq!(ls.start, 10);
     }
 
@@ -1209,7 +1444,11 @@ mod tests {
     fn test_enforce_budget_single_section() {
         let mut tl = Timeline::new(1000, 1000);
         tl.enforce_budget(100);
-        assert_eq!(tl.sections[0], LoadSection::new(0, 100));
+        // Section contains the playhead (frame 0), so it can't be deactivated.
+        // It keeps its original size — budget is best-effort when the only
+        // section holds the playhead.
+        assert_eq!(tl.sections[0], LoadSection::new(0, 1000));
+        assert!(tl.sections[0].active);
     }
 
     #[test]
@@ -1224,9 +1463,60 @@ mod tests {
         let mut tl = Timeline::new(1000, 100);
         tl.sections = vec![LoadSection::new(0, 500), LoadSection::new(500, 1000)];
         tl.enforce_budget(200);
-        // Each section gets 100
-        assert_eq!(tl.sections[0].frame_count(), 100);
+        // Playhead is 0, so section 0 contains it and stays active.
+        // Section 1 is furthest from playhead → deactivated.
+        assert_eq!(tl.sections.len(), 2);
+        assert!(tl.sections[0].active);
+        assert!(!tl.sections[1].active);
+        // Active total = 500 (section 0 alone; can't deactivate playhead section).
+        assert_eq!(tl.total_loaded(), 500);
+    }
+
+    #[test]
+    fn test_enforce_budget_within_budget_untouched() {
+        // Two sections that together are within budget should NOT be modified.
+        let mut tl = Timeline::new(1000, 100);
+        tl.sections = vec![LoadSection::new(0, 30), LoadSection::new(500, 570)];
+        // Total = 100, budget = 100 → within budget.
+        let before = tl.sections.clone();
+        tl.enforce_budget(100);
+        assert_eq!(
+            tl.sections, before,
+            "Sections within budget should not be touched"
+        );
+    }
+
+    #[test]
+    fn test_enforce_budget_asymmetric_proportional() {
+        // One big section and one small section. Budget enforced via
+        // deactivation, not resizing.
+        let mut tl = Timeline::new(1000, 100);
+        tl.sections = vec![LoadSection::new(0, 300), LoadSection::new(500, 600)];
+        // Total = 400, budget = 200 → deactivate furthest from playhead (0).
+        tl.enforce_budget(200);
+        // Section 0 contains playhead → stays active.
+        // Section 1 (center 550) is furthest → deactivated.
+        assert!(tl.sections[0].active);
+        assert!(!tl.sections[1].active);
+        // Sections keep their original sizes — no resizing.
+        assert_eq!(tl.sections[0].frame_count(), 300);
         assert_eq!(tl.sections[1].frame_count(), 100);
+        // Active total = 300 (playhead section can't be deactivated).
+        assert_eq!(tl.total_loaded(), 300);
+    }
+
+    #[test]
+    fn test_enforce_budget_section_past_total_frames() {
+        // Section extending past total_frames should be clamped even if
+        // within frame-count budget.
+        let mut tl = Timeline::new(100, 100);
+        tl.sections = vec![LoadSection::new(80, 150)];
+        tl.enforce_budget(200);
+        assert!(
+            tl.sections[0].end <= 100,
+            "Section end {} should be <= total_frames 100",
+            tl.sections[0].end,
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1394,17 +1684,169 @@ mod tests {
     #[test]
     fn test_add_section_no_budget() {
         let mut tl = Timeline::new(100, 30);
-        // Section 0 uses all 30 frames of budget
-        assert_eq!(tl.add_section(70, 30), None);
+        // Section is always created; budget enforced by deactivating distant
+        // sections rather than refusing creation.
+        let idx = tl.add_section(70, 30);
+        assert_eq!(idx, Some(1));
+        // New section exists but was deactivated to stay within budget
+        // (playhead=0 is in section 0, so section 1 is deactivated).
+        assert!(tl.sections[0].active);
+        assert!(!tl.sections[1].active);
     }
 
     #[test]
     fn test_add_section_tiny_budget() {
         let mut tl = Timeline::new(100, 10);
-        // Budget is 10, section uses 10, remaining is 0
-        assert_eq!(tl.add_section(50, 10), None);
-        // Even with budget=11, remaining=1 which is < 2
+        // Section is created even when budget is tight — enforce_budget
+        // deactivates it since playhead (0) is in section 0.
+        let idx = tl.add_section(50, 10);
+        assert_eq!(idx, Some(1));
+        assert!(tl.sections[0].active);
+        assert!(!tl.sections[1].active);
+        // Second call at same center lands inside the new section → None.
         assert_eq!(tl.add_section(50, 11), None);
+    }
+
+    // ===================================================================
+    // add_section_at — drag-to-paint gesture
+    // ===================================================================
+
+    #[test]
+    fn test_add_section_at_basic() {
+        let mut tl = Timeline::new(1000, 200);
+        // Section 0: [0, 200). Budget=400 → remaining=200.
+        let idx = tl.add_section_at(500, 400);
+        assert!(idx.is_some(), "Should create section at frame 500");
+        let idx = idx.unwrap();
+        // New section should start at (or very near) 500
+        assert_eq!(tl.sections[idx].start, 500);
+        // Should be minimal (2 frames)
+        assert_eq!(tl.sections[idx].frame_count(), 2);
+    }
+
+    #[test]
+    fn test_add_section_at_no_budget() {
+        let mut tl = Timeline::new(100, 30);
+        // Section is always created; enforce_budget deactivates it since
+        // playhead (0) is in section 0.
+        let idx = tl.add_section_at(70, 30);
+        assert_eq!(idx, Some(1));
+        assert!(tl.sections[0].active);
+        assert!(!tl.sections[1].active);
+    }
+
+    #[test]
+    fn test_add_section_at_inside_existing() {
+        let mut tl = Timeline::new(100, 100);
+        // Section covers [0, 100). Can't place inside it.
+        assert_eq!(tl.add_section_at(50, 200), None);
+    }
+
+    #[test]
+    fn test_add_section_at_respects_gap() {
+        let mut tl = Timeline::new(1000, 200);
+        // Section 0: [0, 200). Try to place right at the boundary.
+        let idx = tl.add_section_at(200, 400);
+        assert!(idx.is_some());
+        let idx = idx.unwrap();
+        // Must leave a gap — start should be > 200
+        assert!(
+            tl.sections[idx].start > 200,
+            "Should leave a gap after existing section, got start={}",
+            tl.sections[idx].start,
+        );
+    }
+
+    #[test]
+    fn test_add_section_at_near_next_section() {
+        let mut tl = Timeline::new(1000, 100);
+        tl.sections = vec![LoadSection::new(0, 100), LoadSection::new(200, 300)];
+        // Place between the two sections
+        let idx = tl.add_section_at(150, 500);
+        assert!(idx.is_some());
+        let idx = idx.unwrap();
+        // Must not overlap either neighbor
+        assert!(tl.sections[idx].start >= tl.sections[0].end);
+        assert!(tl.sections[idx].end <= tl.sections[2].start);
+    }
+
+    #[test]
+    fn test_add_section_at_no_room_between_neighbors() {
+        let mut tl = Timeline::new(1000, 100);
+        // Two sections with only a tiny gap (3 frames, but min_gap eats most of it)
+        tl.sections = vec![LoadSection::new(0, 100), LoadSection::new(103, 200)];
+        // min_gap = (1000/200).clamp(1,20) = 5, so slot is 103-5=98..100+5=105
+        // left_bound = 100+5=105, right_bound = 103-5=98 → left >= right → None
+        assert_eq!(tl.add_section_at(101, 500), None);
+    }
+
+    // ===================================================================
+    // add_section — centred placement
+    // ===================================================================
+
+    #[test]
+    fn test_add_section_leaves_gap() {
+        // When adding a section near an existing one, there must be a gap
+        // between them so the UI edge handles don't overlap.
+        let mut tl = Timeline::new(1000, 200);
+        // Section 0 is [0, 200)
+        let idx = tl.add_section(500, 400);
+        assert!(idx.is_some(), "Should be able to add with remaining budget");
+        assert_eq!(tl.sections.len(), 2);
+
+        // The two sections must NOT be adjacent — there must be a gap.
+        let gap = tl.sections[1].start.saturating_sub(tl.sections[0].end);
+        assert!(
+            gap >= 1,
+            "Sections should have a gap between them, got gap={} sections={:?}",
+            gap,
+            tl.sections,
+        );
+    }
+
+    #[test]
+    fn test_add_section_no_overlap_with_existing() {
+        let mut tl = Timeline::new(1000, 300);
+        // Section 0 is [0, 300). Add two more.
+        let _ = tl.add_section(600, 600);
+        let _ = tl.add_section(900, 900);
+        // No pair of sections should overlap
+        for i in 1..tl.sections.len() {
+            assert!(
+                tl.sections[i].start >= tl.sections[i - 1].end,
+                "Overlap between section {} ({:?}) and {} ({:?})",
+                i - 1,
+                tl.sections[i - 1],
+                i,
+                tl.sections[i],
+            );
+        }
+    }
+
+    #[test]
+    fn test_add_section_inside_existing_returns_none() {
+        let mut tl = Timeline::new(100, 100);
+        // Section covers [0, 100) — entire timeline
+        // Clicking inside should not add a section (is_frame_loaded would
+        // catch this in the UI, but add_section should also handle it).
+        assert_eq!(tl.add_section(50, 200), None);
+    }
+
+    #[test]
+    fn test_add_section_caps_size() {
+        // With a large remaining budget, the new section should NOT consume
+        // all of it — it should be capped so the user has room to resize.
+        let mut tl = Timeline::new(1000, 100);
+        // Section 0: [0, 100). Budget=500 → remaining=400.
+        let idx = tl.add_section(700, 500);
+        assert!(idx.is_some());
+        let new = &tl.sections[1];
+        // New section should be significantly smaller than 400 (the remaining).
+        assert!(
+            new.frame_count() <= 200,
+            "New section should be capped, not consume all remaining budget. Got {} frames",
+            new.frame_count(),
+        );
     }
 
     #[test]

@@ -1,16 +1,19 @@
 //! Environment Panel — the primary left sidebar for Seaview
 //!
 //! This module implements the left side panel containing collapsible accordion
-//! sections for lighting, material, rendering, and performance controls.
+//! sections for environment lighting, spot lights, material, rendering, and
+//! performance controls.
 //!
 //! Each section is implemented in its own submodule and rendered as a plain
 //! function taking `&mut egui::Ui` plus the resources it needs.
 
+mod environment_light_section;
 mod lighting_section;
 mod material_section;
 mod perf_section;
 mod rendering_section;
 
+pub use environment_light_section::render_environment_light_controls;
 pub use lighting_section::render_lighting_controls;
 pub use material_section::render_material_controls;
 pub use perf_section::render_perf_section;
@@ -22,18 +25,19 @@ use bevy_egui::{egui, EguiContexts};
 
 use crate::app::systems::diagnostics::RenderingStats;
 use crate::app::ui::state::{MaterialConfig, RenderConfig, UiState};
-use crate::lib::lighting::NightLightingConfig;
+use crate::lib::lighting::{EnvironmentLightConfig, NightLightingConfig};
 use crate::lib::mesh_info::MeshDimensions;
 use crate::lib::sequence::SequenceAssets;
 
 /// System that renders the environment panel (left sidebar).
 ///
-/// Contains collapsible sections for Lighting Rig, Material, Rendering,
-/// and Performance.
+/// Contains collapsible sections for Environment Light, Spot Lights, Material,
+/// Rendering, and Performance.
 pub fn environment_panel_system(
     mut contexts: EguiContexts,
     mut ui_state: ResMut<UiState>,
     mut lighting_config: ResMut<NightLightingConfig>,
+    mut env_light_config: ResMut<EnvironmentLightConfig>,
     mut material_config: ResMut<MaterialConfig>,
     mut render_config: ResMut<RenderConfig>,
     mesh_dims: Res<MeshDimensions>,
@@ -61,8 +65,18 @@ pub fn environment_panel_system(
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    // ── Lighting Rig ───────────────────────────────────
-                    egui::CollapsingHeader::new("Lighting Rig")
+                    // ── Environment Light ──────────────────────────────
+                    egui::CollapsingHeader::new("Environment Light")
+                        .default_open(ui_state.collapsible.environment_light_open)
+                        .show(ui, |ui| {
+                            ui_state.collapsible.environment_light_open = true;
+                            render_environment_light_controls(ui, &mut env_light_config);
+                        });
+
+                    ui.add_space(5.0);
+
+                    // ── Spot Lights ────────────────────────────────────
+                    egui::CollapsingHeader::new("Spot Lights")
                         .default_open(ui_state.collapsible.lighting_rig_open)
                         .show(ui, |ui| {
                             ui_state.collapsible.lighting_rig_open = true;
@@ -92,12 +106,7 @@ pub fn environment_panel_system(
                     ui.add_space(5.0);
 
                     // ── Performance ────────────────────────────────────
-                    render_perf_section(
-                        ui,
-                        &mut ui_state,
-                        &diagnostics,
-                        &rendering_stats,
-                    );
+                    render_perf_section(ui, &mut ui_state, &diagnostics, &rendering_stats);
                 });
         });
 }

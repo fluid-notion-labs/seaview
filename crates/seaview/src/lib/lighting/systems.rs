@@ -6,7 +6,9 @@
 use bevy::prelude::*;
 use std::f32::consts::FRAC_PI_2;
 
-use super::{GlobalLight, NightLight, NightLightMarker, NightLightingConfig};
+use super::{
+    EnvironmentLightConfig, GlobalLight, NightLight, NightLightMarker, NightLightingConfig,
+};
 use crate::lib::mesh_info::MeshDimensions;
 
 /// Convert the UI cone angle (full angle in degrees) to a valid SpotLight outer_angle
@@ -42,7 +44,10 @@ fn compute_placement_bounds(mesh_dims: &MeshDimensions, coverage_pct: f32) -> (V
     } else {
         // Fallback when no mesh is loaded
         let fallback = 100.0 * scale;
-        (Vec2::new(-fallback, -fallback), Vec2::new(fallback, fallback))
+        (
+            Vec2::new(-fallback, -fallback),
+            Vec2::new(fallback, fallback),
+        )
     }
 }
 
@@ -98,7 +103,13 @@ pub fn update_night_lights(
             commands.entity(entity).despawn();
         }
 
-        spawn_lights(&mut commands, &mut meshes, &mut materials, &config, &mesh_dims);
+        spawn_lights(
+            &mut commands,
+            &mut meshes,
+            &mut materials,
+            &config,
+            &mesh_dims,
+        );
     } else {
         // Update existing lights' properties
         for (entity, light) in existing_lights.iter() {
@@ -129,9 +140,10 @@ fn spawn_lights(
     let (bounds_min, bounds_max) = compute_placement_bounds(mesh_dims, config.coverage_pct);
 
     // Calculate light positions using the configured algorithm
-    let positions = config
-        .placement_algorithm
-        .calculate_positions(config.num_lights, bounds_min, bounds_max);
+    let positions =
+        config
+            .placement_algorithm
+            .calculate_positions(config.num_lights, bounds_min, bounds_max);
 
     // Spawn each light
     for (index, pos) in positions.iter().enumerate() {
@@ -153,7 +165,15 @@ fn spawn_lights(
 
         // Spawn marker sphere if enabled
         if config.show_markers {
-            spawn_marker(commands, meshes, materials, *pos, config.height, index, config);
+            spawn_marker(
+                commands,
+                meshes,
+                materials,
+                *pos,
+                config.height,
+                index,
+                config,
+            );
         }
     }
 }
@@ -169,9 +189,10 @@ fn update_light_transform(
     let (bounds_min, bounds_max) = compute_placement_bounds(mesh_dims, config.coverage_pct);
 
     // Calculate light positions
-    let positions = config
-        .placement_algorithm
-        .calculate_positions(config.num_lights, bounds_min, bounds_max);
+    let positions =
+        config
+            .placement_algorithm
+            .calculate_positions(config.num_lights, bounds_min, bounds_max);
 
     if let Some(pos) = positions.get(index) {
         let transform = calculate_light_transform(*pos, config.height, config.cone_angle);
@@ -243,20 +264,32 @@ fn update_markers(
         // Markers were toggled on - spawn them
         let (bounds_min, bounds_max) = compute_placement_bounds(mesh_dims, config.coverage_pct);
 
-        let positions = config
-            .placement_algorithm
-            .calculate_positions(config.num_lights, bounds_min, bounds_max);
+        let positions = config.placement_algorithm.calculate_positions(
+            config.num_lights,
+            bounds_min,
+            bounds_max,
+        );
 
         for (index, pos) in positions.iter().enumerate() {
-            spawn_marker(commands, meshes, materials, *pos, config.height, index, config);
+            spawn_marker(
+                commands,
+                meshes,
+                materials,
+                *pos,
+                config.height,
+                index,
+                config,
+            );
         }
     } else {
         let (bounds_min, bounds_max) = compute_placement_bounds(mesh_dims, config.coverage_pct);
 
         // Calculate light positions
-        let positions = config
-            .placement_algorithm
-            .calculate_positions(config.num_lights, bounds_min, bounds_max);
+        let positions = config.placement_algorithm.calculate_positions(
+            config.num_lights,
+            bounds_min,
+            bounds_max,
+        );
 
         // Update marker meshes, positions, and materials
         let new_sphere = meshes.add(Sphere::new(config.marker_size));
@@ -271,29 +304,38 @@ fn update_markers(
     }
 }
 
-/// System that toggles global scene lights (directional, point, ambient) based on config
-pub fn toggle_global_lights(
-    config: Res<NightLightingConfig>,
-    mut global_lights: Query<&mut Visibility, With<GlobalLight>>,
+/// System that applies the environment (global) light configuration.
+///
+/// Reads [`EnvironmentLightConfig`] and updates the directional/point light
+/// visibility, ambient colour/brightness, and directional illuminance.
+pub fn apply_environment_light(
+    config: Res<EnvironmentLightConfig>,
+    mut global_lights: Query<(&mut Visibility, Option<&mut DirectionalLight>), With<GlobalLight>>,
     mut ambient: ResMut<GlobalAmbientLight>,
 ) {
     if !config.is_changed() {
         return;
     }
 
-    let visibility = if config.global_lighting_enabled {
+    let visibility = if config.enabled {
         Visibility::Inherited
     } else {
         Visibility::Hidden
     };
 
-    for mut vis in global_lights.iter_mut() {
+    for (mut vis, dir_light) in global_lights.iter_mut() {
         *vis = visibility;
+        // Update directional light properties when present.
+        if let Some(mut dl) = dir_light {
+            dl.illuminance = config.directional_illuminance;
+            dl.color = config.directional_color;
+        }
     }
 
-    // Also toggle ambient light
-    if config.global_lighting_enabled {
-        ambient.brightness = 500.0;
+    // Ambient light
+    if config.enabled {
+        ambient.color = config.ambient_color;
+        ambient.brightness = config.ambient_brightness;
     } else {
         ambient.brightness = 0.0;
     }

@@ -30,16 +30,9 @@ pub fn render_lighting_controls(
     });
 
     if !lighting_config.enabled {
-        ui.label("Night lighting is disabled");
+        ui.label("Spot lighting is disabled");
         return;
     }
-
-    ui.add_space(5.0);
-
-    // Global lighting toggle
-    ui.horizontal(|ui| {
-        ui.checkbox(&mut lighting_config.global_lighting_enabled, "Global Lights");
-    });
 
     ui.add_space(5.0);
 
@@ -95,11 +88,7 @@ pub fn render_lighting_controls(
         .show_ui(ui, |ui| {
             for unit in LightIntensityUnit::all() {
                 if ui
-                    .selectable_value(
-                        &mut lighting_config.intensity_unit,
-                        *unit,
-                        unit.name(),
-                    )
+                    .selectable_value(&mut lighting_config.intensity_unit, *unit, unit.name())
                     .clicked()
                 {
                     lighting_config.set_intensity_unit(*unit);
@@ -123,9 +112,12 @@ pub fn render_lighting_controls(
 
     let changed = ui
         .add(
-            egui::Slider::new(&mut lighting_config.intensity_display_value, min_val..=max_val)
-                .text(lighting_config.intensity_unit.symbol())
-                .logarithmic(true),
+            egui::Slider::new(
+                &mut lighting_config.intensity_display_value,
+                min_val..=max_val,
+            )
+            .text(lighting_config.intensity_unit.symbol())
+            .logarithmic(true),
         )
         .changed();
 
@@ -188,11 +180,7 @@ pub fn render_lighting_controls(
         .show_ui(ui, |ui| {
             for alg in PlacementAlgorithm::all() {
                 if ui
-                    .selectable_value(
-                        &mut lighting_config.placement_algorithm,
-                        *alg,
-                        alg.name(),
-                    )
+                    .selectable_value(&mut lighting_config.placement_algorithm, *alg, alg.name())
                     .clicked()
                 {
                     // Selection applied via selectable_value
@@ -255,10 +243,7 @@ fn render_light_map(
     );
     let view_extent = view_max - view_min;
     let padding_frac = 0.08;
-    let pad = bevy::math::Vec2::new(
-        view_extent.x * padding_frac,
-        view_extent.y * padding_frac,
-    );
+    let pad = bevy::math::Vec2::new(view_extent.x * padding_frac, view_extent.y * padding_frac);
     let view_min = view_min - pad;
     let view_max = view_max + pad;
     let view_w = view_max.x - view_min.x;
@@ -302,7 +287,10 @@ fn render_light_map(
         painter.rect_stroke(
             cov_rect,
             2.0,
-            egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(80, 140, 200, 140)),
+            egui::Stroke::new(
+                1.0,
+                egui::Color32::from_rgba_unmultiplied(80, 140, 200, 140),
+            ),
             egui::StrokeKind::Outside,
         );
         // Label
@@ -327,7 +315,10 @@ fn render_light_map(
         painter.rect_stroke(
             dom_rect,
             1.0,
-            egui::Stroke::new(1.5, egui::Color32::from_rgba_unmultiplied(200, 200, 200, 200)),
+            egui::Stroke::new(
+                1.5,
+                egui::Color32::from_rgba_unmultiplied(200, 200, 200, 200),
+            ),
             egui::StrokeKind::Outside,
         );
         // Domain label
@@ -359,8 +350,8 @@ fn render_light_map(
             );
 
             // Cone ground radius in world units
-            let cone_world_radius = lighting_config.height
-                * (lighting_config.cone_angle / 2.0).to_radians().tan();
+            let cone_world_radius =
+                lighting_config.height * (lighting_config.cone_angle / 2.0).to_radians().tan();
             // Convert to pixels (use average of x/z scale)
             let px_per_unit = map_size / ((view_w + view_h) * 0.5);
             let cone_px = (cone_world_radius * px_per_unit).min(map_size * 0.4);

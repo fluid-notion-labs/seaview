@@ -3,7 +3,7 @@ use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
 use bevy::pbr::{DefaultOpaqueRendererMethod, ScreenSpaceReflections};
 use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
-use seaview::lib::lighting::GlobalLight;
+use seaview::lib::lighting::{EnvironmentLightConfig, GlobalLight};
 use seaview::{
     AssetLoadersPlugin, MemoryBudgetPlugin, MeshDimensions, MeshInfoPlugin, NightLightingConfig,
     NightLightingPlugin, SeaviewUiPlugin, SessionPlugin,
@@ -381,7 +381,27 @@ fn setup(
 
     // -- Environment: restore lighting + materials from seaview.toml -----------
     if let Some(ref env) = settings_res.settings.environment {
-        // Lighting rig
+        // Environment (global) light
+        if let Some(ref env_light_settings) = env.environment_light {
+            let env_light_cfg = EnvironmentLightConfig::from(env_light_settings);
+            debug!(
+                "Restored environment light from seaview.toml: enabled={}, ambient_brightness={}",
+                env_light_cfg.enabled, env_light_cfg.ambient_brightness,
+            );
+            commands.insert_resource(env_light_cfg);
+        } else if let Some(ref lighting_settings) = env.lighting {
+            // Migration: old files stored global_lighting_enabled inside [environment.lighting].
+            // Transfer it to EnvironmentLightConfig so the toggle isn't lost.
+            let mut env_light_cfg = EnvironmentLightConfig::default();
+            env_light_cfg.enabled = lighting_settings.global_lighting_enabled;
+            debug!(
+                "Migrated global_lighting_enabled={} → EnvironmentLightConfig",
+                env_light_cfg.enabled,
+            );
+            commands.insert_resource(env_light_cfg);
+        }
+
+        // Spot-light rig
         if let Some(ref lighting_settings) = env.lighting {
             let lighting_cfg = NightLightingConfig::from(lighting_settings);
             debug!(
@@ -474,6 +494,7 @@ fn handle_save_view(
     sequence_manager: Res<seaview::sequence::SequenceManager>,
     source_orientation: Res<SourceOrientation>,
     lighting_cfg: Res<NightLightingConfig>,
+    env_light_cfg: Res<EnvironmentLightConfig>,
     material_cfg: Res<MaterialConfig>,
     watch_config: Res<WatchConfig>,
     timeline: Res<Timeline>,
@@ -496,7 +517,7 @@ fn handle_save_view(
             // Environment — lighting + material
             settings_res
                 .settings
-                .set_environment(&lighting_cfg, &material_cfg);
+                .set_environment(&lighting_cfg, &env_light_cfg, &material_cfg);
 
             // Load sections — persist multi-section layout
             settings_res.settings.set_load_sections(&timeline.sections);

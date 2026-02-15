@@ -2,7 +2,7 @@
 //!
 //! Settings are stored as `seaview.toml` in the sequence directory.
 //! They capture camera position, coordinate system, playback preferences,
-//! named cameras, and environment settings (lighting, materials).
+//! named cameras, and environment settings (lighting, materials, environment light).
 
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -146,6 +146,10 @@ pub struct LoadSectionSettings {
     pub start: usize,
     /// End frame index (exclusive)
     pub end: usize,
+    /// Whether this section is active (frames loaded into memory).
+    /// Defaults to `true` for backwards compatibility with old TOML files.
+    #[serde(default = "default_true")]
+    pub active: bool,
 }
 
 impl Default for LoadSectionSettings {
@@ -153,6 +157,7 @@ impl Default for LoadSectionSettings {
         Self {
             start: 0,
             end: 100, // Default to first 100 frames
+            active: true,
         }
     }
 }
@@ -160,7 +165,11 @@ impl Default for LoadSectionSettings {
 impl LoadSectionSettings {
     /// Create a new load section
     pub fn new(start: usize, end: usize) -> Self {
-        Self { start, end }
+        Self {
+            start,
+            end,
+            active: true,
+        }
     }
 
     /// Get the number of frames in this section
@@ -204,25 +213,33 @@ impl LoadSectionSettings {
 
 impl From<LoadSectionSettings> for LoadSection {
     fn from(s: LoadSectionSettings) -> Self {
-        LoadSection::new(s.start, s.end)
+        let mut ls = LoadSection::new(s.start, s.end);
+        ls.active = s.active;
+        ls
     }
 }
 
 impl From<&LoadSectionSettings> for LoadSection {
     fn from(s: &LoadSectionSettings) -> Self {
-        LoadSection::new(s.start, s.end)
+        let mut ls = LoadSection::new(s.start, s.end);
+        ls.active = s.active;
+        ls
     }
 }
 
 impl From<LoadSection> for LoadSectionSettings {
     fn from(s: LoadSection) -> Self {
-        LoadSectionSettings::new(s.start, s.end)
+        let mut ls = LoadSectionSettings::new(s.start, s.end);
+        ls.active = s.active;
+        ls
     }
 }
 
 impl From<&LoadSection> for LoadSectionSettings {
     fn from(s: &LoadSection) -> Self {
-        LoadSectionSettings::new(s.start, s.end)
+        let mut ls = LoadSectionSettings::new(s.start, s.end);
+        ls.active = s.active;
+        ls
     }
 }
 
@@ -230,7 +247,7 @@ impl From<&LoadSection> for LoadSectionSettings {
 // Environment — Lighting bridge
 // ---------------------------------------------------------------------------
 
-/// TOML-friendly bridge for [`NightLightingConfig`].
+/// TOML-friendly bridge for [`NightLightingConfig`] (spot-light rig).
 ///
 /// Bevy `Color` is stored as `[f32; 3]` sRGB arrays for human readability.
 /// `PlacementAlgorithm` is stored as a `snake_case` string.
@@ -244,6 +261,9 @@ pub struct LightingSettings {
     /// `"single_row"`, `"single_column"`.
     pub placement_algorithm: String,
     pub enabled: bool,
+    /// Legacy field — migrated into `EnvironmentLightSettings.enabled`.
+    /// Kept for backwards-compatible TOML parsing; ignored at runtime.
+    #[serde(default = "default_true")]
     pub global_lighting_enabled: bool,
     pub intensity: f32,
     /// sRGB colour as `[r, g, b]` in 0–1 range.
@@ -252,6 +272,67 @@ pub struct LightingSettings {
     pub show_markers: bool,
     pub marker_size: f32,
     pub coverage_pct: f32,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+// ---------------------------------------------------------------------------
+// Environment — Environment Light bridge
+// ---------------------------------------------------------------------------
+
+/// TOML-friendly bridge for [`EnvironmentLightConfig`].
+///
+/// Controls the global scene lights (directional + ambient), independent of
+/// the spot-light rig.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EnvironmentLightSettings {
+    pub enabled: bool,
+    /// Ambient light sRGB colour `[r, g, b]` in 0–1 range.
+    pub ambient_color: [f32; 3],
+    /// Ambient light brightness.
+    pub ambient_brightness: f32,
+    /// Directional light illuminance (lux).
+    pub directional_illuminance: f32,
+    /// Directional light sRGB colour `[r, g, b]` in 0–1 range.
+    pub directional_color: [f32; 3],
+}
+
+impl Default for EnvironmentLightSettings {
+    fn default() -> Self {
+        let cfg = crate::lib::lighting::EnvironmentLightConfig::default();
+        Self::from(&cfg)
+    }
+}
+
+impl From<&crate::lib::lighting::EnvironmentLightConfig> for EnvironmentLightSettings {
+    fn from(cfg: &crate::lib::lighting::EnvironmentLightConfig) -> Self {
+        Self {
+            enabled: cfg.enabled,
+            ambient_color: color_to_srgb3(&cfg.ambient_color),
+            ambient_brightness: cfg.ambient_brightness,
+            directional_illuminance: cfg.directional_illuminance,
+            directional_color: color_to_srgb3(&cfg.directional_color),
+        }
+    }
+}
+
+impl From<&EnvironmentLightSettings> for crate::lib::lighting::EnvironmentLightConfig {
+    fn from(s: &EnvironmentLightSettings) -> Self {
+        Self {
+            enabled: s.enabled,
+            ambient_color: Color::srgb(s.ambient_color[0], s.ambient_color[1], s.ambient_color[2]),
+            ambient_brightness: s.ambient_brightness,
+            directional_illuminance: s.directional_illuminance,
+            directional_color: Color::srgb(
+                s.directional_color[0],
+                s.directional_color[1],
+                s.directional_color[2],
+            ),
+        }
+    }
 }
 
 impl Default for LightingSettings {
@@ -269,7 +350,7 @@ impl From<&NightLightingConfig> for LightingSettings {
             cone_angle: cfg.cone_angle,
             placement_algorithm: placement_to_snake(&cfg.placement_algorithm),
             enabled: cfg.enabled,
-            global_lighting_enabled: cfg.global_lighting_enabled,
+            global_lighting_enabled: true, // legacy field, always true
             intensity: cfg.intensity,
             color: color_to_srgb3(&cfg.color),
             range: cfg.range,
@@ -292,7 +373,6 @@ impl From<&LightingSettings> for NightLightingConfig {
             cone_angle: s.cone_angle,
             placement_algorithm: snake_to_placement(&s.placement_algorithm),
             enabled: s.enabled,
-            global_lighting_enabled: s.global_lighting_enabled,
             intensity: s.intensity,
             intensity_display_value: display_value,
             intensity_unit: unit,
@@ -390,6 +470,8 @@ impl From<&MaterialSettings> for MaterialConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct EnvironmentSettings {
+    /// Environment (global) light: directional + ambient.
+    pub environment_light: Option<EnvironmentLightSettings>,
     /// Spot-light rig configuration.
     pub lighting: Option<LightingSettings>,
     /// Named materials map. `"fluid"` is the default key for the sequence mesh.
@@ -650,12 +732,14 @@ impl Settings {
     pub fn set_environment(
         &mut self,
         lighting_cfg: &NightLightingConfig,
+        env_light_cfg: &crate::lib::lighting::EnvironmentLightConfig,
         material_cfg: &MaterialConfig,
     ) {
         let env = self
             .environment
             .get_or_insert_with(EnvironmentSettings::default);
         env.lighting = Some(LightingSettings::from(lighting_cfg));
+        env.environment_light = Some(EnvironmentLightSettings::from(env_light_cfg));
         env.materials
             .insert("fluid".to_string(), MaterialSettings::from(material_cfg));
     }
@@ -958,10 +1042,6 @@ rotation = [-30.0, 90.0, 0.0]
         assert_eq!(cfg.cone_angle, recovered.cone_angle);
         assert_eq!(cfg.placement_algorithm, recovered.placement_algorithm);
         assert_eq!(cfg.enabled, recovered.enabled);
-        assert_eq!(
-            cfg.global_lighting_enabled,
-            recovered.global_lighting_enabled
-        );
         assert_eq!(cfg.intensity, recovered.intensity);
         assert_eq!(cfg.range, recovered.range);
         assert_eq!(cfg.show_markers, recovered.show_markers);
@@ -1194,13 +1274,15 @@ rotation = [-89.0, 0.0, 0.0]
     #[test]
     fn test_set_environment_helper() {
         let lighting = NightLightingConfig::default();
+        let env_light = crate::lib::lighting::EnvironmentLightConfig::default();
         let material = MaterialConfig::default();
 
         let mut settings = Settings::default();
-        settings.set_environment(&lighting, &material);
+        settings.set_environment(&lighting, &env_light, &material);
 
         let env = settings.environment.as_ref().unwrap();
         assert!(env.lighting.is_some());
+        assert!(env.environment_light.is_some());
         assert!(env.materials.contains_key("fluid"));
     }
 
@@ -1311,6 +1393,7 @@ alpha_cutoff = 0.5
             }),
             mesh: None,
             environment: Some(EnvironmentSettings {
+                environment_light: Some(EnvironmentLightSettings::default()),
                 lighting: Some(LightingSettings::default()),
                 materials: {
                     let mut m = HashMap::new();

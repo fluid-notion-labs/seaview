@@ -5,7 +5,8 @@
 //! draggable edge handles.
 //!
 //! **Multi-section interactions (seaview-wme):**
-//! - **Ctrl+Click** on an empty region to add a new section centred there.
+//! - **Ctrl+Drag** on an empty region to paint a new section: click sets
+//!   the start, drag right to extend the end.
 //! - **Right-click** on an existing section to remove it.
 //! - Sections are colour-coded with alternating hues so the user can tell
 //!   them apart at a glance.
@@ -106,15 +107,16 @@ pub fn draw_load_section_bar(
         let budget = max_loaded_frames.min(display_total_frames);
 
         // =================================================================
-        // Interaction: Ctrl+Click to ADD a section
+        // Interaction: Click on inactive section to ACTIVATE it
         // =================================================================
-        if response.clicked() && ui.input(|i| i.modifiers.ctrl) {
+        if response.clicked() && !ui.input(|i| i.modifiers.ctrl) {
             if let Some(pos) = response.interact_pointer_pos() {
                 let rel_x = (pos.x - rect.min.x) / rect.width();
                 let frame = (rel_x * total).round().max(0.0) as usize;
-                // Only add if the click is NOT inside an existing section
-                if !timeline.is_frame_loaded(frame) {
-                    let _ = timeline.add_section(frame, budget);
+                if let Some((idx, section)) = timeline.section_containing_indexed_any(frame) {
+                    if !section.active {
+                        timeline.activate_section(idx, budget);
+                    }
                 }
             }
         }
@@ -126,7 +128,7 @@ pub fn draw_load_section_bar(
             if let Some(pos) = response.interact_pointer_pos() {
                 let rel_x = (pos.x - rect.min.x) / rect.width();
                 let frame = (rel_x * total).round().max(0.0) as usize;
-                if let Some((idx, _)) = timeline.section_containing_indexed(frame) {
+                if let Some((idx, _)) = timeline.section_containing_indexed_any(frame) {
                     // Don't allow removing the last section (remove_section
                     // restores a default, but it's a confusing UX to remove
                     // the only section).
@@ -150,51 +152,60 @@ pub fn draw_load_section_bar(
                         // Continue an existing drag
                         let idx = ds.section_idx;
                         if idx < timeline.sections.len() {
-                            match ds.edge {
-                                LoadSectionEdge::Start => {
-                                    timeline.sections[idx].set_start(frame, budget);
-                                }
-                                LoadSectionEdge::End => {
-                                    timeline.sections[idx].set_end(
-                                        frame,
-                                        display_total_frames,
-                                        budget,
-                                    );
-                                }
-                                LoadSectionEdge::Body => {
-                                    let new_start = frame.saturating_sub(ds.grab_offset);
-                                    timeline.sections[idx].move_to(new_start, display_total_frames);
-                                }
-                            }
+                            apply_drag(
+                                timeline,
+                                idx,
+                                ds.edge,
+                                frame,
+                                ds.grab_offset,
+                                display_total_frames,
+                            );
                         }
                     }
                     None => {
-                        // Determine which section edge (or body) is closest to the pointer
-                        if let Some((idx, edge)) =
+                        let is_ctrl = ui.input(|i| i.modifiers.ctrl);
+
+                        if is_ctrl && !timeline.is_frame_in_any_section(frame) {
+                            // -------------------------------------------------
+                            // Ctrl+drag on empty space: paint a new section.
+                            // Create a minimal section starting at the pointer;
+                            // the user drags right to extend the End edge.
+                            // -------------------------------------------------
+                            if let Some(new_idx) = timeline.add_section_at(frame, budget) {
+                                // Immediately apply the first drag tick so the
+                                // end edge tracks the pointer.
+                                apply_drag(
+                                    timeline,
+                                    new_idx,
+                                    LoadSectionEdge::End,
+                                    frame,
+                                    0,
+                                    display_total_frames,
+                                );
+                                *drag_state = Some(LoadSectionDragState {
+                                    section_idx: new_idx,
+                                    edge: LoadSectionEdge::End,
+                                    grab_offset: 0,
+                                });
+                            }
+                        } else if let Some((idx, edge)) =
                             hit_test_section(timeline, rect, pos.x, handle_width)
                         {
+                            // Normal drag on an existing section edge / body.
                             let grab_offset = match edge {
                                 LoadSectionEdge::Body => {
                                     frame.saturating_sub(timeline.sections[idx].start)
                                 }
                                 _ => 0,
                             };
-                            match edge {
-                                LoadSectionEdge::Start => {
-                                    timeline.sections[idx].set_start(frame, budget);
-                                }
-                                LoadSectionEdge::End => {
-                                    timeline.sections[idx].set_end(
-                                        frame,
-                                        display_total_frames,
-                                        budget,
-                                    );
-                                }
-                                LoadSectionEdge::Body => {
-                                    let new_start = frame.saturating_sub(grab_offset);
-                                    timeline.sections[idx].move_to(new_start, display_total_frames);
-                                }
-                            }
+                            apply_drag(
+                                timeline,
+                                idx,
+                                edge,
+                                frame,
+                                grab_offset,
+                                display_total_frames,
+                            );
                             *drag_state = Some(LoadSectionDragState {
                                 section_idx: idx,
                                 edge,
@@ -212,12 +223,18 @@ pub fn draw_load_section_bar(
         // Change cursor when hovering over section handles or body
         if response.hovered() {
             if let Some(pos) = ui.ctx().pointer_hover_pos() {
+                let is_ctrl = ui.input(|i| i.modifiers.ctrl);
                 match hit_test_section(timeline, rect, pos.x, handle_width) {
                     Some((_, LoadSectionEdge::Start | LoadSectionEdge::End)) => {
                         ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
                     }
                     Some((_, LoadSectionEdge::Body)) => {
                         ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+                    }
+                    None if is_ctrl => {
+                        // Ctrl over empty space → show crosshair to hint
+                        // that the user can paint a new section here.
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
                     }
                     None => {}
                 }
@@ -233,7 +250,8 @@ pub fn draw_load_section_bar(
             // Background (unloaded region)
             painter.rect_filled(rect, 2.0, egui::Color32::from_gray(35));
 
-            // Draw each section with its own colour
+            // Draw each section — active sections get full colour,
+            // inactive sections are dimmed/greyed out.
             for (i, section) in timeline.sections.iter().enumerate() {
                 let section_start = section.start as f32 / total;
                 let section_end = section.end as f32 / total;
@@ -245,26 +263,33 @@ pub fn draw_load_section_bar(
                 let start_x = rect.min.x + rect.width() * section_start;
                 let end_x = rect.min.x + rect.width() * section_end;
 
-                // Loaded region
+                let (fill, handle_color) = if section.active {
+                    (section_fill(i), section_handle(i))
+                } else {
+                    // Inactive: greyed out
+                    (egui::Color32::from_gray(55), egui::Color32::from_gray(75))
+                };
+
+                // Section region
                 let loaded_rect = egui::Rect::from_min_max(
                     egui::pos2(start_x, rect.min.y),
                     egui::pos2(end_x, rect.max.y),
                 );
-                painter.rect_filled(loaded_rect, 2.0, section_fill(i));
+                painter.rect_filled(loaded_rect, 2.0, fill);
 
                 // Left handle
                 let left_handle = egui::Rect::from_min_size(
                     egui::pos2(start_x - handle_width / 2.0, rect.min.y),
                     egui::Vec2::new(handle_width, bar_height),
                 );
-                painter.rect_filled(left_handle, 2.0, section_handle(i));
+                painter.rect_filled(left_handle, 2.0, handle_color);
 
                 // Right handle
                 let right_handle = egui::Rect::from_min_size(
                     egui::pos2(end_x - handle_width / 2.0, rect.min.y),
                     egui::Vec2::new(handle_width, bar_height),
                 );
-                painter.rect_filled(right_handle, 2.0, section_handle(i));
+                painter.rect_filled(right_handle, 2.0, handle_color);
             }
 
             // Border
@@ -300,6 +325,55 @@ pub fn draw_load_section_bar(
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Apply a drag operation on section `idx`, clamping against neighbor sections
+/// so that sections never overlap each other.
+///
+/// No budget constraints — sections can be any size.  Budget is enforced
+/// through the visibility (active/inactive) model, not by limiting drag.
+fn apply_drag(
+    timeline: &mut Timeline,
+    idx: usize,
+    edge: LoadSectionEdge,
+    frame: usize,
+    grab_offset: usize,
+    display_total_frames: usize,
+) {
+    let n = timeline.sections.len();
+
+    // Compute neighbor boundaries — the closest edge we must not cross.
+    // Previous section's end is our minimum start; next section's start is
+    // our maximum end.
+    let prev_end = if idx > 0 {
+        timeline.sections[idx - 1].end
+    } else {
+        0
+    };
+    let next_start = if idx + 1 < n {
+        timeline.sections[idx + 1].start
+    } else {
+        display_total_frames
+    };
+
+    match edge {
+        LoadSectionEdge::Start => {
+            let clamped_frame = frame.max(prev_end);
+            timeline.sections[idx].set_start(clamped_frame);
+        }
+        LoadSectionEdge::End => {
+            let clamped_frame = frame.min(next_start);
+            timeline.sections[idx].set_end(clamped_frame, display_total_frames);
+        }
+        LoadSectionEdge::Body => {
+            let size = timeline.sections[idx].frame_count();
+            let new_start = frame.saturating_sub(grab_offset);
+            let min_start = prev_end;
+            let max_start = next_start.saturating_sub(size);
+            let clamped_start = new_start.clamp(min_start, max_start);
+            timeline.sections[idx].move_to(clamped_start, display_total_frames);
+        }
+    }
+}
+
 /// Hit-test the load-section bar: edges first, then body.
 ///
 /// Returns `(section_index, edge_or_body)` or `None` if pointer is on empty
@@ -312,31 +386,83 @@ fn hit_test_section(
     handle_threshold: f32,
 ) -> Option<(usize, LoadSectionEdge)> {
     let total = timeline.total_frames.max(1) as f32;
+    let threshold = handle_threshold * 1.5;
 
-    // Pass 1: check edges (highest priority)
-    let mut best_edge: Option<(usize, LoadSectionEdge, f32)> = None;
+    // Collect all candidate edges within the handle threshold.
+    // We need all of them so we can disambiguate overlapping edges at
+    // shared boundaries between adjacent sections.
+    struct Candidate {
+        section_idx: usize,
+        edge: LoadSectionEdge,
+        distance: f32,
+        /// Signed offset: negative = pointer is left of edge, positive = right
+        signed: f32,
+    }
+
+    let mut candidates: Vec<Candidate> = Vec::new();
 
     for (i, section) in timeline.sections.iter().enumerate() {
         let start_x = rect.min.x + rect.width() * (section.start as f32 / total);
         let end_x = rect.min.x + rect.width() * (section.end as f32 / total);
 
-        let d_start = (pointer_x - start_x).abs();
-        let d_end = (pointer_x - end_x).abs();
+        let d_start = pointer_x - start_x;
+        let d_end = pointer_x - end_x;
 
-        if d_start < handle_threshold * 1.5 {
-            if best_edge.as_ref().map_or(true, |b| d_start < b.2) {
-                best_edge = Some((i, LoadSectionEdge::Start, d_start));
-            }
+        if d_start.abs() < threshold {
+            candidates.push(Candidate {
+                section_idx: i,
+                edge: LoadSectionEdge::Start,
+                distance: d_start.abs(),
+                signed: d_start,
+            });
         }
-        if d_end < handle_threshold * 1.5 {
-            if best_edge.as_ref().map_or(true, |b| d_end < b.2) {
-                best_edge = Some((i, LoadSectionEdge::End, d_end));
-            }
+        if d_end.abs() < threshold {
+            candidates.push(Candidate {
+                section_idx: i,
+                edge: LoadSectionEdge::End,
+                distance: d_end.abs(),
+                signed: d_end,
+            });
         }
     }
 
-    if let Some((idx, edge, _)) = best_edge {
-        return Some((idx, edge));
+    if !candidates.is_empty() {
+        // Sort by distance first (closest wins).
+        candidates.sort_by(|a, b| a.distance.partial_cmp(&b.distance).unwrap());
+
+        let best_dist = candidates[0].distance;
+        // Epsilon for "same position" — edges closer than 1px are tied.
+        let tie_eps = 1.0_f32;
+
+        // Collect all candidates that are tied with the best.
+        let tied: Vec<&Candidate> = candidates
+            .iter()
+            .take_while(|c| c.distance - best_dist < tie_eps)
+            .collect();
+
+        if tied.len() == 1 {
+            return Some((tied[0].section_idx, tied[0].edge));
+        }
+
+        // Multiple edges at the same position (e.g. section A's End and
+        // section B's Start at a shared boundary).  Use pointer bias:
+        //   - Pointer left of boundary  → prefer the End edge (shrink left section)
+        //   - Pointer right of boundary → prefer the Start edge (shrink right section)
+        //   - Exactly on it             → prefer Start (more intuitive: "grab next")
+        for c in &tied {
+            match c.edge {
+                LoadSectionEdge::End if c.signed < -0.5 => {
+                    return Some((c.section_idx, c.edge));
+                }
+                LoadSectionEdge::Start if c.signed >= -0.5 => {
+                    return Some((c.section_idx, c.edge));
+                }
+                _ => {}
+            }
+        }
+
+        // Fallback: return the first candidate.
+        return Some((tied[0].section_idx, tied[0].edge));
     }
 
     // Pass 2: check section bodies (pointer is inside but not near an edge)
@@ -360,38 +486,32 @@ fn section_tooltip(
 ) -> String {
     let budget = max_loaded_frames.min(display_total_frames);
 
-    if timeline.sections.len() == 1 {
-        let s = &timeline.sections[0];
-        format!(
-            "Loaded: frames {} – {} ({} frames)\n\
-             Max: {} frames\n\
-             Drag edges to adjust\n\
-             Ctrl+Click empty area to add a section",
+    let mut lines = Vec::with_capacity(timeline.sections.len() + 6);
+    for (i, s) in timeline.sections.iter().enumerate() {
+        let status = if s.active { "●" } else { "○" };
+        lines.push(format!(
+            "{} Section {}: {} – {} ({} frames)",
+            status,
+            i + 1,
             s.start,
             s.end.saturating_sub(1),
             s.frame_count(),
-            budget,
-        )
-    } else {
-        let mut lines = Vec::with_capacity(timeline.sections.len() + 4);
-        for (i, s) in timeline.sections.iter().enumerate() {
-            lines.push(format!(
-                "Section {}: {} – {} ({} frames)",
-                i + 1,
-                s.start,
-                s.end.saturating_sub(1),
-                s.frame_count(),
-            ));
-        }
-        lines.push(format!(
-            "Total loaded: {} / {} budget",
-            timeline.total_loaded(),
-            budget,
         ));
-        lines.push(String::new());
-        lines.push("Drag edges to adjust".to_string());
-        lines.push("Ctrl+Click empty area to add a section".to_string());
-        lines.push("Right-click a section to remove it".to_string());
-        lines.join("\n")
     }
+    lines.push(format!(
+        "Active: {} / {} total frames (budget: {})",
+        timeline.total_loaded(),
+        timeline
+            .sections
+            .iter()
+            .map(|s| s.frame_count())
+            .sum::<usize>(),
+        budget,
+    ));
+    lines.push(String::new());
+    lines.push("Drag edges to adjust".to_string());
+    lines.push("Click inactive section to activate".to_string());
+    lines.push("Ctrl+Drag empty area to add a section".to_string());
+    lines.push("Right-click a section to remove it".to_string());
+    lines.join("\n")
 }
