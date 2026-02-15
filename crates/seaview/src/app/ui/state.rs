@@ -79,6 +79,8 @@ pub struct UiState {
 pub enum LoadSectionEdge {
     Start,
     End,
+    /// Drag the entire section body (move without resizing).
+    Body,
 }
 
 /// Playback control state

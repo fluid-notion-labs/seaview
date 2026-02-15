@@ -95,22 +95,30 @@ impl LoadSection {
         }
     }
 
-    /// Set the start edge, respecting constraints
+    /// Set the start edge, respecting constraints.
+    ///
+    /// Caps at `end - max_frames` so dragging the start handle never moves
+    /// the end (no "sliding" behaviour).
     pub fn set_start(&mut self, new_start: usize, max_frames: usize) {
-        self.start = new_start.min(self.end.saturating_sub(1));
-        // Ensure we don't exceed max frames
-        if self.frame_count() > max_frames {
-            self.end = self.start + max_frames;
-        }
+        // Don't allow start past end - 1
+        let clamped = new_start.min(self.end.saturating_sub(1));
+        // Don't allow the section to exceed budget — cap start instead of
+        // moving end, so the opposite handle stays put.
+        let min_start = self.end.saturating_sub(max_frames);
+        self.start = clamped.max(min_start);
     }
 
-    /// Set the end edge, respecting constraints
+    /// Set the end edge, respecting constraints.
+    ///
+    /// Caps at `start + max_frames` so dragging the end handle never moves
+    /// the start (no "sliding" behaviour).
     pub fn set_end(&mut self, new_end: usize, total_frames: usize, max_frames: usize) {
-        self.end = new_end.min(total_frames).max(self.start + 1);
-        // Ensure we don't exceed max frames
-        if self.frame_count() > max_frames {
-            self.start = self.end.saturating_sub(max_frames);
-        }
+        // Don't allow end past total or before start + 1
+        let clamped = new_end.min(total_frames).max(self.start + 1);
+        // Don't allow the section to exceed budget — cap end instead of
+        // moving start, so the opposite handle stays put.
+        let max_end = self.start + max_frames;
+        self.end = clamped.min(max_end);
     }
 
     /// Center the section on a frame, keeping the same size
@@ -499,6 +507,22 @@ pub fn distribute_sections(
     }
 
     sections
+}
+
+/// Return the set of frame indices that should have assets loaded, based on
+/// the timeline's loaded sections.  This is the **authoritative** answer to
+/// "which frames should we ask the asset server to load?" and must be used
+/// by the loader instead of blindly loading every frame in the sequence.
+///
+/// Indices are yielded in order, one per loaded section range.
+pub fn frames_to_load(sections: &[LoadSection], total_frames: usize) -> Vec<usize> {
+    let mut out = Vec::new();
+    for section in sections {
+        let end = section.end.min(total_frames);
+        let start = section.start.min(end);
+        out.extend(start..end);
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -955,9 +979,9 @@ mod tests {
     fn test_set_start_exceeds_max_frames() {
         let mut ls = LoadSection::new(50, 200);
         ls.set_start(0, 50);
-        assert_eq!(ls.start, 0);
-        // end shrunk to start + max = 50
-        assert_eq!(ls.end, 50);
+        // start capped at end - max = 150 (end stays put)
+        assert_eq!(ls.start, 150);
+        assert_eq!(ls.end, 200);
     }
 
     #[test]
@@ -987,9 +1011,9 @@ mod tests {
     fn test_set_end_exceeds_max_frames() {
         let mut ls = LoadSection::new(10, 100);
         ls.set_end(400, 500, 50);
-        assert_eq!(ls.end, 400);
-        // start pushed forward: end - max = 350
-        assert_eq!(ls.start, 350);
+        // end capped at start + max = 60 (start stays put)
+        assert_eq!(ls.end, 60);
+        assert_eq!(ls.start, 10);
     }
 
     // -----------------------------------------------------------------------
@@ -1454,5 +1478,71 @@ mod tests {
         let sections: Vec<LoadSection> = vec![];
         let wins = compute_spawn_windows(50, 10, &sections, 100);
         assert!(wins.is_empty());
+    }
+
+    // ===================================================================
+    // frames_to_load — budget-aware asset loading
+    // ===================================================================
+
+    #[test]
+    fn test_frames_to_load_single_section() {
+        let sections = vec![LoadSection::new(0, 98)];
+        let indices = frames_to_load(&sections, 2133);
+        assert_eq!(indices.len(), 98);
+        assert_eq!(indices[0], 0);
+        assert_eq!(indices[97], 97);
+    }
+
+    #[test]
+    fn test_frames_to_load_respects_budget_not_total() {
+        // This is the core regression: with 2133 total frames and a budget
+        // that fits 98, we must only return 98 indices, NOT 2133.
+        let mut timeline = Timeline::default();
+        timeline.init_sequence(2133, 98);
+        let indices = frames_to_load(&timeline.sections, timeline.total_frames);
+        assert_eq!(
+            indices.len(),
+            98,
+            "Should load only budget-limited frames, not all {}",
+            timeline.total_frames
+        );
+    }
+
+    #[test]
+    fn test_frames_to_load_multi_section() {
+        let sections = vec![
+            LoadSection::new(0, 32),
+            LoadSection::new(500, 532),
+            LoadSection::new(1000, 1032),
+        ];
+        let indices = frames_to_load(&sections, 2133);
+        assert_eq!(indices.len(), 96);
+        assert_eq!(indices[0], 0);
+        assert_eq!(indices[31], 31);
+        assert_eq!(indices[32], 500);
+        assert_eq!(indices[63], 531);
+        assert_eq!(indices[64], 1000);
+        assert_eq!(indices[95], 1031);
+    }
+
+    #[test]
+    fn test_frames_to_load_clamps_to_total() {
+        let sections = vec![LoadSection::new(2100, 2200)];
+        let indices = frames_to_load(&sections, 2133);
+        assert_eq!(indices.len(), 33); // 2100..2133
+        assert_eq!(*indices.last().unwrap(), 2132);
+    }
+
+    #[test]
+    fn test_frames_to_load_empty_sections() {
+        let indices = frames_to_load(&[], 2133);
+        assert!(indices.is_empty());
+    }
+
+    #[test]
+    fn test_frames_to_load_zero_total() {
+        let sections = vec![LoadSection::new(0, 100)];
+        let indices = frames_to_load(&sections, 0);
+        assert!(indices.is_empty());
     }
 }

@@ -3,13 +3,11 @@
 //! This module provides functionality for monitoring a directory for new mesh
 //! files and incrementally loading them into the current sequence.
 
-use bevy::asset::AssetServer;
 use bevy::prelude::*;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use super::loader::{load_mesh_handle, MeshFileFormat};
 use super::{FrameInfo, Sequence, SequenceAssets, SequenceManager};
 
 /// Plugin for watch mode functionality
@@ -259,7 +257,6 @@ fn handle_incremental_load(
     mut incremental_requests: MessageReader<IncrementalLoadRequest>,
     mut sequence_manager: ResMut<SequenceManager>,
     mut sequence_assets: ResMut<SequenceAssets>,
-    asset_server: Res<AssetServer>,
 ) {
     for request in incremental_requests.read() {
         debug!(
@@ -267,23 +264,9 @@ fn handle_incremental_load(
             request.frame_paths.len()
         );
 
-        // Detect format from existing sequence or first new file
-        let format = sequence_assets.format.unwrap_or_else(|| {
-            request
-                .frame_paths
-                .first()
-                .and_then(|p| p.extension())
-                .and_then(|e| e.to_str())
-                .and_then(|ext| MeshFileFormat::from_extension(ext))
-                .unwrap_or(MeshFileFormat::Stl)
-        });
-
         // Update sequence manager with new frames
         if let Some(sequence) = sequence_manager.current_sequence.as_mut() {
-            for (path, frame_number) in request
-                .frame_paths
-                .iter()
-                .zip(request.frame_numbers.iter())
+            for (path, frame_number) in request.frame_paths.iter().zip(request.frame_numbers.iter())
             {
                 let frame_info = FrameInfo::new(path.clone(), *frame_number);
 
@@ -302,20 +285,18 @@ fn handle_incremental_load(
             );
         }
 
-        // Load new frames directly using the asset server
+        // Register new frames — store paths and pre-allocate slots.
+        // Actual asset loading is handled by `sync_section_loads` which
+        // only loads frames within the timeline's budget sections.
         for path in &request.frame_paths {
-            let filename = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("unknown");
-
-            let handle = load_mesh_handle(&asset_server, filename, format);
-            sequence_assets.frame_handles.push(handle);
+            sequence_assets.frame_paths.push(path.clone());
+            sequence_assets.frame_handles.push(None);
             sequence_assets.loaded_frames.push(false);
             sequence_assets.frame_entities.push(None);
         }
 
-        // Update total frames and mark as loading
+        // Update total frames and mark as loading so sync_section_loads
+        // picks up the new frames on the next tick.
         sequence_assets.total_frames += request.frame_paths.len();
         sequence_assets.loading = true;
 
@@ -337,8 +318,7 @@ fn update_loading_phase_on_load_complete(
     // Check if we just finished an incremental load
     if loading_phase.state == LoadingPhaseState::IncrementalLoad {
         // Detect load completion by checking if loaded count increased and loading stopped
-        if !sequence_assets.loading
-            && sequence_assets.loaded_count > watch_state.prev_loaded_count
+        if !sequence_assets.loading && sequence_assets.loaded_count > watch_state.prev_loaded_count
         {
             debug!(
                 "Incremental load complete: {} frames now loaded",

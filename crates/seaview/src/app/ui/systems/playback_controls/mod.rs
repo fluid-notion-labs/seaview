@@ -78,25 +78,32 @@ pub fn playback_controls_system(
             ui.add_space(5.0);
 
             ui.vertical(|ui| {
-                // -- Loading progress bar ------------------------------------
-                if loading_is_loading {
-                    ui.horizontal(|ui| {
-                        ui.add_space(10.0);
-
-                        let progress_bar = egui::ProgressBar::new(loading_progress)
-                            .text(format!(
-                                "Loading: {}/{} frames ({:.0}%)",
-                                loading_loaded_frames,
-                                loading_total_frames,
-                                loading_progress * 100.0
-                            ))
-                            .animate(true);
-                        ui.add(progress_bar);
-
-                        ui.add_space(10.0);
-                    });
-                    ui.add_space(5.0);
-                }
+                // -- Loading progress bar (fixed height — always present) -----
+                // Always allocate the same space whether loading or not so
+                // the layout never shifts during section edge drags.
+                ui.horizontal(|ui| {
+                    ui.add_space(10.0);
+                    if loading_is_loading {
+                        ui.add(
+                            egui::ProgressBar::new(loading_progress)
+                                .text(format!(
+                                    "{}/{}  ({:.0}%)",
+                                    loading_loaded_frames,
+                                    loading_total_frames,
+                                    loading_progress * 100.0
+                                ))
+                                .desired_width(ui.available_width() - 20.0),
+                        );
+                    } else {
+                        // Empty bar placeholder — same height, no visual noise
+                        ui.add(
+                            egui::ProgressBar::new(0.0)
+                                .text("")
+                                .desired_width(ui.available_width() - 20.0),
+                        );
+                    }
+                    ui.add_space(10.0);
+                });
 
                 // -- Transport controls row ----------------------------------
                 transport_actions = transport::draw_transport_row(

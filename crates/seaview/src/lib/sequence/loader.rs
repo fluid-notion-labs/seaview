@@ -24,7 +24,7 @@ use bevy::gltf::GltfAssetLabel;
 use bevy::prelude::*;
 use std::path::PathBuf;
 
-use super::{compute_spawn_windows, SequenceManager, Timeline};
+use super::{compute_spawn_windows, frames_to_load, SequenceManager, Timeline};
 
 use crate::app::ui::state::RenderConfig;
 use crate::lib::memory_budget::{estimate_mesh_gpu_bytes_from_vertices, MemoryBudget};
@@ -74,7 +74,15 @@ impl Plugin for SequenceLoaderPlugin {
         app.init_resource::<SequenceAssets>()
             .add_message::<FrameLoadedEvent>()
             .add_message::<LoadSequenceRequest>()
-            .add_systems(Update, (handle_load_requests, track_asset_loading).chain())
+            .add_systems(
+                Update,
+                (
+                    handle_load_requests,
+                    sync_section_loads,
+                    track_asset_loading,
+                )
+                    .chain(),
+            )
             .add_systems(PostUpdate, manage_frame_window);
     }
 }
@@ -82,8 +90,11 @@ impl Plugin for SequenceLoaderPlugin {
 /// Resource that holds all loaded mesh handles for the current sequence
 #[derive(Resource, Default)]
 pub struct SequenceAssets {
-    /// Handles to all loaded mesh frames (indexed by frame number)
-    pub frame_handles: Vec<Handle<Mesh>>,
+    /// Handles to loaded mesh frames (indexed by frame number).
+    /// `None` means the asset has not been requested from the server yet.
+    pub frame_handles: Vec<Option<Handle<Mesh>>>,
+    /// On-disk paths for every frame so we can load on demand.
+    pub frame_paths: Vec<PathBuf>,
     /// Which frames have finished loading (asset ready)
     pub loaded_frames: Vec<bool>,
     /// Number of frames that have finished loading
@@ -112,6 +123,7 @@ impl SequenceAssets {
     /// Reset the sequence assets for a new sequence
     pub fn reset(&mut self) {
         self.frame_handles.clear();
+        self.frame_paths.clear();
         self.loaded_frames.clear();
         self.loaded_count = 0;
         self.total_frames = 0;
@@ -140,7 +152,7 @@ impl SequenceAssets {
 
     /// Get the mesh handle for a specific frame
     pub fn get_frame(&self, index: usize) -> Option<&Handle<Mesh>> {
-        self.frame_handles.get(index)
+        self.frame_handles.get(index).and_then(|opt| opt.as_ref())
     }
 
     /// Check if a specific frame's asset has finished loading
@@ -224,6 +236,61 @@ pub fn load_mesh_handle(
     }
 }
 
+/// Pre-estimate the maximum number of frames that fit in the memory budget by
+/// stat-ing a sample of files on disk.  This gives a conservative upper bound
+/// *before* any GPU data is available, preventing the loader from blasting out
+/// thousands of asset-server requests when `MemoryBudget::max_frames` is still
+/// `usize::MAX`.
+///
+/// The estimate uses raw file size as a proxy for GPU memory.  For GLB this
+/// over-estimates (file includes JSON + padding) so we'll load slightly fewer
+/// frames than optimal — `sync_section_loads` will expand the window once the
+/// real vertex-based estimate arrives.
+fn pre_estimate_max_frames(
+    paths: &[PathBuf],
+    budget: &MemoryBudget,
+    sample_count: usize,
+) -> Option<usize> {
+    if paths.is_empty() {
+        return None;
+    }
+    let budget_bytes = budget.effective_budget();
+    if budget_bytes == 0 {
+        return None;
+    }
+
+    // Sample up to `sample_count` evenly-spaced files
+    let n = paths.len();
+    let step = (n / sample_count).max(1);
+    let mut total_bytes: u64 = 0;
+    let mut sampled = 0u64;
+    for i in (0..n).step_by(step).take(sample_count) {
+        if let Ok(meta) = std::fs::metadata(&paths[i]) {
+            total_bytes += meta.len();
+            sampled += 1;
+        }
+    }
+    if sampled == 0 {
+        return None;
+    }
+
+    let avg_bytes = total_bytes / sampled;
+    if avg_bytes == 0 {
+        return None;
+    }
+
+    let max = (budget_bytes / avg_bytes) as usize;
+    info!(
+        "Pre-estimate from disk: ~{:.1} MB/frame (avg of {} samples), \
+         budget {:.1} GB → max ~{} frames",
+        avg_bytes as f64 / 1_048_576.0,
+        sampled,
+        budget_bytes as f64 / 1_073_741_824.0,
+        max,
+    );
+    Some(max)
+}
+
 /// Detect format from the first path in the request and log a warning if any
 /// frame has a different extension.
 fn detect_sequence_format(paths: &[PathBuf]) -> Option<MeshFileFormat> {
@@ -298,15 +365,21 @@ fn handle_load_requests(
         sequence_assets.total_frames = n;
         sequence_assets.loading = true;
         sequence_assets.format = Some(format);
-        // Pre-allocate vecs
+        // Pre-allocate vecs — handles start as None (loaded on demand)
+        sequence_assets.frame_handles = vec![None; n];
         sequence_assets.frame_entities = vec![None; n];
         sequence_assets.loaded_frames = vec![false; n];
+        // Store all paths for on-demand loading
+        sequence_assets.frame_paths = request.frame_paths.clone();
 
-        // Initialize Timeline for the new sequence
+        // Initialize Timeline for the new sequence.
+        // If the real budget isn't known yet (first load, no vertex data),
+        // pre-estimate from file sizes on disk so we don't blast out thousands
+        // of asset requests.
         let max_frames = if memory_budget.max_frames < usize::MAX {
             memory_budget.max_frames
         } else {
-            n
+            pre_estimate_max_frames(&request.frame_paths, &memory_budget, 5).unwrap_or(n)
         };
         timeline.init_sequence(n, max_frames);
         info!(
@@ -321,9 +394,15 @@ fn handle_load_requests(
             sequence_assets.base_path = first_path.parent().map(|p| p.to_path_buf());
         }
 
-        // Load all frames using Bevy's asset server.
-        // Bevy handles parallel / async loading automatically.
-        for (idx, path) in request.frame_paths.iter().enumerate() {
+        // Only load frames within the timeline's load sections (budget-aware).
+        let indices = frames_to_load(&timeline.sections, n);
+        info!(
+            "Loading {} of {} frames within budget sections",
+            indices.len(),
+            n
+        );
+        for idx in &indices {
+            let path = &request.frame_paths[*idx];
             let filename = path
                 .file_name()
                 .and_then(|n| n.to_str())
@@ -338,12 +417,15 @@ fn handle_load_requests(
             );
 
             let handle = load_mesh_handle(&asset_server, filename, format);
-            sequence_assets.frame_handles.push(handle);
+            sequence_assets.frame_handles[*idx] = Some(handle);
         }
 
         info!(
-            "Asset loading started: {} {:?} frames from {:?}",
-            sequence_assets.total_frames, format, sequence_assets.base_path
+            "Asset loading started: {} {:?} frames (of {} total) from {:?}",
+            indices.len(),
+            format,
+            sequence_assets.total_frames,
+            sequence_assets.base_path
         );
     }
 }
@@ -366,14 +448,22 @@ fn track_asset_loading(
         return;
     }
 
+    // Count how many frames we actually requested (have Some handle)
+    let requested_count = sequence_assets
+        .frame_handles
+        .iter()
+        .filter(|h| h.is_some())
+        .count();
+
     for event in events.read() {
         match event {
             AssetEvent::LoadedWithDependencies { id } => {
-                // Find which frame this corresponds to - collect info first to avoid borrow issues
+                // Find which frame this corresponds to — skip None entries
                 let found = sequence_assets
                     .frame_handles
                     .iter()
                     .enumerate()
+                    .filter_map(|(i, opt)| opt.as_ref().map(|h| (i, h)))
                     .find(|(_, handle)| handle.id() == *id)
                     .map(|(index, handle)| (index, handle.clone()));
 
@@ -427,15 +517,12 @@ fn track_asset_loading(
                     }
 
                     // Log progress at intervals
-                    let progress = sequence_assets.progress();
                     if sequence_assets.loaded_count % 10 == 0
-                        || sequence_assets.loaded_count == sequence_assets.total_frames
+                        || sequence_assets.loaded_count == requested_count
                     {
                         info!(
-                            "Loading progress: {}/{} ({:.1}%)",
-                            sequence_assets.loaded_count,
-                            sequence_assets.total_frames,
-                            progress * 100.0
+                            "Loading progress: {}/{} frames loaded",
+                            sequence_assets.loaded_count, requested_count,
                         );
                     }
                 }
@@ -444,13 +531,16 @@ fn track_asset_loading(
         }
     }
 
-    // Check if loading is complete
-    if sequence_assets.is_fully_loaded() && sequence_assets.loading {
+    // Check if all requested frames are loaded
+    if sequence_assets.loaded_count >= requested_count
+        && requested_count > 0
+        && sequence_assets.loading
+    {
         sequence_assets.loading = false;
         info!("════════════════════════════════════════════════════════════════");
         info!(
-            "✓ SEQUENCE LOADING COMPLETE: {} frames loaded",
-            sequence_assets.loaded_count,
+            "✓ SECTION LOADING COMPLETE: {}/{} frames loaded (budget-limited)",
+            sequence_assets.loaded_count, sequence_assets.total_frames,
         );
         info!("════════════════════════════════════════════════════════════════");
     }
@@ -460,19 +550,19 @@ fn track_asset_loading(
         let mut failed_count = 0;
         let mut failed_indices = Vec::new();
 
-        for (index, handle) in sequence_assets.frame_handles.iter().enumerate() {
+        for (index, handle_opt) in sequence_assets.frame_handles.iter().enumerate() {
+            let Some(handle) = handle_opt else { continue };
             let state = asset_server.load_state(handle.id());
             match state {
                 LoadState::Failed(ref err) => {
                     failed_count += 1;
                     failed_indices.push(index);
                     if failed_count <= 3 {
-                        // Log first 3 failures in detail
                         error!("Frame {} load failed: {:?}", index, err);
                     }
                 }
                 LoadState::NotLoaded => {
-                    if sequence_assets.frame_handles.len() <= 10 || index % 20 == 0 {
+                    if requested_count <= 10 || index % 20 == 0 {
                         debug!("Frame {} still loading...", index);
                     }
                 }
@@ -487,6 +577,68 @@ fn track_asset_loading(
                 &failed_indices[..failed_indices.len().min(5)]
             );
         }
+    }
+}
+
+/// Watches for timeline section changes and loads/unloads frame assets to
+/// match.  Frames entering a section get an asset load kicked off; frames
+/// leaving all sections have their handle dropped so the asset server can
+/// reclaim the memory.
+fn sync_section_loads(
+    mut sequence_assets: ResMut<SequenceAssets>,
+    asset_server: Res<AssetServer>,
+    timeline: Res<Timeline>,
+) {
+    if sequence_assets.total_frames == 0 {
+        return;
+    }
+    let Some(format) = sequence_assets.format else {
+        return;
+    };
+
+    let needed = frames_to_load(&timeline.sections, sequence_assets.total_frames);
+
+    let mut loads_triggered = 0usize;
+
+    // Load frames that are in sections but don't have a handle yet
+    for &idx in &needed {
+        if sequence_assets.frame_handles[idx].is_none() {
+            let path = &sequence_assets.frame_paths[idx];
+            let filename = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown");
+            let handle = load_mesh_handle(&asset_server, filename, format);
+            sequence_assets.frame_handles[idx] = Some(handle);
+            sequence_assets.loaded_frames[idx] = false;
+            loads_triggered += 1;
+        }
+    }
+
+    // Unload frames that are outside all sections (drop handle, reclaim memory)
+    // Build a fast lookup of needed indices
+    let mut is_needed = vec![false; sequence_assets.total_frames];
+    for &idx in &needed {
+        is_needed[idx] = true;
+    }
+    let mut unloads = 0usize;
+    for idx in 0..sequence_assets.total_frames {
+        if !is_needed[idx] && sequence_assets.frame_handles[idx].is_some() {
+            sequence_assets.frame_handles[idx] = None;
+            if sequence_assets.loaded_frames[idx] {
+                sequence_assets.loaded_frames[idx] = false;
+                sequence_assets.loaded_count = sequence_assets.loaded_count.saturating_sub(1);
+            }
+            unloads += 1;
+        }
+    }
+
+    if loads_triggered > 0 || unloads > 0 {
+        sequence_assets.loading = true;
+        info!(
+            "Section sync: {} loads triggered, {} handles dropped",
+            loads_triggered, unloads
+        );
     }
 }
 
