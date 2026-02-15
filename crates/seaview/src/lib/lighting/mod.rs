@@ -9,12 +9,14 @@ use serde::{Deserialize, Serialize};
 
 pub mod placement;
 pub mod rig;
+pub mod rig_sync;
 pub mod systems;
 
 pub use placement::PlacementAlgorithm;
 pub use rig::{
     auto_group_name, compute_placement_bounds, Light, LightGroup, LightGroupGenConfig, LightingRig,
 };
+pub use rig_sync::{LightEntityMap, RigLight, RigLightMarker};
 
 /// Units for light intensity display and input
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -244,11 +246,13 @@ impl Plugin for NightLightingPlugin {
         app.insert_resource(NightLightingConfig::default())
             .insert_resource(EnvironmentLightConfig::default())
             .insert_resource(LightingRig::default())
+            .insert_resource(LightEntityMap::default())
             .add_systems(
                 Update,
                 (
                     systems::update_night_lights,
                     systems::apply_environment_light,
+                    rig_sync::sync_lighting_rig,
                 ),
             );
     }
