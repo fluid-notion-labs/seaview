@@ -14,7 +14,7 @@ mod perf_section;
 mod rendering_section;
 
 pub use environment_light_section::render_environment_light_controls;
-pub use lighting_section::render_lighting_controls;
+pub use lighting_section::{render_lighting_controls, GenerateGroupState};
 pub use material_section::render_material_controls;
 pub use perf_section::render_perf_section;
 pub use rendering_section::render_rendering_section;
@@ -25,7 +25,7 @@ use bevy_egui::{egui, EguiContexts};
 
 use crate::app::systems::diagnostics::RenderingStats;
 use crate::app::ui::state::{MaterialConfig, RenderConfig, UiState};
-use crate::lib::lighting::{EnvironmentLightConfig, NightLightingConfig};
+use crate::lib::lighting::{EnvironmentLightConfig, LightingRig, NightLightingConfig};
 use crate::lib::mesh_info::MeshDimensions;
 use crate::lib::sequence::SequenceAssets;
 
@@ -36,8 +36,10 @@ use crate::lib::sequence::SequenceAssets;
 pub fn environment_panel_system(
     mut contexts: EguiContexts,
     mut ui_state: ResMut<UiState>,
-    mut lighting_config: ResMut<NightLightingConfig>,
+    _lighting_config: ResMut<NightLightingConfig>,
     mut env_light_config: ResMut<EnvironmentLightConfig>,
+    mut lighting_rig: ResMut<LightingRig>,
+    mut gen_state: Local<GenerateGroupState>,
     mut material_config: ResMut<MaterialConfig>,
     mut render_config: ResMut<RenderConfig>,
     mesh_dims: Res<MeshDimensions>,
@@ -75,12 +77,17 @@ pub fn environment_panel_system(
 
                     ui.add_space(5.0);
 
-                    // ── Spot Lights ────────────────────────────────────
-                    egui::CollapsingHeader::new("Spot Lights")
+                    // ── Lighting Rig (v2) ─────────────────────────────
+                    egui::CollapsingHeader::new("Lights")
                         .default_open(ui_state.collapsible.lighting_rig_open)
                         .show(ui, |ui| {
                             ui_state.collapsible.lighting_rig_open = true;
-                            render_lighting_controls(ui, &mut lighting_config, &mesh_dims);
+                            render_lighting_controls(
+                                ui,
+                                &mut lighting_rig,
+                                &mesh_dims,
+                                &mut gen_state,
+                            );
                         });
 
                     ui.add_space(5.0);

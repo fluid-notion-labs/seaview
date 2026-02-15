@@ -1,217 +1,397 @@
-//! Lighting section for the Environment Panel
+//! Lighting v2 section for the Environment Panel
 //!
-//! This module renders the lighting rig controls and light map visualization
-//! inside the environment panel's accordion UI.
+//! Renders a grouped accordion UI for the [`LightingRig`] resource:
+//!
+//! - Per-group collapsible header with name, visibility toggle, delete button
+//! - Per-light collapsible row with position, height, intensity, range, cone
+//!   angle, color picker, and visibility toggle
+//! - "Generate Group" panel with placement config
+//! - 2D light map visualization reading from `LightingRig`
+//!
+//! This module only reads/writes the data model. Bevy `SpotLight` entity
+//! wiring is handled separately (seaview-352.5).
 
 use bevy::prelude::*;
 use bevy_egui::egui;
 
-use crate::lib::lighting::{LightIntensityUnit, NightLightingConfig, PlacementAlgorithm};
+use crate::lib::lighting::{
+    Light, LightGroup, LightGroupGenConfig, LightingRig, PlacementAlgorithm,
+};
 use crate::lib::mesh_info::MeshDimensions;
 
-/// Renders the lighting rig controls inside an existing egui `Ui` context.
+// ---------------------------------------------------------------------------
+// Generate-group UI state (lives in the panel, not in the domain model)
+// ---------------------------------------------------------------------------
+
+/// Transient state for the "Generate Group" inline form.
 ///
-/// Includes the light map visualization, enable/disable toggles, and all
-/// lighting parameters (count, height, cone angle, intensity, range, color,
-/// coverage, placement algorithm, debug markers).
+/// Stored externally (in [`GenerateGroupState`]) so it persists across frames
+/// while the user is configuring.
+pub struct GenerateGroupState {
+    pub open: bool,
+    pub config: LightGroupGenConfig,
+}
+
+impl Default for GenerateGroupState {
+    fn default() -> Self {
+        Self {
+            open: false,
+            config: LightGroupGenConfig::default(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Public entry point
+// ---------------------------------------------------------------------------
+
+/// Renders the full Lighting v2 section inside an existing egui `Ui`.
+///
+/// Call this from the environment panel system, passing the mutable
+/// `LightingRig` and the current mesh dimensions.
 pub fn render_lighting_controls(
     ui: &mut egui::Ui,
-    lighting_config: &mut NightLightingConfig,
+    rig: &mut LightingRig,
     mesh_dims: &MeshDimensions,
+    gen_state: &mut GenerateGroupState,
 ) {
-    // Light map visualization — always visible at top
-    render_light_map(ui, lighting_config, mesh_dims);
-
+    // ── Light map (top) ───────────────────────────────────────────────
+    render_light_map(ui, rig, mesh_dims);
     ui.add_space(5.0);
 
-    // Enable/disable toggle
-    ui.horizontal(|ui| {
-        ui.checkbox(&mut lighting_config.enabled, "Enabled");
-    });
-
-    if !lighting_config.enabled {
-        ui.label("Spot lighting is disabled");
-        return;
-    }
-
-    ui.add_space(5.0);
-
-    // Number of lights
-    ui.heading("Light Count");
-    ui.add_space(2.0);
-    ui.add(
-        egui::Slider::new(&mut lighting_config.num_lights, 1..=64)
-            .text("lights")
-            .logarithmic(true),
+    // Summary line
+    let total_lights: usize = rig.groups.iter().map(|g| g.lights.len()).sum();
+    let visible_count = rig.visible_lights().count();
+    ui.label(
+        egui::RichText::new(format!(
+            "{} group{}, {} light{} ({} visible)",
+            rig.groups.len(),
+            if rig.groups.len() == 1 { "" } else { "s" },
+            total_lights,
+            if total_lights == 1 { "" } else { "s" },
+            visible_count,
+        ))
+        .small()
+        .color(egui::Color32::from_gray(160)),
     );
 
     ui.add_space(5.0);
 
-    // Height
-    ui.heading("Height");
+    // ── Per-group accordions ──────────────────────────────────────────
+    let mut group_to_remove: Option<uuid::Uuid> = None;
+
+    // We need to iterate by index so we can mutably borrow individual groups
+    // without conflicting with the rig borrow for active_group.
+    let group_count = rig.groups.len();
+    for idx in 0..group_count {
+        let group_id = rig.groups[idx].id;
+        let is_active = rig.active_group == Some(group_id);
+
+        // Build the header label
+        let header_label = format!(
+            "{} ({} lights)",
+            rig.groups[idx].name,
+            rig.groups[idx].lights.len()
+        );
+
+        ui.push_id(group_id, |ui| {
+            // Horizontal header row: collapsible + eye + delete
+            let _header_response =
+                egui::CollapsingHeader::new(egui::RichText::new(&header_label).strong())
+                    .default_open(is_active)
+                    .show(ui, |ui| {
+                        render_group_body(ui, &mut rig.groups[idx], mesh_dims);
+                    });
+
+            // Controls on the same line as the header (right-aligned)
+            // We render them below the header for simplicity in egui
+            ui.horizontal(|ui| {
+                // Visibility eye toggle
+                let vis_label = if rig.groups[idx].visible {
+                    "👁"
+                } else {
+                    "🚫"
+                };
+                if ui
+                    .selectable_label(rig.groups[idx].visible, vis_label)
+                    .on_hover_text("Toggle group visibility")
+                    .clicked()
+                {
+                    rig.groups[idx].visible = !rig.groups[idx].visible;
+                }
+
+                // Active/expand toggle
+                if ui
+                    .selectable_label(is_active, "📌")
+                    .on_hover_text("Pin this group open")
+                    .clicked()
+                {
+                    rig.active_group = if is_active { None } else { Some(group_id) };
+                }
+
+                // Delete group
+                if ui.small_button("🗑").on_hover_text("Remove group").clicked() {
+                    group_to_remove = Some(group_id);
+                }
+            });
+
+            ui.add_space(3.0);
+            ui.separator();
+        });
+    }
+
+    // Process deferred removal
+    if let Some(id) = group_to_remove {
+        rig.remove_group(id);
+    }
+
+    ui.add_space(5.0);
+
+    // ── Generate Group panel ──────────────────────────────────────────
+    render_generate_panel(ui, rig, mesh_dims, gen_state);
+}
+
+// ---------------------------------------------------------------------------
+// Group body: per-light editing
+// ---------------------------------------------------------------------------
+
+fn render_group_body(ui: &mut egui::Ui, group: &mut LightGroup, mesh_dims: &MeshDimensions) {
+    let mut light_to_remove: Option<uuid::Uuid> = None;
+
+    for light_idx in 0..group.lights.len() {
+        let light_id = group.lights[light_idx].id;
+
+        ui.push_id(light_id, |ui| {
+            let light_header = format!("{}", group.lights[light_idx].name);
+
+            egui::CollapsingHeader::new(&light_header)
+                .default_open(false)
+                .show(ui, |ui| {
+                    render_light_editor(ui, &mut group.lights[light_idx], mesh_dims);
+                });
+
+            // Light controls row
+            ui.horizontal(|ui| {
+                // Visibility toggle
+                let vis_label = if group.lights[light_idx].visible {
+                    "👁"
+                } else {
+                    "🚫"
+                };
+                if ui
+                    .selectable_label(group.lights[light_idx].visible, vis_label)
+                    .on_hover_text("Toggle light visibility")
+                    .clicked()
+                {
+                    group.lights[light_idx].visible = !group.lights[light_idx].visible;
+                }
+
+                // Delete light
+                if ui.small_button("🗑").on_hover_text("Remove light").clicked() {
+                    light_to_remove = Some(light_id);
+                }
+            });
+        });
+    }
+
+    // Process deferred removal
+    if let Some(id) = light_to_remove {
+        group.remove_light(id);
+    }
+
+    // Add single light button
+    ui.add_space(3.0);
+    if ui.small_button("+ Add Light").clicked() {
+        let next_num = group.lights.len() + 1;
+        let light = Light::new(format!("Light {}", next_num));
+        group.add_light(light);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Per-light editor
+// ---------------------------------------------------------------------------
+
+fn render_light_editor(ui: &mut egui::Ui, light: &mut Light, mesh_dims: &MeshDimensions) {
+    // Name (editable)
+    ui.horizontal(|ui| {
+        ui.label("Name:");
+        ui.text_edit_singleline(&mut light.name);
+    });
+
     ui.add_space(2.0);
+
+    // Position (XZ)
+    ui.horizontal(|ui| {
+        ui.label("Position:");
+        ui.add(
+            egui::DragValue::new(&mut light.position.x)
+                .prefix("X: ")
+                .speed(0.5),
+        );
+        ui.add(
+            egui::DragValue::new(&mut light.position.y)
+                .prefix("Z: ")
+                .speed(0.5),
+        );
+    });
+
+    ui.add_space(2.0);
+
+    // Height
     let max_height = mesh_dims
         .dimensions
         .map(|d| d.y * 5.0)
         .unwrap_or(500.0)
         .max(10.0);
     ui.add(
-        egui::Slider::new(&mut lighting_config.height, 1.0..=max_height)
-            .text("m")
+        egui::Slider::new(&mut light.height, 1.0..=max_height)
+            .text("Height (m)")
             .logarithmic(true),
     );
-
-    ui.add_space(5.0);
-
-    // Cone angle
-    ui.heading("Cone Angle");
-    ui.add_space(2.0);
-    let cone_changed = ui
-        .add(egui::Slider::new(&mut lighting_config.cone_angle, 5.0..=180.0).text("°"))
-        .changed();
-
-    if cone_changed {
-        // Cone angle affects candela conversion - update display value
-        lighting_config.sync_intensity_from_lumens();
-    }
-
-    ui.add_space(5.0);
 
     // Intensity
-    ui.heading("Intensity");
-    ui.add_space(2.0);
-
-    // Unit selector
-    let current_unit_name = lighting_config.intensity_unit.name();
-    egui::ComboBox::from_label("Unit")
-        .selected_text(current_unit_name)
-        .show_ui(ui, |ui| {
-            for unit in LightIntensityUnit::all() {
-                if ui
-                    .selectable_value(&mut lighting_config.intensity_unit, *unit, unit.name())
-                    .clicked()
-                {
-                    lighting_config.set_intensity_unit(*unit);
-                }
-            }
-        });
-
-    ui.add_space(2.0);
-
-    // Intensity slider (in selected unit)
-    let min_val = match lighting_config.intensity_unit {
-        LightIntensityUnit::Lumens => 1000.0,
-        LightIntensityUnit::Candela => 1000.0,
-        LightIntensityUnit::Kilolumens => 1.0,
-    };
-    let max_val = match lighting_config.intensity_unit {
-        LightIntensityUnit::Lumens => 10_000_000.0,
-        LightIntensityUnit::Candela => 20_000_000.0,
-        LightIntensityUnit::Kilolumens => 10_000.0,
-    };
-
-    let changed = ui
-        .add(
-            egui::Slider::new(
-                &mut lighting_config.intensity_display_value,
-                min_val..=max_val,
-            )
-            .text(lighting_config.intensity_unit.symbol())
+    ui.add(
+        egui::Slider::new(&mut light.intensity, 1000.0..=10_000_000.0)
+            .text("Intensity (lm)")
             .logarithmic(true),
-        )
-        .changed();
-
-    if changed {
-        lighting_config.sync_intensity_to_lumens();
-    }
-
-    // Show equivalent in lumens (Bevy's native unit)
-    if lighting_config.intensity_unit != LightIntensityUnit::Lumens {
-        ui.label(
-            egui::RichText::new(format!("≈ {:.0} lm", lighting_config.intensity))
-                .small()
-                .color(egui::Color32::from_gray(140)),
-        );
-    }
-
-    ui.add_space(5.0);
+    );
 
     // Range
-    ui.heading("Range");
-    ui.add_space(2.0);
-    ui.label(
-        egui::RichText::new("Distance light travels before fading to zero")
-            .small()
-            .color(egui::Color32::from_gray(140)),
-    );
-    ui.add_space(2.0);
     ui.add(
-        egui::Slider::new(&mut lighting_config.range, 10.0..=5000.0)
-            .text("m")
+        egui::Slider::new(&mut light.range, 10.0..=5000.0)
+            .text("Range (m)")
             .logarithmic(true),
     );
 
-    ui.add_space(5.0);
+    // Cone angle
+    ui.add(egui::Slider::new(&mut light.cone_angle, 5.0..=180.0).text("Cone (°)"));
 
     // Color
-    ui.heading("Light Color");
-    ui.add_space(2.0);
-    let srgba = lighting_config.color.to_srgba();
-    let mut color_arr = [srgba.red, srgba.green, srgba.blue];
-    if ui.color_edit_button_rgb(&mut color_arr).changed() {
-        lighting_config.color = Color::srgb(color_arr[0], color_arr[1], color_arr[2]);
+    ui.horizontal(|ui| {
+        ui.label("Color:");
+        let srgba = light.color.to_srgba();
+        let mut color_arr = [srgba.red, srgba.green, srgba.blue];
+        if ui.color_edit_button_rgb(&mut color_arr).changed() {
+            light.color = Color::srgb(color_arr[0], color_arr[1], color_arr[2]);
+        }
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Generate Group panel
+// ---------------------------------------------------------------------------
+
+fn render_generate_panel(
+    ui: &mut egui::Ui,
+    rig: &mut LightingRig,
+    mesh_dims: &MeshDimensions,
+    state: &mut GenerateGroupState,
+) {
+    // Toggle button
+    let btn_text = if state.open {
+        "▾ Generate Group"
+    } else {
+        "▸ Generate Group"
+    };
+    if ui.button(btn_text).clicked() {
+        state.open = !state.open;
     }
 
-    ui.add_space(5.0);
+    if !state.open {
+        return;
+    }
 
-    // Coverage
-    ui.heading("Coverage");
-    ui.add_space(2.0);
-    ui.add(egui::Slider::new(&mut lighting_config.coverage_pct, 10.0..=300.0).text("%"));
+    ui.add_space(3.0);
+    egui::Frame::group(ui.style()).show(ui, |ui| {
+        ui.label(egui::RichText::new("New Group Configuration").strong());
+        ui.add_space(4.0);
 
-    ui.add_space(5.0);
-
-    // Placement algorithm
-    ui.heading("Placement");
-    ui.add_space(2.0);
-    let current_name = lighting_config.placement_algorithm.name();
-    egui::ComboBox::from_label("Algorithm")
-        .selected_text(current_name)
-        .show_ui(ui, |ui| {
-            for alg in PlacementAlgorithm::all() {
-                if ui
-                    .selectable_value(&mut lighting_config.placement_algorithm, *alg, alg.name())
-                    .clicked()
-                {
-                    // Selection applied via selectable_value
+        // Placement algorithm
+        let current_name = state.config.placement_algorithm.name();
+        egui::ComboBox::from_label("Placement")
+            .selected_text(current_name)
+            .show_ui(ui, |ui| {
+                for alg in PlacementAlgorithm::all() {
+                    ui.selectable_value(&mut state.config.placement_algorithm, *alg, alg.name());
                 }
-            }
-        });
+            });
 
-    ui.add_space(5.0);
-
-    // Markers
-    ui.heading("Debug");
-    ui.add_space(2.0);
-    ui.checkbox(&mut lighting_config.show_markers, "Show Light Markers");
-    if lighting_config.show_markers {
+        // Light count
         ui.add(
-            egui::Slider::new(&mut lighting_config.marker_size, 0.1..=5.0)
-                .text("marker size")
+            egui::Slider::new(&mut state.config.num_lights, 1..=64)
+                .text("Lights")
                 .logarithmic(true),
         );
-    }
+
+        // Coverage
+        ui.add(egui::Slider::new(&mut state.config.coverage_pct, 10.0..=300.0).text("Coverage %"));
+
+        ui.add_space(4.0);
+
+        // Default params (collapsed)
+        egui::CollapsingHeader::new("Default Light Params")
+            .default_open(false)
+            .show(ui, |ui| {
+                ui.add(
+                    egui::Slider::new(&mut state.config.default_height, 1.0..=500.0)
+                        .text("Height (m)")
+                        .logarithmic(true),
+                );
+                ui.add(
+                    egui::Slider::new(&mut state.config.default_intensity, 1000.0..=10_000_000.0)
+                        .text("Intensity (lm)")
+                        .logarithmic(true),
+                );
+                ui.add(
+                    egui::Slider::new(&mut state.config.default_range, 10.0..=5000.0)
+                        .text("Range (m)")
+                        .logarithmic(true),
+                );
+                ui.add(
+                    egui::Slider::new(&mut state.config.default_cone_angle, 5.0..=180.0)
+                        .text("Cone (°)"),
+                );
+                ui.horizontal(|ui| {
+                    ui.label("Color:");
+                    let srgba = state.config.default_color.to_srgba();
+                    let mut color_arr = [srgba.red, srgba.green, srgba.blue];
+                    if ui.color_edit_button_rgb(&mut color_arr).changed() {
+                        state.config.default_color =
+                            Color::srgb(color_arr[0], color_arr[1], color_arr[2]);
+                    }
+                });
+            });
+
+        ui.add_space(6.0);
+
+        // Generate button
+        if ui
+            .button(
+                egui::RichText::new(format!(
+                    "✨ Generate {} lights ({})",
+                    state.config.num_lights,
+                    state.config.placement_algorithm.name()
+                ))
+                .strong(),
+            )
+            .clicked()
+        {
+            let group =
+                state
+                    .config
+                    .generate_for_mesh_auto_named(rig, mesh_dims.min, mesh_dims.max);
+            rig.add_group(group);
+            state.open = false;
+        }
+    });
 }
 
 // ── Light Map Visualization ────────────────────────────────────────────────
 
-/// Renders a top-down light map showing the domain AABB, coverage boundary,
-/// cone footprints, and light positions.
-fn render_light_map(
-    ui: &mut egui::Ui,
-    lighting_config: &NightLightingConfig,
-    mesh_dims: &MeshDimensions,
-) {
+/// Renders a top-down light map showing the domain AABB, coverage boundaries,
+/// cone footprints, and light positions — reading from the v2 [`LightingRig`].
+fn render_light_map(ui: &mut egui::Ui, rig: &LightingRig, mesh_dims: &MeshDimensions) {
     // Compute mesh AABB (domain) in XZ
     let (domain_min, domain_max) = if let (Some(mn), Some(mx)) = (mesh_dims.min, mesh_dims.max) {
         (
@@ -225,42 +405,36 @@ fn render_light_map(
         )
     };
 
-    // Coverage bounds (where lights are placed)
-    let coverage_scale = lighting_config.coverage_pct / 100.0;
-    let domain_center = (domain_min + domain_max) * 0.5;
-    let domain_half = (domain_max - domain_min) * 0.5;
-    let coverage_min = domain_center - domain_half * coverage_scale;
-    let coverage_max = domain_center + domain_half * coverage_scale;
+    // Compute a bounding box around all light positions and the domain
+    let mut view_min = domain_min;
+    let mut view_max = domain_max;
+    for (_group, light) in rig.all_lights() {
+        view_min = bevy::math::Vec2::new(
+            view_min.x.min(light.position.x),
+            view_min.y.min(light.position.y),
+        );
+        view_max = bevy::math::Vec2::new(
+            view_max.x.max(light.position.x),
+            view_max.y.max(light.position.y),
+        );
+    }
 
-    // View bounds — padded slightly beyond whichever is larger (domain or coverage)
-    let view_min = bevy::math::Vec2::new(
-        coverage_min.x.min(domain_min.x),
-        coverage_min.y.min(domain_min.y),
-    );
-    let view_max = bevy::math::Vec2::new(
-        coverage_max.x.max(domain_max.x),
-        coverage_max.y.max(domain_max.y),
-    );
     let view_extent = view_max - view_min;
-    let padding_frac = 0.08;
-    let pad = bevy::math::Vec2::new(view_extent.x * padding_frac, view_extent.y * padding_frac);
+    let padding_frac = 0.12;
+    let pad = bevy::math::Vec2::new(
+        view_extent.x * padding_frac + 5.0,
+        view_extent.y * padding_frac + 5.0,
+    );
     let view_min = view_min - pad;
     let view_max = view_max + pad;
-    let view_w = view_max.x - view_min.x;
-    let view_h = view_max.y - view_min.y;
+    let view_w = (view_max.x - view_min.x).max(1.0);
+    let view_h = (view_max.y - view_min.y).max(1.0);
 
-    let positions = lighting_config.placement_algorithm.calculate_positions(
-        lighting_config.num_lights,
-        coverage_min,
-        coverage_max,
-    );
-
-    // Use full available width for the map
+    // Draw the map
     let map_size = ui.available_width().min(280.0);
     let (rect, _response) =
         ui.allocate_exact_size(egui::Vec2::splat(map_size), egui::Sense::hover());
 
-    // Helper: world XZ → pixel position in the map rect
     let to_px = |wx: f32, wz: f32| -> egui::Pos2 {
         egui::pos2(
             rect.min.x + ((wx - view_min.x) / view_w) * map_size,
@@ -274,39 +448,10 @@ fn render_light_map(
         // Background
         painter.rect_filled(rect, 4.0, egui::Color32::from_gray(20));
 
-        // --- Coverage boundary (dashed-style: thin bright rect) ---
-        let cov_tl = to_px(coverage_min.x, coverage_min.y);
-        let cov_br = to_px(coverage_max.x, coverage_max.y);
-        let cov_rect = egui::Rect::from_min_max(cov_tl, cov_br);
-        // Subtle fill to distinguish the coverage zone
-        painter.rect_filled(
-            cov_rect,
-            2.0,
-            egui::Color32::from_rgba_unmultiplied(60, 90, 120, 25),
-        );
-        painter.rect_stroke(
-            cov_rect,
-            2.0,
-            egui::Stroke::new(
-                1.0,
-                egui::Color32::from_rgba_unmultiplied(80, 140, 200, 140),
-            ),
-            egui::StrokeKind::Outside,
-        );
-        // Label
-        painter.text(
-            egui::pos2(cov_tl.x + 3.0, cov_tl.y + 2.0),
-            egui::Align2::LEFT_TOP,
-            format!("Coverage {:.0}%", lighting_config.coverage_pct),
-            egui::FontId::proportional(7.5),
-            egui::Color32::from_rgba_unmultiplied(80, 140, 200, 160),
-        );
-
-        // --- Domain AABB (mesh footprint) ---
+        // --- Domain AABB ---
         let dom_tl = to_px(domain_min.x, domain_min.y);
         let dom_br = to_px(domain_max.x, domain_max.y);
         let dom_rect = egui::Rect::from_min_max(dom_tl, dom_br);
-        // Subtle domain fill
         painter.rect_filled(
             dom_rect,
             1.0,
@@ -330,43 +475,46 @@ fn render_light_map(
                 egui::FontId::proportional(7.5),
                 egui::Color32::from_rgba_unmultiplied(200, 200, 200, 160),
             );
-        } else {
-            painter.text(
-                egui::pos2(dom_br.x - 3.0, dom_br.y - 2.0),
-                egui::Align2::RIGHT_BOTTOM,
-                "Domain",
-                egui::FontId::proportional(7.5),
-                egui::Color32::from_rgba_unmultiplied(200, 200, 200, 160),
-            );
         }
 
-        // --- Cone ground projections + light dots ---
-        if view_w > 0.0 && view_h > 0.0 {
-            let srgba = lighting_config.color.to_srgba();
-            let light_color = egui::Color32::from_rgb(
-                (srgba.red * 255.0) as u8,
-                (srgba.green * 255.0) as u8,
-                (srgba.blue * 255.0) as u8,
-            );
+        // --- Light dots and cone projections ---
+        let px_per_unit = map_size / ((view_w + view_h) * 0.5);
 
-            // Cone ground radius in world units
-            let cone_world_radius =
-                lighting_config.height * (lighting_config.cone_angle / 2.0).to_radians().tan();
-            // Convert to pixels (use average of x/z scale)
-            let px_per_unit = map_size / ((view_w + view_h) * 0.5);
-            let cone_px = (cone_world_radius * px_per_unit).min(map_size * 0.4);
+        // Group colours for visual distinction
+        let group_palette: &[egui::Color32] = &[
+            egui::Color32::from_rgb(255, 200, 80),
+            egui::Color32::from_rgb(100, 180, 255),
+            egui::Color32::from_rgb(180, 120, 255),
+            egui::Color32::from_rgb(120, 255, 160),
+            egui::Color32::from_rgb(255, 120, 120),
+            egui::Color32::from_rgb(255, 160, 220),
+        ];
 
-            for pos in &positions {
-                let center = to_px(pos.x, pos.y);
+        for (group_idx, group) in rig.groups.iter().enumerate() {
+            let palette_color = group_palette[group_idx % group_palette.len()];
 
-                // Glow circle (cone footprint estimation)
-                let glow_color = egui::Color32::from_rgba_unmultiplied(
-                    (srgba.red * 255.0) as u8,
-                    (srgba.green * 255.0) as u8,
-                    (srgba.blue * 255.0) as u8,
-                    25,
+            for light in &group.lights {
+                let is_effective_visible = group.visible && light.visible;
+                let alpha_mult: f32 = if is_effective_visible { 1.0 } else { 0.25 };
+
+                let center = to_px(light.position.x, light.position.y);
+
+                // Cone ground radius
+                let cone_world_radius = light.height * (light.cone_angle / 2.0).to_radians().tan();
+                let cone_px = (cone_world_radius * px_per_unit).min(map_size * 0.4);
+
+                // Glow circle
+                let glow_alpha = (25.0 * alpha_mult) as u8;
+                painter.circle_filled(
+                    center,
+                    cone_px,
+                    egui::Color32::from_rgba_unmultiplied(
+                        palette_color.r(),
+                        palette_color.g(),
+                        palette_color.b(),
+                        glow_alpha,
+                    ),
                 );
-                painter.circle_filled(center, cone_px, glow_color);
 
                 // Cone edge ring
                 painter.circle_stroke(
@@ -375,16 +523,23 @@ fn render_light_map(
                     egui::Stroke::new(
                         0.5,
                         egui::Color32::from_rgba_unmultiplied(
-                            (srgba.red * 255.0) as u8,
-                            (srgba.green * 255.0) as u8,
-                            (srgba.blue * 255.0) as u8,
-                            50,
+                            palette_color.r(),
+                            palette_color.g(),
+                            palette_color.b(),
+                            (50.0 * alpha_mult) as u8,
                         ),
                     ),
                 );
 
                 // Light dot
-                painter.circle_filled(center, 3.0, light_color);
+                let dot_alpha = (255.0 * alpha_mult) as u8;
+                let dot_color = egui::Color32::from_rgba_unmultiplied(
+                    palette_color.r(),
+                    palette_color.g(),
+                    palette_color.b(),
+                    dot_alpha,
+                );
+                painter.circle_filled(center, 3.0, dot_color);
             }
         }
 
@@ -396,20 +551,4 @@ fn render_light_map(
             egui::StrokeKind::Outside,
         );
     }
-
-    // Info line below the map
-    ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 8.0;
-        ui.label(
-            egui::RichText::new(format!(
-                "{} lights · {:.0}m · {}",
-                positions.len(),
-                lighting_config.height,
-                lighting_config.placement_algorithm.name(),
-            ))
-            .small()
-            .color(egui::Color32::from_gray(160)),
-        );
-    });
 }

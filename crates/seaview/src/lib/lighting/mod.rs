@@ -243,6 +243,7 @@ impl Plugin for NightLightingPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(NightLightingConfig::default())
             .insert_resource(EnvironmentLightConfig::default())
+            .insert_resource(LightingRig::default())
             .add_systems(
                 Update,
                 (

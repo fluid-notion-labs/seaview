@@ -403,7 +403,7 @@ fn setup(
             commands.insert_resource(env_light_cfg);
         }
 
-        // Spot-light rig
+        // Spot-light rig (legacy v1)
         if let Some(ref lighting_settings) = env.lighting {
             let lighting_cfg = NightLightingConfig::from(lighting_settings);
             debug!(
@@ -411,6 +411,16 @@ fn setup(
                 lighting_cfg.num_lights, lighting_cfg.height, lighting_settings.placement_algorithm,
             );
             commands.insert_resource(lighting_cfg);
+        }
+
+        // Lighting v2 rig (named groups with per-light params)
+        if let Some(rig) = settings_res.settings.get_lighting_rig() {
+            debug!(
+                "Restored lighting rig from seaview.toml: {} groups, {} total lights",
+                rig.groups.len(),
+                rig.light_count(),
+            );
+            commands.insert_resource(rig);
         }
 
         // Material for the fluid mesh
@@ -497,6 +507,7 @@ fn handle_save_view(
     source_orientation: Res<SourceOrientation>,
     lighting_cfg: Res<NightLightingConfig>,
     env_light_cfg: Res<EnvironmentLightConfig>,
+    lighting_rig: Res<seaview::lighting::LightingRig>,
     material_cfg: Res<MaterialConfig>,
     watch_config: Res<WatchConfig>,
     timeline: Res<Timeline>,
@@ -520,6 +531,9 @@ fn handle_save_view(
             settings_res
                 .settings
                 .set_environment(&lighting_cfg, &env_light_cfg, &material_cfg);
+
+            // Lighting v2 rig (named groups with per-light params)
+            settings_res.settings.set_lighting_rig(&lighting_rig);
 
             // Load sections — persist multi-section layout
             settings_res.settings.set_load_sections(&timeline.sections);
