@@ -24,7 +24,7 @@ use bevy::gltf::GltfAssetLabel;
 use bevy::prelude::*;
 use std::path::PathBuf;
 
-use super::{LoadSection, SequenceManager};
+use super::{compute_spawn_window, SequenceManager, Timeline};
 
 use crate::app::ui::state::RenderConfig;
 use crate::lib::memory_budget::{estimate_mesh_gpu_bytes_from_vertices, MemoryBudget};
@@ -247,7 +247,7 @@ fn handle_load_requests(
     mut load_requests: MessageReader<LoadSequenceRequest>,
     mut sequence_assets: ResMut<SequenceAssets>,
     asset_server: Res<AssetServer>,
-    mut load_section: ResMut<super::LoadSection>,
+    mut timeline: ResMut<Timeline>,
     memory_budget: Res<MemoryBudget>,
 ) {
     for request in load_requests.read() {
@@ -293,17 +293,18 @@ fn handle_load_requests(
         sequence_assets.frame_entities = vec![None; n];
         sequence_assets.loaded_frames = vec![false; n];
 
-        // Initialize LoadSection to cover the full sequence (or max budget)
+        // Initialize Timeline for the new sequence
         let max_frames = if memory_budget.max_frames < usize::MAX {
             memory_budget.max_frames
         } else {
             n
         };
-        load_section.start = 0;
-        load_section.end = n.min(max_frames);
+        timeline.init_sequence(n, max_frames);
         info!(
-            "LoadSection initialized: frames 0..{} (total: {}, budget max: {})",
-            load_section.end, n, max_frames
+            "Timeline initialized: frames 0..{} (total: {}, budget max: {})",
+            timeline.section().end,
+            n,
+            max_frames
         );
 
         // Store base path from first frame
@@ -483,8 +484,8 @@ fn track_asset_loading(
 /// System that manages the ring-buffer of spawned frame entities.
 ///
 /// This is the **sole owner of visibility** for sequence mesh entities.
-/// Runs in `PostUpdate` so that `sequence_manager.current_frame` is finalised
-/// for this tick (all `Update` writers have run).
+/// Runs in `PostUpdate` so that `timeline.playhead` is finalised for this
+/// tick (all `Update` writers have run).
 ///
 /// Keeps at most `RenderConfig::frame_window_size` entities spawned, centred on
 /// the current frame. Uses O(delta) despawn/spawn by tracking the previous
@@ -493,8 +494,7 @@ fn track_asset_loading(
 fn manage_frame_window(
     mut commands: Commands,
     mut sequence_assets: ResMut<SequenceAssets>,
-    sequence_manager: Res<SequenceManager>,
-    load_section: Res<LoadSection>,
+    timeline: Res<Timeline>,
     render_config: Res<RenderConfig>,
     mut visibility_query: Query<&mut Visibility, With<SequenceMeshDisplay>>,
     mut prev_window: Local<(usize, usize)>,
@@ -508,18 +508,20 @@ fn manage_frame_window(
         return;
     };
 
-    let current = sequence_manager.current_frame;
+    let current = timeline.playhead;
 
     // Entity spawning uses RenderConfig::frame_window_size (small sliding window
-    // around the current frame) to keep entity count low. The LoadSection controls
-    // which frames are *loaded as assets* (budget-level), but we only *spawn*
-    // entities for a small window within that range.
-    let window = render_config.frame_window_size;
-    let (raw_lo, raw_hi) = sequence_assets.window_range(current, window);
-    // Clamp the spawn window to the LoadSection range (only spawn frames that are within budget)
-    let section_end = load_section.end.min(sequence_assets.total_frames);
-    let win_lo = raw_lo.max(load_section.start);
-    let win_hi = raw_hi.min(section_end);
+    // around the current frame) to keep entity count low. The load sections
+    // control which frames are *loaded as assets* (budget-level), but we only
+    // *spawn* entities for a small window within that range.
+    let section = timeline.section();
+    let (win_lo, win_hi) = compute_spawn_window(
+        current,
+        render_config.frame_window_size,
+        section.start,
+        section.end,
+        sequence_assets.total_frames,
+    );
     let transform = sequence_assets.coord_transform;
     let frame_bytes = sequence_assets.estimated_frame_bytes;
 

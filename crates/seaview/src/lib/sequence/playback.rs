@@ -2,9 +2,10 @@
 //!
 //! Rebuilt as part of playback rebuild (commit 2).
 //! Single system: `handle_keyboard_playback` — keyboard input writes directly
-//! to `SequenceManager` (the single source of truth). No events, no indirection.
+//! to `Timeline` for frame movement and `SequenceManager` for playback state.
+//! No events, no indirection.
 
-use super::SequenceManager;
+use super::{SequenceManager, Timeline};
 use bevy::prelude::*;
 
 use crate::lib::settings::SaveViewEvent;
@@ -33,7 +34,8 @@ const REPEAT_DELAY: f32 = 0.5;
 /// Interval between repeated frame changes when holding (seconds)
 const REPEAT_INTERVAL: f32 = 0.05;
 
-/// Keyboard input → `SequenceManager`. Replaces the old `handle_playback_input`.
+/// Keyboard input → `Timeline` + `SequenceManager`. Frame movement goes
+/// through `Timeline`; play/pause and speed go through `SequenceManager`.
 ///
 /// Key bindings:
 /// - **Space** — toggle play/pause
@@ -46,12 +48,13 @@ const REPEAT_INTERVAL: f32 = 0.05;
 pub(super) fn handle_keyboard_playback(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut sm: ResMut<SequenceManager>,
+    mut timeline: ResMut<Timeline>,
     time: Res<Time>,
     mut key_timer: Local<KeyHoldTimer>,
     mut save_events: MessageWriter<SaveViewEvent>,
 ) {
     // Only process input if we have a sequence loaded
-    if sm.current_sequence.is_none() {
+    if timeline.total_frames == 0 {
         return;
     }
 
@@ -74,16 +77,14 @@ pub(super) fn handle_keyboard_playback(
     // Ctrl+Arrow — jump to start/end of timeline
     if ctrl && keyboard.just_pressed(KeyCode::ArrowLeft) {
         sm.is_playing = false;
-        sm.jump_to_frame(0);
+        timeline.jump_to_frame(0);
         debug!("⏮ Jump to start via Ctrl+←");
     }
     if ctrl && keyboard.just_pressed(KeyCode::ArrowRight) {
         sm.is_playing = false;
-        if let Some(seq) = sm.current_sequence() {
-            let last = seq.frame_count().saturating_sub(1);
-            sm.jump_to_frame(last);
-            debug!("⏭ Jump to end via Ctrl+→");
-        }
+        let last = timeline.total_frames.saturating_sub(1);
+        timeline.jump_to_frame(last);
+        debug!("⏭ Jump to end via Ctrl+→");
     }
 
     // Arrow keys — step forward/backward with hold-to-repeat
@@ -102,9 +103,9 @@ pub(super) fn handle_keyboard_playback(
             key_timer.last_repeat = 0.0;
 
             if right {
-                sm.next_frame();
+                timeline.next_frame();
             } else {
-                sm.previous_frame();
+                timeline.previous_frame();
             }
         } else {
             // Holding — accumulate time and repeat after delay
@@ -115,9 +116,9 @@ pub(super) fn handle_keyboard_playback(
                 if elapsed_since_repeat >= REPEAT_INTERVAL {
                     key_timer.last_repeat = key_timer.hold_time;
                     if right {
-                        sm.next_frame();
+                        timeline.next_frame();
                     } else {
-                        sm.previous_frame();
+                        timeline.previous_frame();
                     }
                 }
             }
@@ -130,16 +131,14 @@ pub(super) fn handle_keyboard_playback(
     // Home — jump to first frame
     if keyboard.just_pressed(KeyCode::Home) {
         sm.is_playing = false;
-        sm.jump_to_frame(0);
+        timeline.jump_to_frame(0);
     }
 
     // End — jump to last frame
     if keyboard.just_pressed(KeyCode::End) {
         sm.is_playing = false;
-        if let Some(seq) = sm.current_sequence() {
-            let last = seq.frame_count().saturating_sub(1);
-            sm.jump_to_frame(last);
-        }
+        let last = timeline.total_frames.saturating_sub(1);
+        timeline.jump_to_frame(last);
     }
 
     // Plus / Minus — adjust speed
@@ -170,10 +169,8 @@ pub(super) fn handle_keyboard_playback(
 
     for (key, pct) in digit_keys {
         if keyboard.just_pressed(key) {
-            if let Some(seq) = sm.current_sequence() {
-                let frame = (seq.frame_count() as f32 * pct) as usize;
-                sm.jump_to_frame(frame);
-            }
+            let frame = (timeline.total_frames as f32 * pct) as usize;
+            timeline.jump_to_frame(frame);
         }
     }
 }

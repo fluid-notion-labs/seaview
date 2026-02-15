@@ -33,5 +33,5 @@ pub use lib::memory_budget::{
     estimate_mesh_gpu_bytes, estimate_mesh_gpu_bytes_from_vertices, MemoryBudget,
     MemoryBudgetPlugin, NvmlBackend, RamDetector, SysInfoBackend, VramDetector,
 };
-pub use lib::sequence::{self, LoadSection};
+pub use lib::sequence::{self, compute_spawn_window, distribute_sections, LoadSection, Timeline};
 pub use lib::session::{self, Session, SessionManager, SessionPlugin};

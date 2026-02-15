@@ -13,11 +13,10 @@ use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 
 use crate::app::systems::camera::{CenterOnMeshEvent, FpsCamera};
-use crate::app::ui::state::LoadSectionEdge;
-use crate::app::ui::state::UiState;
+use crate::app::ui::state::{LoadSectionEdge, UiState};
 use crate::lib::memory_budget::MemoryBudget;
 use crate::lib::sequence::{
-    LoadSection, LoadingPhase, LoadingPhaseState, SequenceManager, WatchConfig,
+    LoadingPhase, LoadingPhaseState, SequenceManager, Timeline, WatchConfig,
 };
 use crate::lib::settings::{CameraSettings, SaveViewEvent, SavedCameras};
 
@@ -33,11 +32,11 @@ pub fn playback_controls_system(
     mut save_view_events: MessageWriter<SaveViewEvent>,
     time: Res<Time>,
     mut sequence_manager: ResMut<SequenceManager>,
+    mut timeline: ResMut<Timeline>,
     mut watch_config: ResMut<WatchConfig>,
     mut loading_phase: ResMut<LoadingPhase>,
     mut saved_cameras: Option<ResMut<SavedCameras>>,
     mut camera_query: Query<&mut Transform, (With<Camera3d>, With<FpsCamera>)>,
-    mut load_section: ResMut<LoadSection>,
     memory_budget: Res<MemoryBudget>,
 ) {
     if !ui_state.show_playback_controls {
@@ -113,7 +112,7 @@ pub fn playback_controls_system(
 
                     // Previous frame button → writes directly to SequenceManager
                     if ui.button("⏮").on_hover_text("Previous frame").clicked() {
-                        sequence_manager.previous_frame();
+                        timeline.previous_frame();
                     }
 
                     // Play/Pause button → writes directly to SequenceManager
@@ -136,7 +135,7 @@ pub fn playback_controls_system(
 
                     // Next frame button → writes directly to SequenceManager
                     if ui.button("⏭").on_hover_text("Next frame").clicked() {
-                        sequence_manager.next_frame();
+                        timeline.next_frame();
                     }
 
                     ui.separator();
@@ -320,7 +319,7 @@ pub fn playback_controls_system(
                         if let Some(pos) = response.interact_pointer_pos() {
                             let rel_x = ((pos.x - rect.min.x) / rect.width()).clamp(0.0, 1.0);
                             let new_frame = (rel_x * max_frame as f32).round() as usize;
-                            sequence_manager.jump_to_frame(new_frame);
+                            timeline.jump_to_frame(new_frame);
                         }
                     }
 
@@ -428,8 +427,9 @@ pub fn playback_controls_system(
                             ui.allocate_exact_size(desired_size, egui::Sense::click_and_drag());
 
                         let total = display_total_frames.max(1) as f32;
-                        let section_start = load_section.start as f32 / total;
-                        let section_end = load_section.end as f32 / total;
+                        let section = timeline.section();
+                        let section_start = section.start as f32 / total;
+                        let section_end = section.end as f32 / total;
 
                         // Calculate pixel positions for section edges
                         let start_x = rect.min.x + rect.width() * section_start;
@@ -448,19 +448,19 @@ pub fn playback_controls_system(
 
                                 match ui_state.load_section_dragging {
                                     Some(LoadSectionEdge::Start) => {
-                                        load_section.set_start(frame, max_frames);
+                                        timeline.section_mut().set_start(frame, max_frames);
                                     }
                                     Some(LoadSectionEdge::End) => {
-                                        load_section.set_end(frame, display_total_frames, max_frames);
+                                        timeline.section_mut().set_end(frame, display_total_frames, max_frames);
                                     }
                                     None => {
                                         // Start a new drag
                                         if near_start && !near_end {
                                             ui_state.load_section_dragging = Some(LoadSectionEdge::Start);
-                                            load_section.set_start(frame, max_frames);
+                                            timeline.section_mut().set_start(frame, max_frames);
                                         } else if near_end {
                                             ui_state.load_section_dragging = Some(LoadSectionEdge::End);
-                                            load_section.set_end(frame, display_total_frames, max_frames);
+                                            timeline.section_mut().set_end(frame, display_total_frames, max_frames);
                                         }
                                     }
                                 }
@@ -526,11 +526,12 @@ pub fn playback_controls_system(
                         }
 
                         // Tooltip with frame range info
+                        let s = timeline.section();
                         response.on_hover_text(format!(
                             "Loaded: frames {} - {} ({} frames)\nMax: {} frames\nDrag edges to adjust",
-                            load_section.start,
-                            load_section.end.saturating_sub(1),
-                            load_section.frame_count(),
+                            s.start,
+                            s.end.saturating_sub(1),
+                            s.frame_count(),
                             memory_budget.max_frames.min(display_total_frames)
                         ));
                     });

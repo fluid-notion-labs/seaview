@@ -2,6 +2,26 @@
 //!
 //! This module provides functionality for discovering, loading, and playing back
 //! sequences of mesh files (e.g., simulation timesteps).
+//!
+//! ## Architecture
+//!
+//! The core data model is split into pure library types and thin Bevy wrappers:
+//!
+//! - **[`LoadSection`]** — a `[start, end)` frame range. No UI state.
+//! - **[`Timeline`]** — owns `total_frames`, `Vec<LoadSection>`, and `playhead`.
+//!   All temporal logic lives here as plain methods.
+//! - **[`SequenceManager`]** — playback controls (`is_playing`, `speed`,
+//!   `loop_enabled`) and the loaded [`Sequence`] metadata.
+//!
+//! Pure functions:
+//! - [`compute_spawn_window`] — given playhead + render window size + load
+//!   section bounds, returns the `[lo, hi)` range of entities to keep spawned.
+//! - [`distribute_sections`] — split a frame budget across N evenly-spaced
+//!   load sections.
+//!
+//! Bevy systems (`advance_playback`, `update_timeline_budget`,
+//! `sync_ui_from_sequence_manager`) are thin wrappers that read resources,
+//! call the pure methods, and write results back.
 
 pub mod discovery;
 pub mod loader;
@@ -19,15 +39,14 @@ pub use loader::{FrameLoadedEvent, LoadSequenceRequest, LoadingStats, SequenceAs
 pub use watch::{LoadingPhase, LoadingPhaseState, WatchConfig, WatchPlugin};
 
 // ---------------------------------------------------------------------------
-// Load Section — runtime resource for frame range in memory
+// LoadSection — pure [start, end) range
 // ---------------------------------------------------------------------------
 
-/// Resource defining which frames should be kept in memory.
+/// A contiguous range of frames to keep loaded in memory.
 ///
-/// This is the runtime representation that the loader uses to decide
-/// which frames to spawn/despawn. It's synced with `LoadSectionSettings`
-/// from the per-directory config.
-#[derive(Resource, Debug, Clone)]
+/// This is a pure data struct — no UI state, no Bevy dependencies beyond the
+/// derive. All mutation goes through the methods which enforce invariants.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoadSection {
     /// Start frame index (inclusive)
     pub start: usize,
@@ -109,7 +128,225 @@ impl LoadSection {
     }
 }
 
-/// Plugin for mesh sequence management
+// ---------------------------------------------------------------------------
+// Timeline — owns temporal state: total_frames, sections, playhead
+// ---------------------------------------------------------------------------
+
+/// The temporal model for a loaded sequence.
+///
+/// Pure data structure. Owns the full timeline state:
+/// - How many frames exist (`total_frames`)
+/// - Which ranges are loaded into memory (`sections`)
+/// - Where the playhead sits (`playhead`)
+///
+/// All logic is exposed as plain methods that take plain arguments and return
+/// plain results — no Bevy queries, no side effects.
+#[derive(Resource, Debug, Clone)]
+pub struct Timeline {
+    /// Total number of frames in the sequence
+    pub total_frames: usize,
+    /// Loaded frame ranges (budget layer). At least one section exists after
+    /// a sequence is loaded.
+    pub sections: Vec<LoadSection>,
+    /// Current playhead position (frame index)
+    pub playhead: usize,
+}
+
+impl Default for Timeline {
+    fn default() -> Self {
+        Self {
+            total_frames: 0,
+            sections: vec![LoadSection::default()],
+            playhead: 0,
+        }
+    }
+}
+
+impl Timeline {
+    /// Create a timeline for a sequence with `total_frames` frames and a
+    /// single load section covering `[0, initial_loaded)`.
+    pub fn new(total_frames: usize, initial_loaded: usize) -> Self {
+        Self {
+            total_frames,
+            sections: vec![LoadSection::new(0, initial_loaded.min(total_frames))],
+            playhead: 0,
+        }
+    }
+
+    // -- Playhead control ---------------------------------------------------
+
+    /// Move to the next frame. Returns `true` if the playhead moved.
+    pub fn next_frame(&mut self) -> bool {
+        if self.total_frames > 0 && self.playhead + 1 < self.total_frames {
+            self.playhead += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Move to the previous frame. Returns `true` if the playhead moved.
+    pub fn previous_frame(&mut self) -> bool {
+        if self.playhead > 0 {
+            self.playhead -= 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Jump to a specific frame. Returns `true` if the frame is valid.
+    pub fn jump_to_frame(&mut self, frame: usize) -> bool {
+        if self.total_frames > 0 && frame < self.total_frames {
+            self.playhead = frame;
+            true
+        } else {
+            false
+        }
+    }
+
+    // -- Section queries ----------------------------------------------------
+
+    /// Get the first section (convenience for single-section mode).
+    pub fn section(&self) -> &LoadSection {
+        &self.sections[0]
+    }
+
+    /// Get the first section mutably (convenience for single-section mode).
+    pub fn section_mut(&mut self) -> &mut LoadSection {
+        &mut self.sections[0]
+    }
+
+    /// Find the section containing `frame`, or `None`.
+    pub fn section_containing(&self, frame: usize) -> Option<&LoadSection> {
+        self.sections.iter().find(|s| s.contains(frame))
+    }
+
+    /// Total number of loaded frames across all sections.
+    pub fn total_loaded(&self) -> usize {
+        self.sections.iter().map(|s| s.frame_count()).sum()
+    }
+
+    // -- Budget enforcement -------------------------------------------------
+
+    /// Clamp every section to fit within `total_frames` and `max_frames`
+    /// budget. This is the pure logic behind the `update_timeline_budget`
+    /// system.
+    pub fn enforce_budget(&mut self, max_frames: usize) {
+        if self.sections.len() == 1 {
+            self.sections[0].clamp(self.total_frames, max_frames);
+            return;
+        }
+
+        // Multi-section: give each section an equal share of the budget,
+        // then clamp individually.
+        let per_section = if self.sections.is_empty() {
+            0
+        } else {
+            (max_frames / self.sections.len()).max(1)
+        };
+        for section in &mut self.sections {
+            section.clamp(self.total_frames, per_section);
+        }
+    }
+
+    // -- Initialisation helpers ---------------------------------------------
+
+    /// Reset the timeline for a newly-loaded sequence.
+    pub fn init_sequence(&mut self, total_frames: usize, max_frames: usize) {
+        self.total_frames = total_frames;
+        self.playhead = 0;
+        let loaded = total_frames.min(max_frames);
+        self.sections = vec![LoadSection::new(0, loaded)];
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Pure functions — no Bevy, fully testable
+// ---------------------------------------------------------------------------
+
+/// Compute the `[lo, hi)` range of entities to keep spawned, given the
+/// playhead position, a render window size, and the active load section
+/// bounds.
+///
+/// The spawn window is centred on `playhead` with radius `window_size / 2`,
+/// then clamped to `[section_start, section_end)` ∩ `[0, total_frames)`.
+pub fn compute_spawn_window(
+    playhead: usize,
+    window_size: usize,
+    section_start: usize,
+    section_end: usize,
+    total_frames: usize,
+) -> (usize, usize) {
+    let half = window_size / 2;
+    let raw_lo = playhead.saturating_sub(half);
+    let raw_hi = (playhead + half + 1).min(total_frames);
+    let clamped_end = section_end.min(total_frames);
+    let lo = raw_lo.max(section_start);
+    let hi = raw_hi.min(clamped_end);
+    if lo >= hi {
+        (0, 0)
+    } else {
+        (lo, hi)
+    }
+}
+
+/// Distribute `num_sections` load sections of equal size across
+/// `total_frames`, consuming at most `max_frames` total loaded frames.
+///
+/// Sections are evenly spaced. Overlaps are resolved by pushing later
+/// sections rightward.
+pub fn distribute_sections(
+    total_frames: usize,
+    max_frames: usize,
+    num_sections: usize,
+) -> Vec<LoadSection> {
+    if num_sections == 0 || total_frames == 0 || max_frames == 0 {
+        return Vec::new();
+    }
+
+    let budget = max_frames.min(total_frames);
+    let per_section = (budget / num_sections).max(1);
+
+    if num_sections == 1 {
+        return vec![LoadSection::new(0, per_section.min(total_frames))];
+    }
+
+    // Evenly space section centres across the timeline
+    let mut sections = Vec::with_capacity(num_sections);
+    let slot_size = total_frames as f64 / num_sections as f64;
+
+    for i in 0..num_sections {
+        let center = (slot_size * (i as f64 + 0.5)) as usize;
+        let half = per_section / 2;
+        let mut start = center.saturating_sub(half);
+        let mut end = start + per_section;
+
+        // Clamp to total
+        if end > total_frames {
+            end = total_frames;
+            start = end.saturating_sub(per_section);
+        }
+
+        sections.push(LoadSection::new(start, end));
+    }
+
+    // Resolve overlaps: push later sections right
+    for i in 1..sections.len() {
+        if sections[i].start < sections[i - 1].end {
+            let count = sections[i].frame_count();
+            sections[i].start = sections[i - 1].end;
+            sections[i].end = (sections[i].start + count).min(total_frames);
+        }
+    }
+
+    sections
+}
+
+// ---------------------------------------------------------------------------
+// Bevy plugin + systems (thin wrappers)
+// ---------------------------------------------------------------------------
+
 pub struct SequencePlugin;
 
 impl Plugin for SequencePlugin {
@@ -121,7 +358,7 @@ impl Plugin for SequencePlugin {
             watch::WatchPlugin,
         ))
         .init_resource::<SequenceManager>()
-        .init_resource::<LoadSection>()
+        .init_resource::<Timeline>()
         .add_message::<SequenceEvent>()
         .add_systems(
             Update,
@@ -130,24 +367,26 @@ impl Plugin for SequencePlugin {
         )
         .add_systems(
             Update,
-            (
-                sync_ui_from_sequence_manager,
-                update_load_section_from_budget,
-            ),
+            (sync_ui_from_sequence_manager, update_timeline_budget),
         );
     }
 }
 
-/// System to update load section when memory budget changes
-fn update_load_section_from_budget(
-    mut load_section: ResMut<LoadSection>,
+/// System: enforce memory budget on the timeline's load sections.
+///
+/// Thin wrapper — reads `MemoryBudget` + `SequenceAssets`, calls
+/// `timeline.enforce_budget()`.
+fn update_timeline_budget(
+    mut timeline: ResMut<Timeline>,
     memory_budget: Res<MemoryBudget>,
     sequence_assets: Res<SequenceAssets>,
 ) {
-    // Only update if we have valid data and the section needs clamping
     if sequence_assets.total_frames == 0 {
         return;
     }
+
+    // Keep timeline.total_frames in sync (watch mode can add frames)
+    timeline.total_frames = sequence_assets.total_frames;
 
     let max_frames = if memory_budget.max_frames < usize::MAX {
         memory_budget.max_frames
@@ -155,37 +394,32 @@ fn update_load_section_from_budget(
         sequence_assets.total_frames
     };
 
-    let old_start = load_section.start;
-    let old_end = load_section.end;
+    // Snapshot for change detection
+    let old_sections = timeline.sections.clone();
 
-    // Clamp the load section to valid bounds
-    load_section.clamp(sequence_assets.total_frames, max_frames);
+    timeline.enforce_budget(max_frames);
 
-    // Log if section changed
-    if load_section.start != old_start || load_section.end != old_end {
+    if timeline.sections != old_sections {
         debug!(
-            "LoadSection clamped: [{}..{}) → [{}..{}) (total: {}, max: {})",
-            old_start,
-            old_end,
-            load_section.start,
-            load_section.end,
-            sequence_assets.total_frames,
-            max_frames
+            "Timeline budget enforced: {:?} → {:?} (total: {}, max: {})",
+            old_sections, timeline.sections, timeline.total_frames, max_frames,
         );
     }
 }
 
-/// Resource that manages the current sequence state.
+// ---------------------------------------------------------------------------
+// SequenceManager — playback controls + sequence metadata
+// ---------------------------------------------------------------------------
+
+/// Resource that manages playback state and the loaded sequence metadata.
 ///
-/// **Single source of truth** for playback. All systems that need to change
-/// frame, speed, or play/pause write here. `UiState::PlaybackState` is a
-/// read-only mirror populated by `sync_ui_from_sequence_manager`.
+/// **Not** the source of truth for the playhead — that lives in [`Timeline`].
+/// This resource owns `is_playing`, `speed`, `loop_enabled`, and the
+/// `Option<Sequence>` data.
 #[derive(Resource)]
 pub struct SequenceManager {
     /// Currently loaded sequence, if any
     pub current_sequence: Option<Sequence>,
-    /// Current frame index in the sequence
-    pub current_frame: usize,
     /// Whether playback is active
     pub is_playing: bool,
     /// Playback speed multiplier (1.0 = normal, 2.0 = double speed)
@@ -199,7 +433,6 @@ impl SequenceManager {
     pub fn new() -> Self {
         Self {
             current_sequence: None,
-            current_frame: 0,
             is_playing: false,
             speed: 1.0,
             loop_enabled: true,
@@ -211,7 +444,6 @@ impl Default for SequenceManager {
     fn default() -> Self {
         Self {
             current_sequence: None,
-            current_frame: 0,
             is_playing: false,
             speed: 1.0,
             loop_enabled: true,
@@ -220,54 +452,15 @@ impl Default for SequenceManager {
 }
 
 impl SequenceManager {
-    /// Load a new sequence
+    /// Load a new sequence (playhead reset is handled by Timeline)
     pub fn load_sequence(&mut self, sequence: Sequence) {
         self.current_sequence = Some(sequence);
-        self.current_frame = 0;
         self.is_playing = false;
     }
 
     /// Get the current sequence
     pub fn current_sequence(&self) -> Option<&Sequence> {
         self.current_sequence.as_ref()
-    }
-
-    /// Get the current frame path
-    pub fn current_frame_path(&self) -> Option<&PathBuf> {
-        self.current_sequence
-            .as_ref()?
-            .frame_path(self.current_frame)
-    }
-
-    /// Move to the next frame
-    pub fn next_frame(&mut self) -> bool {
-        if let Some(sequence) = &self.current_sequence {
-            if self.current_frame + 1 < sequence.frame_count() {
-                self.current_frame += 1;
-                return true;
-            }
-        }
-        false
-    }
-
-    /// Move to the previous frame
-    pub fn previous_frame(&mut self) -> bool {
-        if self.current_frame > 0 {
-            self.current_frame -= 1;
-            return true;
-        }
-        false
-    }
-
-    /// Jump to a specific frame
-    pub fn jump_to_frame(&mut self, frame: usize) -> bool {
-        if let Some(sequence) = &self.current_sequence {
-            if frame < sequence.frame_count() {
-                self.current_frame = frame;
-                return true;
-            }
-        }
-        false
     }
 
     /// Toggle playback
@@ -285,10 +478,15 @@ impl SequenceManager {
 // Systems
 // ---------------------------------------------------------------------------
 
-/// Timer-based auto-advance. Reads `sequence_manager.speed` and
-/// `sequence_manager.loop_enabled`. Writes `sequence_manager.current_frame`.
-fn advance_playback(mut sm: ResMut<SequenceManager>, time: Res<Time>, mut accumulator: Local<f32>) {
-    if !sm.is_playing || sm.current_sequence.is_none() {
+/// Timer-based auto-advance. Reads `SequenceManager` for playback state,
+/// writes `Timeline.playhead`.
+fn advance_playback(
+    mut sm: ResMut<SequenceManager>,
+    mut timeline: ResMut<Timeline>,
+    time: Res<Time>,
+    mut accumulator: Local<f32>,
+) {
+    if !sm.is_playing || timeline.total_frames == 0 {
         *accumulator = 0.0;
         return;
     }
@@ -299,11 +497,10 @@ fn advance_playback(mut sm: ResMut<SequenceManager>, time: Res<Time>, mut accumu
     while *accumulator >= frame_duration {
         *accumulator -= frame_duration;
 
-        let total = sm.current_sequence().map(|s| s.frame_count()).unwrap_or(0);
-        if sm.current_frame + 1 < total {
-            sm.current_frame += 1;
+        if timeline.playhead + 1 < timeline.total_frames {
+            timeline.playhead += 1;
         } else if sm.loop_enabled {
-            sm.current_frame = 0;
+            timeline.playhead = 0;
         } else {
             sm.is_playing = false;
             *accumulator = 0.0;
@@ -312,19 +509,15 @@ fn advance_playback(mut sm: ResMut<SequenceManager>, time: Res<Time>, mut accumu
     }
 }
 
-/// One-way sync: `SequenceManager` → `UiState::PlaybackState` for display.
-///
-/// Also syncs loading state from `SequenceAssets` so the UI panel has
-/// everything it needs without borrowing resources directly.
+/// One-way sync: `SequenceManager` + `Timeline` → `UiState` for display.
 fn sync_ui_from_sequence_manager(
     sm: Res<SequenceManager>,
+    timeline: Res<Timeline>,
     mut ui_state: ResMut<UiState>,
     sequence_assets: Res<SequenceAssets>,
 ) {
-    if let Some(seq) = sm.current_sequence() {
-        ui_state.playback.total_frames = seq.frame_count();
-    }
-    ui_state.playback.current_frame = sm.current_frame;
+    ui_state.playback.total_frames = timeline.total_frames;
+    ui_state.playback.current_frame = timeline.playhead;
     ui_state.playback.is_playing = sm.is_playing;
     ui_state.playback.speed = sm.speed;
     ui_state.playback.loop_enabled = sm.loop_enabled;
@@ -332,6 +525,10 @@ fn sync_ui_from_sequence_manager(
     // Sync loading state
     ui_state.loading.update_from_assets(&sequence_assets);
 }
+
+// ---------------------------------------------------------------------------
+// Sequence + FrameInfo (unchanged)
+// ---------------------------------------------------------------------------
 
 /// Represents a sequence of mesh files
 #[derive(Debug, Clone)]
@@ -412,11 +609,10 @@ impl FrameInfo {
     pub fn new(path: PathBuf, frame_number: usize) -> Self {
         let filename = path
             .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown")
             .to_string();
         let file_size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-
         Self {
             path,
             frame_number,
@@ -426,8 +622,12 @@ impl FrameInfo {
     }
 }
 
-/// Events related to sequence operations
-#[derive(Message, Debug)]
+// ---------------------------------------------------------------------------
+// Events
+// ---------------------------------------------------------------------------
+
+/// Events emitted by the sequence system
+#[derive(Message, Debug, Clone)]
 pub enum SequenceEvent {
     /// A new sequence was loaded
     #[allow(dead_code)]
@@ -449,6 +649,10 @@ pub enum SequenceEvent {
     #[allow(dead_code)]
     Error(String),
 }
+
+// ===========================================================================
+// Tests
+// ===========================================================================
 
 #[cfg(test)]
 mod tests {
@@ -643,5 +847,285 @@ mod tests {
         let mut ls = LoadSection::new(0, 50);
         ls.center_on(200, 1000);
         assert_eq!(ls.frame_count(), 50);
+    }
+
+    // -----------------------------------------------------------------------
+    // Timeline basics
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_timeline_new() {
+        let tl = Timeline::new(100, 50);
+        assert_eq!(tl.total_frames, 100);
+        assert_eq!(tl.playhead, 0);
+        assert_eq!(tl.sections.len(), 1);
+        assert_eq!(tl.sections[0], LoadSection::new(0, 50));
+    }
+
+    #[test]
+    fn test_timeline_new_clamps_to_total() {
+        let tl = Timeline::new(30, 100);
+        assert_eq!(tl.sections[0], LoadSection::new(0, 30));
+    }
+
+    #[test]
+    fn test_timeline_default() {
+        let tl = Timeline::default();
+        assert_eq!(tl.total_frames, 0);
+        assert_eq!(tl.playhead, 0);
+        assert_eq!(tl.sections.len(), 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // Timeline playhead
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_next_frame() {
+        let mut tl = Timeline::new(10, 10);
+        assert!(tl.next_frame());
+        assert_eq!(tl.playhead, 1);
+    }
+
+    #[test]
+    fn test_next_frame_at_end() {
+        let mut tl = Timeline::new(10, 10);
+        tl.playhead = 9;
+        assert!(!tl.next_frame());
+        assert_eq!(tl.playhead, 9);
+    }
+
+    #[test]
+    fn test_previous_frame() {
+        let mut tl = Timeline::new(10, 10);
+        tl.playhead = 5;
+        assert!(tl.previous_frame());
+        assert_eq!(tl.playhead, 4);
+    }
+
+    #[test]
+    fn test_previous_frame_at_start() {
+        let mut tl = Timeline::new(10, 10);
+        assert!(!tl.previous_frame());
+        assert_eq!(tl.playhead, 0);
+    }
+
+    #[test]
+    fn test_jump_to_frame() {
+        let mut tl = Timeline::new(100, 100);
+        assert!(tl.jump_to_frame(50));
+        assert_eq!(tl.playhead, 50);
+    }
+
+    #[test]
+    fn test_jump_to_frame_out_of_bounds() {
+        let mut tl = Timeline::new(100, 100);
+        assert!(!tl.jump_to_frame(100));
+        assert_eq!(tl.playhead, 0);
+        assert!(!tl.jump_to_frame(200));
+        assert_eq!(tl.playhead, 0);
+    }
+
+    #[test]
+    fn test_jump_to_frame_empty() {
+        let mut tl = Timeline::default();
+        assert!(!tl.jump_to_frame(0));
+    }
+
+    // -----------------------------------------------------------------------
+    // Timeline section helpers
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_section_convenience() {
+        let tl = Timeline::new(100, 50);
+        assert_eq!(tl.section(), &LoadSection::new(0, 50));
+    }
+
+    #[test]
+    fn test_section_containing() {
+        let mut tl = Timeline::new(1000, 100);
+        tl.sections = vec![LoadSection::new(0, 100), LoadSection::new(500, 600)];
+        assert!(tl.section_containing(50).is_some());
+        assert!(tl.section_containing(550).is_some());
+        assert!(tl.section_containing(300).is_none());
+    }
+
+    #[test]
+    fn test_total_loaded() {
+        let mut tl = Timeline::new(1000, 100);
+        tl.sections = vec![LoadSection::new(0, 100), LoadSection::new(500, 600)];
+        assert_eq!(tl.total_loaded(), 200);
+    }
+
+    // -----------------------------------------------------------------------
+    // Timeline::enforce_budget
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_enforce_budget_single_section() {
+        let mut tl = Timeline::new(1000, 1000);
+        tl.enforce_budget(100);
+        assert_eq!(tl.sections[0], LoadSection::new(0, 100));
+    }
+
+    #[test]
+    fn test_enforce_budget_already_within() {
+        let mut tl = Timeline::new(1000, 50);
+        tl.enforce_budget(100);
+        assert_eq!(tl.sections[0], LoadSection::new(0, 50));
+    }
+
+    #[test]
+    fn test_enforce_budget_multi_section() {
+        let mut tl = Timeline::new(1000, 100);
+        tl.sections = vec![LoadSection::new(0, 500), LoadSection::new(500, 1000)];
+        tl.enforce_budget(200);
+        // Each section gets 100
+        assert_eq!(tl.sections[0].frame_count(), 100);
+        assert_eq!(tl.sections[1].frame_count(), 100);
+    }
+
+    // -----------------------------------------------------------------------
+    // Timeline::init_sequence
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_init_sequence() {
+        let mut tl = Timeline::default();
+        tl.playhead = 42;
+        tl.init_sequence(500, 100);
+        assert_eq!(tl.total_frames, 500);
+        assert_eq!(tl.playhead, 0);
+        assert_eq!(tl.sections.len(), 1);
+        assert_eq!(tl.sections[0], LoadSection::new(0, 100));
+    }
+
+    #[test]
+    fn test_init_sequence_budget_exceeds_total() {
+        let mut tl = Timeline::default();
+        tl.init_sequence(50, 200);
+        assert_eq!(tl.sections[0], LoadSection::new(0, 50));
+    }
+
+    // -----------------------------------------------------------------------
+    // compute_spawn_window
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_spawn_window_basic() {
+        // window_size=5 centered on frame 50, section [0, 100), total 100
+        let (lo, hi) = compute_spawn_window(50, 5, 0, 100, 100);
+        assert_eq!(lo, 48); // 50 - 2
+        assert_eq!(hi, 53); // 50 + 2 + 1
+    }
+
+    #[test]
+    fn test_spawn_window_clamps_to_section() {
+        // Playhead at 5, window_size=20, but section only [0, 10)
+        let (lo, hi) = compute_spawn_window(5, 20, 0, 10, 100);
+        assert_eq!(lo, 0);
+        assert_eq!(hi, 10);
+    }
+
+    #[test]
+    fn test_spawn_window_playhead_outside_section() {
+        // Playhead at 200, section [0, 100)
+        let (lo, hi) = compute_spawn_window(200, 5, 0, 100, 500);
+        // raw_lo=198, raw_hi=203, clamped to [0,100) → lo=198 > hi=100 → empty
+        assert_eq!((lo, hi), (0, 0));
+    }
+
+    #[test]
+    fn test_spawn_window_near_start() {
+        let (lo, hi) = compute_spawn_window(1, 10, 0, 100, 100);
+        assert_eq!(lo, 0);
+        // half = 5, raw_lo = 1-5 = 0 (saturating), raw_hi = 1+5+1 = 7
+        // clamped: lo = max(0, 0) = 0, hi = min(7, 100) = 7
+        assert_eq!(hi, 7);
+    }
+
+    #[test]
+    fn test_spawn_window_near_end() {
+        let (lo, hi) = compute_spawn_window(98, 10, 0, 100, 100);
+        // half=5, raw_lo=93, raw_hi=104 → clamped to 100
+        assert_eq!(lo, 93);
+        assert_eq!(hi, 100);
+    }
+
+    #[test]
+    fn test_spawn_window_section_offset() {
+        // Section starts at 50
+        let (lo, hi) = compute_spawn_window(52, 5, 50, 100, 100);
+        // raw_lo=50, raw_hi=55, section_start=50 → lo=50, hi=55
+        assert_eq!(lo, 50);
+        assert_eq!(hi, 55);
+    }
+
+    // -----------------------------------------------------------------------
+    // distribute_sections
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_distribute_single() {
+        let sections = distribute_sections(100, 50, 1);
+        assert_eq!(sections.len(), 1);
+        assert_eq!(sections[0], LoadSection::new(0, 50));
+    }
+
+    #[test]
+    fn test_distribute_two() {
+        let sections = distribute_sections(100, 50, 2);
+        assert_eq!(sections.len(), 2);
+        let total: usize = sections.iter().map(|s| s.frame_count()).sum();
+        assert!(total <= 50);
+        // Both sections should be within [0, 100)
+        for s in &sections {
+            assert!(s.end <= 100);
+        }
+        // No overlap
+        assert!(sections[0].end <= sections[1].start);
+    }
+
+    #[test]
+    fn test_distribute_budget_larger_than_total() {
+        let sections = distribute_sections(30, 100, 2);
+        assert_eq!(sections.len(), 2);
+        let total: usize = sections.iter().map(|s| s.frame_count()).sum();
+        assert!(total <= 30);
+    }
+
+    #[test]
+    fn test_distribute_zero_sections() {
+        assert!(distribute_sections(100, 50, 0).is_empty());
+    }
+
+    #[test]
+    fn test_distribute_zero_frames() {
+        assert!(distribute_sections(0, 50, 2).is_empty());
+    }
+
+    #[test]
+    fn test_distribute_zero_budget() {
+        assert!(distribute_sections(100, 0, 2).is_empty());
+    }
+
+    #[test]
+    fn test_distribute_many_sections() {
+        let sections = distribute_sections(1000, 200, 4);
+        assert_eq!(sections.len(), 4);
+        let total: usize = sections.iter().map(|s| s.frame_count()).sum();
+        assert!(total <= 200);
+        // No overlaps
+        for i in 1..sections.len() {
+            assert!(
+                sections[i].start >= sections[i - 1].end,
+                "Overlap between section {} and {}: {:?} vs {:?}",
+                i - 1,
+                i,
+                sections[i - 1],
+                sections[i],
+            );
+        }
     }
 }
