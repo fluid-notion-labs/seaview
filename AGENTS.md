@@ -2,9 +2,37 @@
 
 This project uses **bd** (beads) for issue tracking. Run `bd onboard` to get started.
 
+## Starting a Session
+
+**Always start here:**
+
+```bash
+bd show seaview-437   # Load session context — architecture, state, what to do next
+bd ready              # See available work
+```
+
+Issue **seaview-437** is the living session context. It is always open (P0) and contains the full project state, architecture overview, open issues, and handoff notes from the last session. **Read it first.**
+
+## `!context` Command
+
+When the user says **`!context`**, update seaview-437's notes with the current session state:
+
+```bash
+bd update seaview-437 --notes "## Session Context (DATE)
+### Branch: ...
+### What was done ...
+### Architecture ...
+### What needs to happen next ...
+### Open issues ...
+### Test status ..."
+```
+
+This issue is **never closed**. Always update it before ending a session.
+
 ## Quick Reference
 
 ```bash
+bd show seaview-437   # Session context (read first!)
 bd ready              # Find available work
 bd show <id>          # View issue details
 bd update <id> --status in_progress  # Claim work
