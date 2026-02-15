@@ -786,6 +786,7 @@ fn update_timeline_budget(
     mut timeline: ResMut<Timeline>,
     memory_budget: Res<MemoryBudget>,
     sequence_assets: Res<SequenceAssets>,
+    mut last_max_frames: Local<usize>,
 ) {
     if sequence_assets.total_frames == 0 {
         return;
@@ -802,19 +803,23 @@ fn update_timeline_budget(
     // which would cause `sync_section_loads` to re-evaluate needlessly.
     let needs_total_sync = timeline.total_frames != sequence_assets.total_frames;
 
-    let active_loaded: usize = timeline
-        .sections
-        .iter()
-        .filter(|s| s.active)
-        .map(|s| s.frame_count())
-        .sum();
     let any_past_end = timeline
         .sections
         .iter()
         .any(|s| s.end > sequence_assets.total_frames);
-    let needs_budget_enforce = active_loaded > max_frames || any_past_end;
+
+    // Only auto-enforce budget when the budget itself has DECREASED or
+    // sections extend past total_frames.  We must not re-enforce every
+    // frame just because active_loaded > max_frames — the user may have
+    // explicitly activated a section via the UI, and enforce_budget would
+    // immediately undo that choice (furthest-from-playhead gets
+    // deactivated).  The user-triggered paths (activate_section,
+    // add_section, add_section_at) already call enforce_budget internally.
+    let budget_decreased = max_frames < *last_max_frames;
+    let needs_budget_enforce = budget_decreased || any_past_end;
 
     if !needs_total_sync && !needs_budget_enforce {
+        *last_max_frames = max_frames;
         return; // Nothing to do — skip DerefMut to avoid change-detection churn.
     }
 
@@ -823,7 +828,11 @@ fn update_timeline_budget(
 
     let old_sections = timeline.sections.clone();
 
-    timeline.enforce_budget(max_frames);
+    if needs_budget_enforce {
+        timeline.enforce_budget(max_frames);
+    }
+
+    *last_max_frames = max_frames;
 
     if timeline.sections != old_sections {
         debug!(
