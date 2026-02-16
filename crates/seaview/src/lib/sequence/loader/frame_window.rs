@@ -158,7 +158,7 @@ pub(super) fn manage_frame_window(
     }
     if despawns > 0 {
         let rss_after_despawn = rss_mb();
-        info!(
+        debug!(
             "manage_frame_window: despawned {} entities (demote ok: {}, fail: {}) | RSS {:.1} → {:.1} MB (Δ {:.1})",
             despawns, demote_ok, demote_fail,
             rss_before_despawn, rss_after_despawn, rss_after_despawn - rss_before_despawn,
@@ -231,7 +231,7 @@ pub(super) fn manage_frame_window(
             .iter()
             .filter(|e| e.is_some())
             .count();
-        info!(
+        debug!(
             "Frame windows changed: {:?} → {:?}, current frame: {} | handles: {}, entities: {}, RSS: {:.1} MB",
             *prev_windows, new_windows, current,
             active_handles, live_entities, rss_mb(),
