@@ -254,6 +254,7 @@ fn setup(
     mut commands: Commands,
     _meshes: ResMut<Assets<Mesh>>,
     _materials: ResMut<Assets<StandardMaterial>>,
+    _asset_server: Res<AssetServer>,
     settings_res: Res<SettingsResource>,
     global_settings: Res<GlobalSettings>,
     mut sequence_manager: ResMut<seaview::sequence::SequenceManager>,
@@ -279,7 +280,8 @@ fn setup(
     // Store all named cameras for runtime switching (Phase 4 UI)
     commands.insert_resource(settings_res.settings.to_saved_cameras());
 
-    // Spawn the FPS camera with HDR, MSAA off, and SSR enabled (deferred rendering)
+    // Spawn the FPS camera with HDR, MSAA off, and SSR enabled (deferred rendering).
+    // Environment map (IBL + skybox) is managed by sync_environment_map system.
     commands.spawn((
         Camera3d::default(),
         camera_transform,

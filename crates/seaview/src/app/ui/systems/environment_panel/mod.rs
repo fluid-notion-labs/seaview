@@ -28,10 +28,16 @@ use bevy_egui::{egui, EguiContexts};
 use crate::app::systems::bvh_gizmos::BvhGizmoConfig;
 use crate::app::systems::diagnostics::RenderingStats;
 use crate::app::ui::state::{MaterialConfig, RenderConfig, UiState};
-use crate::lib::lighting::{EnvironmentLightConfig, LightingRig};
+use crate::lib::lighting::{
+    EnvironmentLightConfig, EnvironmentMapCatalog, EnvironmentMapConfig, LightingRig,
+};
 use crate::lib::mesh_info::MeshDimensions;
 use crate::lib::sequence::loader::spatial_index::SpatialIndex;
 use crate::lib::sequence::FrameStore;
+
+// ---------------------------------------------------------------------------
+// Panel system
+// ---------------------------------------------------------------------------
 
 /// System that renders the environment panel (left sidebar).
 ///
@@ -45,6 +51,8 @@ pub fn environment_panel_system(
     mut gen_state: Local<GenerateGroupState>,
     mut material_config: ResMut<MaterialConfig>,
     mut render_config: ResMut<RenderConfig>,
+    mut env_map_config: ResMut<EnvironmentMapConfig>,
+    env_map_catalog: Res<EnvironmentMapCatalog>,
     mesh_dims: Res<MeshDimensions>,
     frame_store: Res<FrameStore>,
     spatial_index: Option<Res<SpatialIndex>>,
@@ -72,6 +80,78 @@ pub fn environment_panel_system(
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
+                    // ── Environment Map (IBL + Skybox) ─────────────────
+                    egui::CollapsingHeader::new("Environment Map")
+                        .default_open(false)
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.checkbox(&mut env_map_config.enabled, "Enabled");
+                            });
+
+                            if !env_map_config.enabled {
+                                ui.label(
+                                    egui::RichText::new("IBL reflections and skybox are off")
+                                        .small()
+                                        .color(egui::Color32::from_gray(120)),
+                                );
+                            } else {
+                                // Map selector
+                                let selected_name = env_map_config
+                                    .selected
+                                    .and_then(|i| env_map_catalog.entries.get(i))
+                                    .map(|e| e.name.as_str())
+                                    .unwrap_or("None");
+
+                                ui.horizontal(|ui| {
+                                    ui.label("Map");
+                                    egui::ComboBox::from_id_salt("env_map_select")
+                                        .width(ui.available_width() - 4.0)
+                                        .selected_text(selected_name)
+                                        .show_ui(ui, |ui| {
+                                            // "None" option
+                                            let is_none = env_map_config.selected.is_none();
+                                            if ui.selectable_label(is_none, "None").clicked() {
+                                                env_map_config.selected = None;
+                                            }
+                                            ui.separator();
+                                            for (idx, entry) in
+                                                env_map_catalog.entries.iter().enumerate()
+                                            {
+                                                let selected = env_map_config.selected == Some(idx);
+                                                if ui
+                                                    .selectable_label(selected, &entry.name)
+                                                    .clicked()
+                                                    && !selected
+                                                {
+                                                    env_map_config.selected = Some(idx);
+                                                }
+                                            }
+                                        });
+                                });
+
+                                ui.add_space(3.0);
+
+                                // Intensity slider
+                                ui.add(
+                                    egui::Slider::new(&mut env_map_config.intensity, 0.0..=5000.0)
+                                        .text("IBL intensity")
+                                        .logarithmic(true),
+                                );
+
+                                // Skybox brightness slider
+                                ui.add(
+                                    egui::Slider::new(
+                                        &mut env_map_config.skybox_brightness,
+                                        0.0..=5000.0,
+                                    )
+                                    .text("Sky brightness")
+                                    .logarithmic(true),
+                                );
+                            }
+                        });
+
+                    ui.add_space(5.0);
+
                     // ── Environment Light ──────────────────────────────
                     egui::CollapsingHeader::new("Environment Light")
                         .default_open(ui_state.collapsible.environment_light_open)

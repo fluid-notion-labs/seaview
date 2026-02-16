@@ -6,12 +6,19 @@
 
 use bevy::prelude::*;
 
+pub mod environment_map;
 pub mod placement;
+pub mod presets;
 pub mod rig;
 pub mod rig_sync;
 pub mod systems;
 
+pub use environment_map::{
+    EnvironmentMapActive, EnvironmentMapCatalog, EnvironmentMapConfig, EnvironmentMapEntry,
+    sync_environment_map,
+};
 pub use placement::PlacementAlgorithm;
+pub use presets::{EnvironmentPreset, MaterialPreset};
 pub use rig::{
     auto_group_name, compute_placement_bounds, Light, LightGroup, LightGroupGenConfig, LightingRig,
 };
@@ -63,14 +70,21 @@ pub struct NightLightingPlugin;
 
 impl Plugin for NightLightingPlugin {
     fn build(&self, app: &mut App) {
+        // Build the environment map catalog with known maps
+        let mut catalog = EnvironmentMapCatalog::default();
+        catalog.register("Pisa", "pisa");
+
         app.insert_resource(EnvironmentLightConfig::default())
             .insert_resource(LightingRig::default())
             .insert_resource(LightEntityMap::default())
+            .insert_resource(EnvironmentMapConfig::default())
+            .insert_resource(catalog)
             .add_systems(
                 Update,
                 (
                     systems::apply_environment_light,
                     rig_sync::sync_lighting_rig,
+                    sync_environment_map,
                 ),
             );
     }
