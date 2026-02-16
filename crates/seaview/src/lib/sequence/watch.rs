@@ -8,7 +8,8 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use super::{FrameInfo, Sequence, SequenceAssets, SequenceManager};
+use super::loader::AssetIndex;
+use super::{FrameInfo, FrameStore, Sequence, SequenceManager};
 
 /// Plugin for watch mode functionality
 pub struct WatchPlugin;
@@ -173,13 +174,13 @@ fn init_watch_state_from_sequence(
     mut watch_state: ResMut<WatchState>,
     mut loading_phase: ResMut<LoadingPhase>,
     watch_config: Res<WatchConfig>,
-    sequence_assets: Res<SequenceAssets>,
+    frame_store: Res<FrameStore>,
 ) {
     // Wait for initial load to complete before initializing watch state
     if !watch_state.initialized {
         if let Some(sequence) = sequence_manager.current_sequence() {
             // Only initialize once we have frames loaded
-            if sequence_assets.loaded_count > 0 && !sequence_assets.loading {
+            if frame_store.loaded_count > 0 && !frame_store.loading {
                 watch_state.init_from_sequence(sequence);
                 debug!(
                     "Watch state initialized with {} known frames",
@@ -256,7 +257,8 @@ fn poll_for_new_frames(
 fn handle_incremental_load(
     mut incremental_requests: MessageReader<IncrementalLoadRequest>,
     mut sequence_manager: ResMut<SequenceManager>,
-    mut sequence_assets: ResMut<SequenceAssets>,
+    mut frame_store: ResMut<FrameStore>,
+    mut asset_index: ResMut<AssetIndex>,
 ) {
     for request in incremental_requests.read() {
         debug!(
@@ -289,29 +291,29 @@ fn handle_incremental_load(
         // Actual asset loading is handled by `sync_section_loads` which
         // only loads frames within the timeline's budget sections.
         for path in &request.frame_paths {
-            sequence_assets.frame_paths.push(path.clone());
-            sequence_assets.frame_handles.push(None);
-            sequence_assets.loaded_frames.push(false);
-            sequence_assets.frame_entities.push(None);
-            sequence_assets.gltf_handles.push(None);
+            frame_store.frame_paths.push(path.clone());
+            frame_store.frame_handles.push(None);
+            frame_store.loaded_frames.push(false);
+            frame_store.frame_entities.push(None);
+            asset_index.gltf_handles.push(None);
         }
 
         // Update total frames and mark as loading so sync_section_loads
         // picks up the new frames on the next tick.
-        sequence_assets.total_frames += request.frame_paths.len();
-        sequence_assets.loading = true;
+        frame_store.total_frames += request.frame_paths.len();
+        frame_store.loading = true;
 
         debug!(
             "Started incremental load of {} frames, total now {}",
             request.frame_paths.len(),
-            sequence_assets.total_frames
+            frame_store.total_frames
         );
     }
 }
 
 /// System that transitions back to Watching state when incremental load completes
 fn update_loading_phase_on_load_complete(
-    sequence_assets: Res<SequenceAssets>,
+    frame_store: Res<FrameStore>,
     mut loading_phase: ResMut<LoadingPhase>,
     mut watch_state: ResMut<WatchState>,
     watch_config: Res<WatchConfig>,
@@ -319,11 +321,10 @@ fn update_loading_phase_on_load_complete(
     // Check if we just finished an incremental load
     if loading_phase.state == LoadingPhaseState::IncrementalLoad {
         // Detect load completion by checking if loaded count increased and loading stopped
-        if !sequence_assets.loading && sequence_assets.loaded_count > watch_state.prev_loaded_count
-        {
+        if !frame_store.loading && frame_store.loaded_count > watch_state.prev_loaded_count {
             debug!(
                 "Incremental load complete: {} frames now loaded",
-                sequence_assets.loaded_count
+                frame_store.loaded_count
             );
 
             // Transition back to watching if still enabled
@@ -338,7 +339,7 @@ fn update_loading_phase_on_load_complete(
 
     // Also handle transition from InitialLoading to Watching
     if loading_phase.state == LoadingPhaseState::InitialLoading {
-        if !sequence_assets.loading && sequence_assets.is_fully_loaded() {
+        if !frame_store.loading && frame_store.is_fully_loaded() {
             if watch_config.enabled {
                 loading_phase.state = LoadingPhaseState::Watching;
                 debug!("Initial load complete, transitioning to Watching");
@@ -349,7 +350,7 @@ fn update_loading_phase_on_load_complete(
     }
 
     // Track loaded count for next frame
-    watch_state.prev_loaded_count = sequence_assets.loaded_count;
+    watch_state.prev_loaded_count = frame_store.loaded_count;
 }
 
 /// A file that's been discovered and confirmed stable

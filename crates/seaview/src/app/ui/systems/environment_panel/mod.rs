@@ -27,7 +27,7 @@ use crate::app::systems::diagnostics::RenderingStats;
 use crate::app::ui::state::{MaterialConfig, RenderConfig, UiState};
 use crate::lib::lighting::{EnvironmentLightConfig, LightingRig};
 use crate::lib::mesh_info::MeshDimensions;
-use crate::lib::sequence::SequenceAssets;
+use crate::lib::sequence::FrameStore;
 
 /// System that renders the environment panel (left sidebar).
 ///
@@ -42,7 +42,7 @@ pub fn environment_panel_system(
     mut material_config: ResMut<MaterialConfig>,
     mut render_config: ResMut<RenderConfig>,
     mesh_dims: Res<MeshDimensions>,
-    sequence_assets: Res<SequenceAssets>,
+    frame_store: Res<FrameStore>,
     diagnostics: Res<DiagnosticsStore>,
     rendering_stats: Res<RenderingStats>,
 ) {
@@ -102,12 +102,7 @@ pub fn environment_panel_system(
                     ui.add_space(5.0);
 
                     // ── Rendering ──────────────────────────────────────
-                    render_rendering_section(
-                        ui,
-                        &mut ui_state,
-                        &mut render_config,
-                        &sequence_assets,
-                    );
+                    render_rendering_section(ui, &mut ui_state, &mut render_config, &frame_store);
 
                     ui.add_space(5.0);
 

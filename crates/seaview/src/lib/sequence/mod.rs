@@ -36,7 +36,7 @@ use crate::lib::memory_budget::MemoryBudget;
 
 // Re-export commonly used types from loader
 pub use loader::{
-    FrameLoadedEvent, LoadSequenceRequest, LoadingStats, MeshFileFormat, SequenceAssets,
+    FrameLoadedEvent, FrameStore, LoadSequenceRequest, LoaderConfig, LoadingStats, MeshFileFormat,
 };
 pub use watch::{LoadingPhase, LoadingPhaseState, WatchConfig, WatchPlugin};
 
@@ -780,33 +780,33 @@ impl Plugin for SequencePlugin {
 
 /// System: enforce memory budget on the timeline's load sections.
 ///
-/// Thin wrapper — reads `MemoryBudget` + `SequenceAssets`, calls
+/// Thin wrapper — reads `MemoryBudget` + `FrameStore`, calls
 /// `timeline.enforce_budget()`.
 fn update_timeline_budget(
     mut timeline: ResMut<Timeline>,
     memory_budget: Res<MemoryBudget>,
-    sequence_assets: Res<SequenceAssets>,
+    frame_store: Res<FrameStore>,
     mut last_max_frames: Local<usize>,
 ) {
-    if sequence_assets.total_frames == 0 {
+    if frame_store.total_frames == 0 {
         return;
     }
 
     let max_frames = if memory_budget.max_frames < usize::MAX {
         memory_budget.max_frames
     } else {
-        sequence_assets.total_frames
+        frame_store.total_frames
     };
 
     // Check whether the timeline actually needs updating before taking a
     // mutable borrow — avoids triggering Bevy change-detection every frame
     // which would cause `sync_section_loads` to re-evaluate needlessly.
-    let needs_total_sync = timeline.total_frames != sequence_assets.total_frames;
+    let needs_total_sync = timeline.total_frames != frame_store.total_frames;
 
     let any_past_end = timeline
         .sections
         .iter()
-        .any(|s| s.end > sequence_assets.total_frames);
+        .any(|s| s.end > frame_store.total_frames);
 
     // Only auto-enforce budget when the budget itself has DECREASED or
     // sections extend past total_frames.  We must not re-enforce every
@@ -824,7 +824,7 @@ fn update_timeline_budget(
     }
 
     // Now take the mutable borrow.
-    timeline.total_frames = sequence_assets.total_frames;
+    timeline.total_frames = frame_store.total_frames;
 
     let old_sections = timeline.sections.clone();
 
@@ -973,7 +973,7 @@ fn sync_ui_from_sequence_manager(
     sm: Res<SequenceManager>,
     timeline: Res<Timeline>,
     mut ui_state: ResMut<UiState>,
-    sequence_assets: Res<SequenceAssets>,
+    frame_store: Res<FrameStore>,
 ) {
     ui_state.playback.total_frames = timeline.total_frames;
     ui_state.playback.current_frame = timeline.playhead;
@@ -982,7 +982,7 @@ fn sync_ui_from_sequence_manager(
     ui_state.playback.loop_enabled = sm.loop_enabled;
 
     // Sync loading state
-    ui_state.loading.update_from_assets(&sequence_assets);
+    ui_state.loading.update_from_frame_store(&frame_store);
 }
 
 // ---------------------------------------------------------------------------

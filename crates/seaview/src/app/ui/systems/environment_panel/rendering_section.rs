@@ -6,7 +6,7 @@
 use bevy_egui::egui;
 
 use crate::app::ui::state::{RenderConfig, UiState};
-use crate::lib::sequence::SequenceAssets;
+use crate::lib::sequence::FrameStore;
 
 /// Renders the rendering section inside an existing egui `Ui` context.
 ///
@@ -16,7 +16,7 @@ pub fn render_rendering_section(
     ui: &mut egui::Ui,
     ui_state: &mut UiState,
     render_config: &mut RenderConfig,
-    sequence_assets: &SequenceAssets,
+    frame_store: &FrameStore,
 ) {
     egui::CollapsingHeader::new("\u{1f5a5} Rendering")
         .default_open(ui_state.collapsible.rendering_open)
@@ -39,7 +39,7 @@ pub fn render_rendering_section(
             ui.label("Spawned entities around current frame:");
             ui.add_space(2.0);
 
-            let max_window = sequence_assets.total_frames.max(1);
+            let max_window = frame_store.total_frames.max(1);
             ui.add(
                 egui::Slider::new(
                     &mut render_config.frame_window_size,
@@ -52,12 +52,12 @@ pub fn render_rendering_section(
             ui.add_space(4.0);
 
             // Show current window stats
-            let spawned = sequence_assets
+            let spawned = frame_store
                 .frame_entities
                 .iter()
                 .filter(|e| e.is_some())
                 .count();
-            let total = sequence_assets.total_frames;
+            let total = frame_store.total_frames;
 
             egui::Grid::new("render_window_grid")
                 .num_columns(2)
@@ -69,7 +69,7 @@ pub fn render_rendering_section(
 
                     ui.label("Displayed:");
                     ui.label(
-                        sequence_assets
+                        frame_store
                             .displayed_frame
                             .map(|f| format!("Frame {}", f))
                             .unwrap_or_else(|| "\u{2014}".to_string()),
@@ -77,9 +77,9 @@ pub fn render_rendering_section(
                     ui.end_row();
 
                     if total > 0 {
-                        let current = sequence_assets.displayed_frame.unwrap_or(0);
+                        let current = frame_store.displayed_frame.unwrap_or(0);
                         let (lo, hi) =
-                            sequence_assets.window_range(current, render_config.frame_window_size);
+                            frame_store.window_range(current, render_config.frame_window_size);
                         ui.label("Window:");
                         ui.label(format!("[{}, {})", lo, hi));
                         ui.end_row();

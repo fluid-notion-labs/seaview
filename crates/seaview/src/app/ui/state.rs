@@ -6,7 +6,7 @@
 use bevy::prelude::*;
 use uuid::Uuid;
 
-use crate::lib::sequence::SequenceAssets;
+use crate::lib::sequence::FrameStore;
 use crate::lib::toast::ToastQueue;
 
 /// Configuration for the rendering frame window (ring buffer).
@@ -149,11 +149,11 @@ impl LoadingState {
         self.total_frames > 0 && self.loaded_frames >= self.total_frames
     }
 
-    /// Update from SequenceAssets resource
-    pub fn update_from_assets(&mut self, assets: &SequenceAssets) {
-        self.is_loading = assets.loading;
-        self.loaded_frames = assets.loaded_count;
-        self.total_frames = assets.total_frames;
+    /// Update from [`FrameStore`] resource.
+    pub fn update_from_frame_store(&mut self, store: &FrameStore) {
+        self.is_loading = store.loading;
+        self.loaded_frames = store.loaded_count;
+        self.total_frames = store.total_frames;
     }
 }
 

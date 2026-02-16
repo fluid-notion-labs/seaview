@@ -34,6 +34,21 @@
 //!   sudden batch of new GPU uploads.
 //! - **[`sync_section_loads`]** — only recomputes the needed-frame set when
 //!   the [`Timeline`] actually changed (Bevy change detection).
+//!
+//! ## Resource Split
+//!
+//! Frame data is divided into three focused resources:
+//!
+//! - **[`FrameStore`]** — public, read-heavy: frame handles, paths, entities,
+//!   loading state, progress.  Read by UI and loader systems alike.
+//! - **[`LoaderConfig`]** — semi-public: material handle and coordinate
+//!   transform determined by the loader on first frame load.  Read by
+//!   [`manage_frame_window`] when spawning entities.
+//! - **[`AssetIndex`]** — private to the loader: reverse `AssetId → frame`
+//!   maps and intermediate glTF handles.  Write-heavy, never read by UI.
+//!
+//! This separation lets Bevy schedule UI reads of [`FrameStore`] in parallel
+//! with loader writes to [`AssetIndex`].
 
 use bevy::asset::{AssetEvent, LoadState, RenderAssetUsages};
 use bevy::gltf::{Gltf, GltfLoaderSettings, GltfMesh};
@@ -118,7 +133,9 @@ pub struct SequenceLoaderPlugin;
 
 impl Plugin for SequenceLoaderPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<SequenceAssets>()
+        app.init_resource::<FrameStore>()
+            .init_resource::<LoaderConfig>()
+            .init_resource::<AssetIndex>()
             .init_resource::<LoadQueue>()
             .add_message::<FrameLoadedEvent>()
             .add_message::<LoadSequenceRequest>()
@@ -141,9 +158,13 @@ impl Plugin for SequenceLoaderPlugin {
 // Resources
 // ---------------------------------------------------------------------------
 
-/// Resource that holds all loaded mesh handles for the current sequence
+/// Public resource holding frame handles, paths, entities, and loading progress.
+///
+/// This is the read-heavy resource — UI systems and many loader systems need
+/// it.  Separating it from [`AssetIndex`] lets Bevy schedule UI reads in
+/// parallel with loader writes to the index maps.
 #[derive(Resource, Default)]
-pub struct SequenceAssets {
+pub struct FrameStore {
     /// Handles to loaded mesh frames (indexed by frame number).
     /// Each frame may contain multiple meshes (e.g. multi-object GLB files).
     /// `None` means the asset has not been requested from the server yet.
@@ -167,28 +188,12 @@ pub struct SequenceAssets {
     pub displayed_frame: Option<usize>,
     /// Detected file format for this sequence (set on first load request)
     pub format: Option<MeshFileFormat>,
-    /// Shared material handle (created once, cloned to each entity)
-    pub shared_material: Option<Handle<StandardMaterial>>,
-    /// Cached coordinate transform (set once when sequence loads)
-    pub coord_transform: Transform,
     /// Estimated GPU memory per frame in bytes (set after first frame loads)
     pub estimated_frame_bytes: u64,
-    /// O(1) reverse index from `AssetId<Mesh>` → frame index.
-    ///
-    /// Populated by [`drain_load_queue`] (STL) or [`extract_gltf_meshes`]
-    /// (GLB) and consumed by [`track_asset_loading`] to avoid a linear scan.
-    asset_id_to_frame: HashMap<AssetId<Mesh>, usize>,
-
-    /// Intermediate Gltf asset handles for GLB two-phase loading.
-    /// Phase 1: `drain_load_queue` loads the top-level `Gltf` asset.
-    /// Phase 2: `extract_gltf_meshes` extracts all mesh primitives.
-    pub(crate) gltf_handles: Vec<Option<Handle<Gltf>>>,
-    /// Reverse index from `AssetId<Gltf>` → frame index.
-    gltf_id_to_frame: HashMap<AssetId<Gltf>, usize>,
 }
 
-impl SequenceAssets {
-    /// Reset the sequence assets for a new sequence
+impl FrameStore {
+    /// Reset for a new sequence.
     pub fn reset(&mut self) {
         self.frame_handles.clear();
         self.frame_paths.clear();
@@ -199,20 +204,15 @@ impl SequenceAssets {
         self.displayed_frame = None;
         self.format = None;
         self.frame_entities.clear();
-        self.shared_material = None;
-        self.coord_transform = Transform::default();
         self.estimated_frame_bytes = 0;
-        self.asset_id_to_frame.clear();
-        self.gltf_handles.clear();
-        self.gltf_id_to_frame.clear();
     }
 
-    /// Check if all frames are loaded
+    /// Check if all frames are loaded.
     pub fn is_fully_loaded(&self) -> bool {
         self.total_frames > 0 && self.loaded_count >= self.total_frames
     }
 
-    /// Get loading progress as a percentage (0.0 to 1.0)
+    /// Get loading progress as a percentage (0.0 to 1.0).
     pub fn progress(&self) -> f32 {
         if self.total_frames == 0 {
             0.0
@@ -240,7 +240,7 @@ impl SequenceAssets {
             .map(|vec| vec.as_slice())
     }
 
-    /// Check if a specific frame's asset has finished loading
+    /// Check if a specific frame's asset has finished loading.
     pub fn is_frame_loaded(&self, index: usize) -> bool {
         self.loaded_frames.get(index).copied().unwrap_or(false)
     }
@@ -304,6 +304,72 @@ impl SequenceAssets {
         any
     }
 }
+
+/// Semi-public resource holding the material handle and coordinate transform
+/// determined by the loader when the first frame loads.
+///
+/// Read by [`manage_frame_window`] when spawning entities and by material
+/// systems.  Written only by [`extract_gltf_meshes`] and
+/// [`track_asset_loading`].
+#[derive(Resource)]
+pub struct LoaderConfig {
+    /// Shared material handle (created once, cloned to each entity)
+    pub shared_material: Option<Handle<StandardMaterial>>,
+    /// Cached coordinate transform (set once when sequence loads)
+    pub coord_transform: Transform,
+}
+
+impl Default for LoaderConfig {
+    fn default() -> Self {
+        Self {
+            shared_material: None,
+            coord_transform: Transform::default(),
+        }
+    }
+}
+
+impl LoaderConfig {
+    /// Reset for a new sequence.
+    pub fn reset(&mut self) {
+        self.shared_material = None;
+        self.coord_transform = Transform::default();
+    }
+}
+
+/// Loader-private resource holding reverse `AssetId → frame` index maps and
+/// intermediate glTF handles.
+///
+/// Write-heavy, only accessed by loader systems.  Separating it from
+/// [`FrameStore`] lets Bevy schedule UI reads in parallel.
+#[derive(Resource, Default)]
+pub(crate) struct AssetIndex {
+    /// O(1) reverse index from `AssetId<Mesh>` → frame index.
+    ///
+    /// Populated by [`drain_load_queue`] (STL) or [`extract_gltf_meshes`]
+    /// (GLB) and consumed by [`track_asset_loading`] to avoid a linear scan.
+    pub(crate) asset_id_to_frame: HashMap<AssetId<Mesh>, usize>,
+
+    /// Intermediate Gltf asset handles for GLB two-phase loading.
+    /// Phase 1: `drain_load_queue` loads the top-level `Gltf` asset.
+    /// Phase 2: `extract_gltf_meshes` extracts all mesh primitives.
+    pub(crate) gltf_handles: Vec<Option<Handle<Gltf>>>,
+
+    /// Reverse index from `AssetId<Gltf>` → frame index.
+    pub(crate) gltf_id_to_frame: HashMap<AssetId<Gltf>, usize>,
+}
+
+impl AssetIndex {
+    /// Reset for a new sequence.
+    pub(crate) fn reset(&mut self) {
+        self.asset_id_to_frame.clear();
+        self.gltf_handles.clear();
+        self.gltf_id_to_frame.clear();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// LoadQueue
+// ---------------------------------------------------------------------------
 
 /// A throttled queue of frame indices waiting to be sent to the asset server.
 ///
@@ -489,14 +555,16 @@ fn detect_sequence_format(paths: &[PathBuf]) -> Option<MeshFileFormat> {
 
 /// System that handles sequence load requests.
 ///
-/// Sets up `SequenceAssets` and `Timeline` for a new sequence but does **not**
-/// kick off any `asset_server.load()` calls itself.  Instead the needed frame
-/// indices are pushed into the [`LoadQueue`] and drained over subsequent
-/// frames by [`drain_load_queue`].
+/// Sets up [`FrameStore`], [`LoaderConfig`], [`AssetIndex`] and [`Timeline`]
+/// for a new sequence but does **not** kick off any `asset_server.load()`
+/// calls itself.  Instead the needed frame indices are pushed into the
+/// [`LoadQueue`] and drained over subsequent frames by [`drain_load_queue`].
 fn handle_load_requests(
     mut commands: Commands,
     mut load_requests: MessageReader<LoadSequenceRequest>,
-    mut sequence_assets: ResMut<SequenceAssets>,
+    mut frame_store: ResMut<FrameStore>,
+    mut loader_config: ResMut<LoaderConfig>,
+    mut asset_index: ResMut<AssetIndex>,
     mut timeline: ResMut<Timeline>,
     memory_budget: Res<MemoryBudget>,
     mut load_queue: ResMut<LoadQueue>,
@@ -528,7 +596,7 @@ fn handle_load_requests(
         };
 
         // Cleanup old sequence entities before resetting
-        for entity_opt in sequence_assets.frame_entities.iter() {
+        for entity_opt in frame_store.frame_entities.iter() {
             if let Some(entities) = entity_opt {
                 for entity in entities {
                     commands.entity(*entity).despawn();
@@ -536,21 +604,23 @@ fn handle_load_requests(
             }
         }
 
-        // Reset assets + queue for new sequence
-        sequence_assets.reset();
+        // Reset all resources + queue for new sequence
+        frame_store.reset();
+        loader_config.reset();
+        asset_index.reset();
         load_queue.clear();
 
         let n = request.frame_paths.len();
-        sequence_assets.total_frames = n;
-        sequence_assets.loading = true;
-        sequence_assets.format = Some(format);
+        frame_store.total_frames = n;
+        frame_store.loading = true;
+        frame_store.format = Some(format);
         // Pre-allocate vecs — handles start as None (loaded on demand)
-        sequence_assets.frame_handles = vec![None; n];
-        sequence_assets.frame_entities = vec![None; n];
-        sequence_assets.gltf_handles = vec![None; n];
-        sequence_assets.loaded_frames = vec![false; n];
+        frame_store.frame_handles = vec![None; n];
+        frame_store.frame_entities = vec![None; n];
+        frame_store.loaded_frames = vec![false; n];
+        asset_index.gltf_handles = vec![None; n];
         // Store all paths for on-demand loading
-        sequence_assets.frame_paths = request.frame_paths.clone();
+        frame_store.frame_paths = request.frame_paths.clone();
 
         // Initialize Timeline for the new sequence.
         // If the real budget isn't known yet (first load, no vertex data),
@@ -571,7 +641,7 @@ fn handle_load_requests(
 
         // Store base path from first frame
         if let Some(first_path) = request.frame_paths.first() {
-            sequence_assets.base_path = first_path.parent().map(|p| p.to_path_buf());
+            frame_store.base_path = first_path.parent().map(|p| p.to_path_buf());
         }
 
         // Enqueue frames for throttled loading instead of blasting them all
@@ -587,8 +657,8 @@ fn handle_load_requests(
             "Asset loading queued: {} {:?} frames (of {} total) from {:?}",
             load_queue.len(),
             format,
-            sequence_assets.total_frames,
-            sequence_assets.base_path
+            frame_store.total_frames,
+            frame_store.base_path
         );
     }
 }
@@ -603,14 +673,15 @@ fn handle_load_requests(
 /// all sections have their handle dropped immediately so the asset server can
 /// reclaim memory.
 fn sync_section_loads(
-    mut sequence_assets: ResMut<SequenceAssets>,
+    mut frame_store: ResMut<FrameStore>,
+    mut asset_index: ResMut<AssetIndex>,
     timeline: Res<Timeline>,
     mut load_queue: ResMut<LoadQueue>,
     mut prev_sections: Local<Vec<super::LoadSection>>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
     // Early-out: nothing to do if no sequence loaded.
-    if sequence_assets.total_frames == 0 {
+    if frame_store.total_frames == 0 {
         return;
     }
     // Only re-sync when sections actually changed (not on every playhead tick).
@@ -618,7 +689,7 @@ fn sync_section_loads(
         return;
     }
     *prev_sections = timeline.sections.clone();
-    let Some(_format) = sequence_assets.format else {
+    let Some(_format) = frame_store.format else {
         return;
     };
 
@@ -629,7 +700,7 @@ fn sync_section_loads(
 
     let rss_before = rss_mb();
 
-    let needed = frames_to_load(&timeline.sections, sequence_assets.total_frames);
+    let needed = frames_to_load(&timeline.sections, frame_store.total_frames);
 
     let mut loads_enqueued = 0usize;
 
@@ -637,8 +708,8 @@ fn sync_section_loads(
     for &idx in &needed {
         // For GLB, check gltf_handles too — the frame is "requested" once
         // either the mesh handles or the intermediate Gltf handle exists.
-        let has_handle = sequence_assets.frame_handles[idx].is_some()
-            || sequence_assets.gltf_handles[idx].is_some();
+        let has_handle =
+            frame_store.frame_handles[idx].is_some() || asset_index.gltf_handles[idx].is_some();
         if !has_handle {
             load_queue.push(idx);
             loads_enqueued += 1;
@@ -647,42 +718,42 @@ fn sync_section_loads(
 
     // Unload frames that are outside all sections (drop handle, reclaim memory).
     // Build a fast lookup of needed indices.
-    let mut is_needed = vec![false; sequence_assets.total_frames];
+    let mut is_needed = vec![false; frame_store.total_frames];
     for &idx in &needed {
         is_needed[idx] = true;
     }
     let mut unloads = 0usize;
     let mut handles_with_entities = 0usize;
     let mut meshes_removed = 0usize;
-    for idx in 0..sequence_assets.total_frames {
-        let has_handle = sequence_assets.frame_handles[idx].is_some()
-            || sequence_assets.gltf_handles[idx].is_some();
+    for idx in 0..frame_store.total_frames {
+        let has_handle =
+            frame_store.frame_handles[idx].is_some() || asset_index.gltf_handles[idx].is_some();
         if !is_needed[idx] && has_handle {
-            if sequence_assets.frame_entities[idx].is_some() {
+            if frame_store.frame_entities[idx].is_some() {
                 handles_with_entities += 1;
             }
             // Remove all mesh asset IDs from reverse index and force-remove
             // from Assets<Mesh> immediately.
-            // Collect IDs first to avoid borrowing sequence_assets immutably
+            // Collect IDs first to avoid borrowing frame_store immutably
             // and mutably at the same time.
-            let mesh_ids: Vec<AssetId<Mesh>> = sequence_assets.frame_handles[idx]
+            let mesh_ids: Vec<AssetId<Mesh>> = frame_store.frame_handles[idx]
                 .as_ref()
                 .map(|handles| handles.iter().map(|h| h.id()).collect())
                 .unwrap_or_default();
             for id in mesh_ids {
-                sequence_assets.asset_id_to_frame.remove(&id);
+                asset_index.asset_id_to_frame.remove(&id);
                 if meshes.remove(id).is_some() {
                     meshes_removed += 1;
                 }
             }
             // Also remove the intermediate Gltf handle if present.
-            if let Some(gltf_handle) = sequence_assets.gltf_handles[idx].take() {
-                sequence_assets.gltf_id_to_frame.remove(&gltf_handle.id());
+            if let Some(gltf_handle) = asset_index.gltf_handles[idx].take() {
+                asset_index.gltf_id_to_frame.remove(&gltf_handle.id());
             }
-            sequence_assets.frame_handles[idx] = None;
-            if sequence_assets.loaded_frames[idx] {
-                sequence_assets.loaded_frames[idx] = false;
-                sequence_assets.loaded_count = sequence_assets.loaded_count.saturating_sub(1);
+            frame_store.frame_handles[idx] = None;
+            if frame_store.loaded_frames[idx] {
+                frame_store.loaded_frames[idx] = false;
+                frame_store.loaded_count = frame_store.loaded_count.saturating_sub(1);
             }
             unloads += 1;
         }
@@ -707,7 +778,7 @@ fn sync_section_loads(
     let rss_after = rss_mb();
 
     if loads_enqueued > 0 || unloads > 0 {
-        sequence_assets.loading = true;
+        frame_store.loading = true;
         info!(
             "Section sync: {} loads enqueued, {} handles dropped ({} had live entities, {} meshes removed), queue len: {} | RSS {:.1} → {:.1} MB (Δ {:.1})",
             loads_enqueued,
@@ -727,13 +798,14 @@ fn sync_section_loads(
 /// `AssetId → frame` index for O(1) lookups in [`track_asset_loading`].
 fn drain_load_queue(
     mut load_queue: ResMut<LoadQueue>,
-    mut sequence_assets: ResMut<SequenceAssets>,
+    mut frame_store: ResMut<FrameStore>,
+    mut asset_index: ResMut<AssetIndex>,
     asset_server: Res<AssetServer>,
 ) {
     if load_queue.is_empty() {
         return;
     }
-    let Some(format) = sequence_assets.format else {
+    let Some(format) = frame_store.format else {
         return;
     };
 
@@ -746,18 +818,16 @@ fn drain_load_queue(
         }
 
         // Skip if already has a handle (mesh or intermediate Gltf).
-        if sequence_assets.frame_handles[idx].is_some()
-            || sequence_assets.gltf_handles[idx].is_some()
-        {
+        if frame_store.frame_handles[idx].is_some() || asset_index.gltf_handles[idx].is_some() {
             continue;
         }
 
         // Guard against out-of-bounds (e.g. sequence was reset).
-        if idx >= sequence_assets.frame_paths.len() {
+        if idx >= frame_store.frame_paths.len() {
             continue;
         }
 
-        let filename = sequence_assets.frame_paths[idx]
+        let filename = frame_store.frame_paths[idx]
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("unknown")
@@ -767,15 +837,13 @@ fn drain_load_queue(
             MeshFileFormat::Stl => {
                 let handle = load_stl_mesh_handle(&asset_server, &filename);
                 // Populate the reverse index for O(1) event lookup.
-                sequence_assets.asset_id_to_frame.insert(handle.id(), idx);
-                sequence_assets.frame_handles[idx] = Some(vec![handle]);
+                asset_index.asset_id_to_frame.insert(handle.id(), idx);
+                frame_store.frame_handles[idx] = Some(vec![handle]);
             }
             MeshFileFormat::Gltf | MeshFileFormat::Glb => {
                 let gltf_handle = load_gltf_handle(&asset_server, &filename);
-                sequence_assets
-                    .gltf_id_to_frame
-                    .insert(gltf_handle.id(), idx);
-                sequence_assets.gltf_handles[idx] = Some(gltf_handle);
+                asset_index.gltf_id_to_frame.insert(gltf_handle.id(), idx);
+                asset_index.gltf_handles[idx] = Some(gltf_handle);
                 // frame_handles[idx] stays None — populated by extract_gltf_meshes
             }
         }
@@ -794,7 +862,7 @@ fn drain_load_queue(
 }
 
 /// System that watches for loaded [`Gltf`] assets and extracts all mesh
-/// primitives from them, populating [`SequenceAssets::frame_handles`].
+/// primitives from them, populating [`FrameStore::frame_handles`].
 ///
 /// This is phase 2 of multi-mesh GLB loading.  When a `Gltf` asset fires
 /// `LoadedWithDependencies`, all its sub-assets (meshes, materials, etc.)
@@ -802,7 +870,9 @@ fn drain_load_queue(
 /// every primitive and mark the frame as loaded.
 fn extract_gltf_meshes(
     mut events: MessageReader<AssetEvent<Gltf>>,
-    mut sequence_assets: ResMut<SequenceAssets>,
+    mut frame_store: ResMut<FrameStore>,
+    mut loader_config: ResMut<LoaderConfig>,
+    mut asset_index: ResMut<AssetIndex>,
     mut frame_loaded_events: MessageWriter<FrameLoadedEvent>,
     gltf_assets: Res<Assets<Gltf>>,
     gltf_mesh_assets: Res<Assets<GltfMesh>>,
@@ -811,7 +881,7 @@ fn extract_gltf_meshes(
     mut memory_budget: ResMut<MemoryBudget>,
     sequence_manager: Res<SequenceManager>,
 ) {
-    if !sequence_assets.loading {
+    if !frame_store.loading {
         return;
     }
 
@@ -820,12 +890,12 @@ fn extract_gltf_meshes(
             continue;
         };
 
-        let Some(&frame_idx) = sequence_assets.gltf_id_to_frame.get(id) else {
+        let Some(&frame_idx) = asset_index.gltf_id_to_frame.get(id) else {
             continue;
         };
 
         // Access the loaded Gltf asset to extract mesh primitives.
-        let gltf_handle = match &sequence_assets.gltf_handles[frame_idx] {
+        let gltf_handle = match &asset_index.gltf_handles[frame_idx] {
             Some(h) => h.clone(),
             None => continue,
         };
@@ -856,18 +926,16 @@ fn extract_gltf_meshes(
 
         // Register all mesh asset IDs in the reverse index.
         for handle in &mesh_handles {
-            sequence_assets
-                .asset_id_to_frame
-                .insert(handle.id(), frame_idx);
+            asset_index.asset_id_to_frame.insert(handle.id(), frame_idx);
         }
 
         // Store the mesh handles.
-        sequence_assets.frame_handles[frame_idx] = Some(mesh_handles.clone());
+        frame_store.frame_handles[frame_idx] = Some(mesh_handles.clone());
 
         // Mark frame as loaded.
-        if !sequence_assets.loaded_frames[frame_idx] {
-            sequence_assets.loaded_frames[frame_idx] = true;
-            sequence_assets.loaded_count += 1;
+        if !frame_store.loaded_frames[frame_idx] {
+            frame_store.loaded_frames[frame_idx] = true;
+            frame_store.loaded_count += 1;
         }
 
         frame_loaded_events.write(FrameLoadedEvent {
@@ -876,8 +944,8 @@ fn extract_gltf_meshes(
         });
 
         // Create shared material on first loaded frame.
-        if sequence_assets.shared_material.is_none() {
-            sequence_assets.shared_material = Some(materials.add(StandardMaterial {
+        if loader_config.shared_material.is_none() {
+            loader_config.shared_material = Some(materials.add(StandardMaterial {
                 base_color: Color::srgb(0.3, 0.5, 0.8),
                 perceptual_roughness: 0.4,
                 metallic: 0.1,
@@ -887,7 +955,7 @@ fn extract_gltf_meshes(
         }
 
         // Estimate frame size from first loaded mesh for memory budgeting.
-        if sequence_assets.estimated_frame_bytes == 0 {
+        if frame_store.estimated_frame_bytes == 0 {
             let mut total_vertices = 0usize;
             for handle in &mesh_handles {
                 if let Some(mesh) = meshes.get(handle) {
@@ -896,7 +964,7 @@ fn extract_gltf_meshes(
             }
             if total_vertices > 0 {
                 let estimated_bytes = estimate_mesh_gpu_bytes_from_vertices(total_vertices);
-                sequence_assets.estimated_frame_bytes = estimated_bytes;
+                frame_store.estimated_frame_bytes = estimated_bytes;
                 memory_budget.update_frame_estimate(estimated_bytes);
                 info!(
                     "Frame size estimate (GLB, {} meshes): {} vertices ≈ {:.1} MB, max {} frames in budget",
@@ -911,7 +979,7 @@ fn extract_gltf_meshes(
         // Cache coordinate transform on first loaded frame.
         if frame_idx == 0 {
             if let Some(sequence) = sequence_manager.current_sequence() {
-                sequence_assets.coord_transform = sequence.source_orientation.to_transform();
+                loader_config.coord_transform = sequence.source_orientation.to_transform();
                 debug!(
                     "Applying coordinate transformation: {}",
                     sequence.source_orientation.description()
@@ -920,16 +988,15 @@ fn extract_gltf_meshes(
         }
 
         // Log progress at intervals.
-        let requested_count = sequence_assets
+        let requested_count = asset_index
             .gltf_handles
             .iter()
             .filter(|h| h.is_some())
             .count();
-        if sequence_assets.loaded_count % 10 == 0 || sequence_assets.loaded_count == requested_count
-        {
+        if frame_store.loaded_count % 10 == 0 || frame_store.loaded_count == requested_count {
             info!(
                 "Loading progress (GLB): {}/{} frames loaded ({} meshes in frame {})",
-                sequence_assets.loaded_count, requested_count, mesh_count, frame_idx,
+                frame_store.loaded_count, requested_count, mesh_count, frame_idx,
             );
         }
     }
@@ -950,7 +1017,9 @@ fn extract_gltf_meshes(
 /// in `drain_load_queue`).
 fn track_asset_loading(
     mut events: MessageReader<AssetEvent<Mesh>>,
-    mut sequence_assets: ResMut<SequenceAssets>,
+    mut frame_store: ResMut<FrameStore>,
+    mut loader_config: ResMut<LoaderConfig>,
+    asset_index: Res<AssetIndex>,
     mut frame_loaded_events: MessageWriter<FrameLoadedEvent>,
     asset_server: Res<AssetServer>,
     sequence_manager: Res<SequenceManager>,
@@ -958,15 +1027,15 @@ fn track_asset_loading(
     meshes: Res<Assets<Mesh>>,
     mut memory_budget: ResMut<MemoryBudget>,
 ) {
-    if !sequence_assets.loading {
+    if !frame_store.loading {
         return;
     }
 
     // Count how many frames we actually requested (have a handle or gltf handle)
-    let requested_count = sequence_assets
+    let requested_count = frame_store
         .frame_handles
         .iter()
-        .zip(sequence_assets.gltf_handles.iter())
+        .zip(asset_index.gltf_handles.iter())
         .filter(|(fh, gh)| fh.is_some() || gh.is_some())
         .count();
 
@@ -974,14 +1043,14 @@ fn track_asset_loading(
         match event {
             AssetEvent::LoadedWithDependencies { id } => {
                 // O(1) lookup via reverse index — only STL frames are registered here.
-                let Some(&index) = sequence_assets.asset_id_to_frame.get(id) else {
+                let Some(&index) = asset_index.asset_id_to_frame.get(id) else {
                     continue;
                 };
                 // Skip if this frame was already marked loaded (e.g. by extract_gltf_meshes).
-                if sequence_assets.loaded_frames[index] {
+                if frame_store.loaded_frames[index] {
                     continue;
                 }
-                let handle = match sequence_assets.frame_handles[index].as_ref() {
+                let handle = match frame_store.frame_handles[index].as_ref() {
                     Some(handles) => match handles.first() {
                         Some(h) => h.clone(),
                         None => continue,
@@ -989,8 +1058,8 @@ fn track_asset_loading(
                     None => continue,
                 };
 
-                sequence_assets.loaded_count += 1;
-                sequence_assets.loaded_frames[index] = true;
+                frame_store.loaded_count += 1;
+                frame_store.loaded_frames[index] = true;
 
                 frame_loaded_events.write(FrameLoadedEvent {
                     frame_index: index,
@@ -998,8 +1067,8 @@ fn track_asset_loading(
                 });
 
                 // Create shared material on first loaded frame
-                if sequence_assets.shared_material.is_none() {
-                    sequence_assets.shared_material = Some(materials.add(StandardMaterial {
+                if loader_config.shared_material.is_none() {
+                    loader_config.shared_material = Some(materials.add(StandardMaterial {
                         base_color: Color::srgb(0.3, 0.5, 0.8),
                         perceptual_roughness: 0.4,
                         metallic: 0.1,
@@ -1009,11 +1078,11 @@ fn track_asset_loading(
                 }
 
                 // Estimate frame size from first loaded mesh for memory budgeting
-                if sequence_assets.estimated_frame_bytes == 0 {
+                if frame_store.estimated_frame_bytes == 0 {
                     if let Some(mesh) = meshes.get(&handle) {
                         let vertex_count = mesh.count_vertices();
                         let estimated_bytes = estimate_mesh_gpu_bytes_from_vertices(vertex_count);
-                        sequence_assets.estimated_frame_bytes = estimated_bytes;
+                        frame_store.estimated_frame_bytes = estimated_bytes;
                         memory_budget.update_frame_estimate(estimated_bytes);
                         info!(
                             "Frame size estimate: {} vertices ≈ {:.1} MB, max {} frames in budget",
@@ -1027,8 +1096,7 @@ fn track_asset_loading(
                 // Cache coordinate transform on first loaded frame
                 if index == 0 {
                     if let Some(sequence) = sequence_manager.current_sequence() {
-                        sequence_assets.coord_transform =
-                            sequence.source_orientation.to_transform();
+                        loader_config.coord_transform = sequence.source_orientation.to_transform();
                         debug!(
                             "Applying coordinate transformation: {}",
                             sequence.source_orientation.description()
@@ -1037,12 +1105,11 @@ fn track_asset_loading(
                 }
 
                 // Log progress at intervals
-                if sequence_assets.loaded_count % 10 == 0
-                    || sequence_assets.loaded_count == requested_count
+                if frame_store.loaded_count % 10 == 0 || frame_store.loaded_count == requested_count
                 {
                     info!(
                         "Loading progress: {}/{} frames loaded",
-                        sequence_assets.loaded_count, requested_count,
+                        frame_store.loaded_count, requested_count,
                     );
                 }
             }
@@ -1051,26 +1118,23 @@ fn track_asset_loading(
     }
 
     // Check if all requested frames are loaded
-    if sequence_assets.loaded_count >= requested_count
-        && requested_count > 0
-        && sequence_assets.loading
-    {
-        sequence_assets.loading = false;
+    if frame_store.loaded_count >= requested_count && requested_count > 0 && frame_store.loading {
+        frame_store.loading = false;
         info!("════════════════════════════════════════════════════════════════");
         info!(
             "✓ SECTION LOADING COMPLETE: {}/{} frames loaded (budget-limited)",
-            sequence_assets.loaded_count, sequence_assets.total_frames,
+            frame_store.loaded_count, frame_store.total_frames,
         );
         info!("════════════════════════════════════════════════════════════════");
     }
 
     // Check for failed loads with detailed information
-    if sequence_assets.loading {
+    if frame_store.loading {
         let mut failed_count = 0;
         let mut failed_indices = Vec::new();
 
         // Check mesh handles (STL)
-        for (index, handle_opt) in sequence_assets.frame_handles.iter().enumerate() {
+        for (index, handle_opt) in frame_store.frame_handles.iter().enumerate() {
             let Some(handles) = handle_opt else { continue };
             let Some(handle) = handles.first() else {
                 continue;
@@ -1094,9 +1158,9 @@ fn track_asset_loading(
         }
 
         // Check gltf handles (GLB)
-        for (index, handle_opt) in sequence_assets.gltf_handles.iter().enumerate() {
+        for (index, handle_opt) in asset_index.gltf_handles.iter().enumerate() {
             let Some(handle) = handle_opt else { continue };
-            if sequence_assets.loaded_frames[index] {
+            if frame_store.loaded_frames[index] {
                 continue; // Already extracted
             }
             let state = asset_server.load_state(handle.id());
@@ -1132,7 +1196,8 @@ fn track_asset_loading(
 /// render thread with a sudden batch of GPU uploads.
 fn manage_frame_window(
     mut commands: Commands,
-    mut sequence_assets: ResMut<SequenceAssets>,
+    mut frame_store: ResMut<FrameStore>,
+    loader_config: Res<LoaderConfig>,
     timeline: Res<Timeline>,
     render_config: Res<RenderConfig>,
     mut visibility_query: Query<&mut Visibility, With<SequenceMeshDisplay>>,
@@ -1140,11 +1205,11 @@ fn manage_frame_window(
     mut memory_budget: ResMut<MemoryBudget>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
-    if sequence_assets.total_frames == 0 {
+    if frame_store.total_frames == 0 {
         return;
     }
     // Need shared material before we can spawn anything
-    let Some(material) = sequence_assets.shared_material.clone() else {
+    let Some(material) = loader_config.shared_material.clone() else {
         return;
     };
 
@@ -1158,11 +1223,11 @@ fn manage_frame_window(
         current,
         render_config.frame_window_size,
         &timeline.sections,
-        sequence_assets.total_frames,
+        frame_store.total_frames,
     );
 
-    let transform = sequence_assets.coord_transform;
-    let frame_bytes = sequence_assets.estimated_frame_bytes;
+    let transform = loader_config.coord_transform;
+    let frame_bytes = frame_store.estimated_frame_bytes;
 
     // Helper: check if `idx` falls inside any of the given window ranges.
     let in_windows = |idx: usize, windows: &[(usize, usize)]| -> bool {
@@ -1182,15 +1247,15 @@ fn manage_frame_window(
             if in_windows(idx, &new_windows) {
                 continue; // still needed
             }
-            if let Some(entities) = sequence_assets.frame_entities[idx].take() {
+            if let Some(entities) = frame_store.frame_entities[idx].take() {
                 for entity in &entities {
                     if let Ok(mut vis) = visibility_query.get_mut(*entity) {
                         *vis = Visibility::Hidden;
                     }
                     commands.entity(*entity).despawn();
                 }
-                let has_handle = sequence_assets.frame_handles[idx].is_some();
-                if sequence_assets.demote_from_gpu(idx, &mut meshes) {
+                let has_handle = frame_store.frame_handles[idx].is_some();
+                if frame_store.demote_from_gpu(idx, &mut meshes) {
                     demote_ok += 1;
                 } else {
                     demote_fail += 1;
@@ -1225,18 +1290,18 @@ fn manage_frame_window(
             if spawns_this_frame >= SPAWNS_PER_FRAME {
                 break;
             }
-            if sequence_assets.frame_entities[idx].is_some() {
+            if frame_store.frame_entities[idx].is_some() {
                 continue; // already spawned
             }
-            if !sequence_assets.is_frame_loaded(idx) {
+            if !frame_store.is_frame_loaded(idx) {
                 continue; // asset not ready yet
             }
-            let Some(mesh_handles) = sequence_assets.get_frame_meshes(idx) else {
+            let Some(mesh_handles) = frame_store.get_frame_meshes(idx) else {
                 continue;
             };
             let mesh_handles: Vec<Handle<Mesh>> = mesh_handles.to_vec();
 
-            sequence_assets.promote_to_gpu(idx, &mut meshes);
+            frame_store.promote_to_gpu(idx, &mut meshes);
 
             let visibility = if idx == current {
                 Visibility::Visible
@@ -1267,7 +1332,7 @@ fn manage_frame_window(
                 win_hi
             );
 
-            sequence_assets.frame_entities[idx] = Some(entities);
+            frame_store.frame_entities[idx] = Some(entities);
 
             if frame_bytes > 0 {
                 memory_budget.record_frame_loaded(frame_bytes);
@@ -1279,13 +1344,14 @@ fn manage_frame_window(
 
     // Log window changes
     if new_windows != *prev_windows {
-        let active_handles = sequence_assets
+        // Count active handles — gltf_handles lives in AssetIndex which we
+        // don't have here.  Just count frame_handles for the log line.
+        let active_handles = frame_store
             .frame_handles
             .iter()
-            .zip(sequence_assets.gltf_handles.iter())
-            .filter(|(fh, gh)| fh.is_some() || gh.is_some())
+            .filter(|fh| fh.is_some())
             .count();
-        let live_entities = sequence_assets
+        let live_entities = frame_store
             .frame_entities
             .iter()
             .filter(|e| e.is_some())
@@ -1301,7 +1367,7 @@ fn manage_frame_window(
     //    Only the current frame is Visible; everything else is Hidden.
     for &(win_lo, win_hi) in &new_windows {
         for idx in win_lo..win_hi {
-            if let Some(Some(entities)) = sequence_assets.frame_entities.get(idx) {
+            if let Some(Some(entities)) = frame_store.frame_entities.get(idx) {
                 let desired = if idx == current {
                     Visibility::Visible
                 } else {
@@ -1318,7 +1384,7 @@ fn manage_frame_window(
         }
     }
 
-    sequence_assets.displayed_frame = Some(current);
+    frame_store.displayed_frame = Some(current);
     *prev_windows = new_windows;
 }
 
@@ -1358,12 +1424,12 @@ pub struct LoadingStats {
 }
 
 impl LoadingStats {
-    pub fn from_assets(assets: &SequenceAssets) -> Self {
+    pub fn from_frame_store(store: &FrameStore) -> Self {
         Self {
-            total_frames: assets.total_frames,
-            loaded_frames: assets.loaded_count,
-            loading: assets.loading,
-            progress_percent: assets.progress() * 100.0,
+            total_frames: store.total_frames,
+            loaded_frames: store.loaded_count,
+            loading: store.loading,
+            progress_percent: store.progress() * 100.0,
         }
     }
 }
