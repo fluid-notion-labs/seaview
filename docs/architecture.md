@@ -60,6 +60,16 @@ Update:    advance_playback → Timeline.playhead++
 PostUpdate: manage_frame_window → compute_spawn_window() → spawn/despawn entities
 ```
 
+## Feature-Gated Plugins
+
+Optional subsystems use the **plugin + optional resource** pattern to minimise `cfg` churn:
+
+1. Bundle all resources, systems, and UI for the feature into a single `Plugin`.
+2. Gate the plugin module declaration (`lib.rs`) and registration (`main.rs`) with `#[cfg(feature = "...")]` — **two `cfg` gates total**.
+3. Systems that *consume* the optional resources use `Option<Res<T>>` / `Option<ResMut<T>>` — no `cfg` needed, they just skip work when the resource is absent.
+
+Example: `SpatialAcceleratorPlugin` (`app/spatial_accelerator.rs`) owns `SpatialIndex`, `BvhGizmoConfig`, `build_spatial_meshes`, and `draw_bvh_gizmos`. Enabled with `--features spatial`.
+
 ## Standards
 
 **Pure function extraction.** >20 lines of logic in a system → extract to testable `lib/` function. System becomes read → call → write.
