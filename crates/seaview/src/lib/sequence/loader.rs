@@ -368,6 +368,139 @@ impl AssetIndex {
 }
 
 // ---------------------------------------------------------------------------
+// Pure functions — extractable logic from systems, testable without Bevy
+// ---------------------------------------------------------------------------
+
+/// Result of reconciling the set of loaded frames against the current sections.
+///
+/// Produced by [`reconcile_section_loads`], consumed by [`sync_section_loads`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SectionReconciliation {
+    /// Frame indices that need to be enqueued for loading (in sections but
+    /// no handle yet).
+    pub to_load: Vec<usize>,
+    /// Frame indices that should be unloaded (have a handle but are outside
+    /// all sections).
+    pub to_unload: Vec<usize>,
+}
+
+/// Pure logic extracted from [`sync_section_loads`].
+///
+/// Given the set of needed frame indices (from sections) and a per-frame
+/// predicate indicating whether a handle already exists, returns which frames
+/// to enqueue for loading and which to unload.
+///
+/// `has_handle` should return `true` when frame `idx` already has either a
+/// mesh handle or an intermediate glTF handle.
+pub(crate) fn reconcile_section_loads(
+    needed: &[usize],
+    total_frames: usize,
+    has_handle: impl Fn(usize) -> bool,
+) -> SectionReconciliation {
+    let mut to_load = Vec::new();
+    for &idx in needed {
+        if !has_handle(idx) {
+            to_load.push(idx);
+        }
+    }
+
+    let mut is_needed = vec![false; total_frames];
+    for &idx in needed {
+        if idx < total_frames {
+            is_needed[idx] = true;
+        }
+    }
+
+    let mut to_unload = Vec::new();
+    for idx in 0..total_frames {
+        if !is_needed[idx] && has_handle(idx) {
+            to_unload.push(idx);
+        }
+    }
+
+    SectionReconciliation { to_load, to_unload }
+}
+
+/// Result of computing the delta between old and new frame windows.
+///
+/// Produced by [`compute_window_delta`], consumed by [`manage_frame_window`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WindowDelta {
+    /// Frame indices that were in the old windows but are NOT in the new
+    /// windows — candidates for despawning.
+    pub to_despawn: Vec<usize>,
+    /// Frame indices that are in the new windows but were NOT in the old
+    /// windows — candidates for spawning.
+    pub to_spawn: Vec<usize>,
+}
+
+/// Pure set-difference on window ranges.
+///
+/// Given the previous frame windows and the new frame windows (each a list
+/// of `[lo, hi)` ranges), returns which indices left and which entered.
+pub fn compute_window_delta(
+    old_windows: &[(usize, usize)],
+    new_windows: &[(usize, usize)],
+) -> WindowDelta {
+    let in_windows = |idx: usize, windows: &[(usize, usize)]| -> bool {
+        windows.iter().any(|&(lo, hi)| idx >= lo && idx < hi)
+    };
+
+    let mut to_despawn = Vec::new();
+    for &(lo, hi) in old_windows {
+        for idx in lo..hi {
+            if !in_windows(idx, new_windows) {
+                to_despawn.push(idx);
+            }
+        }
+    }
+
+    let mut to_spawn = Vec::new();
+    for &(lo, hi) in new_windows {
+        for idx in lo..hi {
+            if !in_windows(idx, old_windows) {
+                to_spawn.push(idx);
+            }
+        }
+    }
+
+    WindowDelta {
+        to_despawn,
+        to_spawn,
+    }
+}
+
+/// Count how many frames have been requested (have either a mesh handle or
+/// an intermediate glTF handle).
+///
+/// Used by [`track_asset_loading`] and [`extract_gltf_meshes`] to determine
+/// when loading is complete.
+pub(crate) fn count_requested_frames(
+    frame_handles: &[Option<Vec<Handle<Mesh>>>],
+    gltf_handles: &[Option<Handle<Gltf>>],
+) -> usize {
+    frame_handles
+        .iter()
+        .zip(gltf_handles.iter())
+        .filter(|(fh, gh)| fh.is_some() || gh.is_some())
+        .count()
+}
+
+/// Default material properties used for sequence mesh entities.
+///
+/// Extracted so both [`extract_gltf_meshes`] and [`track_asset_loading`]
+/// share the same definition.
+pub fn default_material_properties() -> StandardMaterial {
+    StandardMaterial {
+        base_color: Color::srgb(0.3, 0.5, 0.8),
+        perceptual_roughness: 0.4,
+        metallic: 0.1,
+        cull_mode: None, // Double-sided rendering
+        ..default()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // LoadQueue
 // ---------------------------------------------------------------------------
 
@@ -702,61 +835,49 @@ fn sync_section_loads(
 
     let needed = frames_to_load(&timeline.sections, frame_store.total_frames);
 
-    let mut loads_enqueued = 0usize;
+    // Use the pure reconciliation function to decide what to load/unload.
+    let reconciliation = reconcile_section_loads(&needed, frame_store.total_frames, |idx| {
+        frame_store.frame_handles[idx].is_some() || asset_index.gltf_handles[idx].is_some()
+    });
 
-    // Enqueue frames that are in sections but don't have a handle yet
-    for &idx in &needed {
-        // For GLB, check gltf_handles too — the frame is "requested" once
-        // either the mesh handles or the intermediate Gltf handle exists.
-        let has_handle =
-            frame_store.frame_handles[idx].is_some() || asset_index.gltf_handles[idx].is_some();
-        if !has_handle {
-            load_queue.push(idx);
-            loads_enqueued += 1;
-        }
+    let mut loads_enqueued = 0usize;
+    for idx in &reconciliation.to_load {
+        load_queue.push(*idx);
+        loads_enqueued += 1;
     }
 
     // Unload frames that are outside all sections (drop handle, reclaim memory).
-    // Build a fast lookup of needed indices.
-    let mut is_needed = vec![false; frame_store.total_frames];
-    for &idx in &needed {
-        is_needed[idx] = true;
-    }
     let mut unloads = 0usize;
     let mut handles_with_entities = 0usize;
     let mut meshes_removed = 0usize;
-    for idx in 0..frame_store.total_frames {
-        let has_handle =
-            frame_store.frame_handles[idx].is_some() || asset_index.gltf_handles[idx].is_some();
-        if !is_needed[idx] && has_handle {
-            if frame_store.frame_entities[idx].is_some() {
-                handles_with_entities += 1;
-            }
-            // Remove all mesh asset IDs from reverse index and force-remove
-            // from Assets<Mesh> immediately.
-            // Collect IDs first to avoid borrowing frame_store immutably
-            // and mutably at the same time.
-            let mesh_ids: Vec<AssetId<Mesh>> = frame_store.frame_handles[idx]
-                .as_ref()
-                .map(|handles| handles.iter().map(|h| h.id()).collect())
-                .unwrap_or_default();
-            for id in mesh_ids {
-                asset_index.asset_id_to_frame.remove(&id);
-                if meshes.remove(id).is_some() {
-                    meshes_removed += 1;
-                }
-            }
-            // Also remove the intermediate Gltf handle if present.
-            if let Some(gltf_handle) = asset_index.gltf_handles[idx].take() {
-                asset_index.gltf_id_to_frame.remove(&gltf_handle.id());
-            }
-            frame_store.frame_handles[idx] = None;
-            if frame_store.loaded_frames[idx] {
-                frame_store.loaded_frames[idx] = false;
-                frame_store.loaded_count = frame_store.loaded_count.saturating_sub(1);
-            }
-            unloads += 1;
+    for &idx in &reconciliation.to_unload {
+        if frame_store.frame_entities[idx].is_some() {
+            handles_with_entities += 1;
         }
+        // Remove all mesh asset IDs from reverse index and force-remove
+        // from Assets<Mesh> immediately.
+        // Collect IDs first to avoid borrowing frame_store immutably
+        // and mutably at the same time.
+        let mesh_ids: Vec<AssetId<Mesh>> = frame_store.frame_handles[idx]
+            .as_ref()
+            .map(|handles| handles.iter().map(|h| h.id()).collect())
+            .unwrap_or_default();
+        for id in mesh_ids {
+            asset_index.asset_id_to_frame.remove(&id);
+            if meshes.remove(id).is_some() {
+                meshes_removed += 1;
+            }
+        }
+        // Also remove the intermediate Gltf handle if present.
+        if let Some(gltf_handle) = asset_index.gltf_handles[idx].take() {
+            asset_index.gltf_id_to_frame.remove(&gltf_handle.id());
+        }
+        frame_store.frame_handles[idx] = None;
+        if frame_store.loaded_frames[idx] {
+            frame_store.loaded_frames[idx] = false;
+            frame_store.loaded_count = frame_store.loaded_count.saturating_sub(1);
+        }
+        unloads += 1;
     }
 
     // After bulk unloads, ask glibc to return freed pages to the OS.
@@ -945,13 +1066,7 @@ fn extract_gltf_meshes(
 
         // Create shared material on first loaded frame.
         if loader_config.shared_material.is_none() {
-            loader_config.shared_material = Some(materials.add(StandardMaterial {
-                base_color: Color::srgb(0.3, 0.5, 0.8),
-                perceptual_roughness: 0.4,
-                metallic: 0.1,
-                cull_mode: None, // Double-sided rendering
-                ..default()
-            }));
+            loader_config.shared_material = Some(materials.add(default_material_properties()));
         }
 
         // Estimate frame size from first loaded mesh for memory budgeting.
@@ -988,11 +1103,8 @@ fn extract_gltf_meshes(
         }
 
         // Log progress at intervals.
-        let requested_count = asset_index
-            .gltf_handles
-            .iter()
-            .filter(|h| h.is_some())
-            .count();
+        let requested_count =
+            count_requested_frames(&frame_store.frame_handles, &asset_index.gltf_handles);
         if frame_store.loaded_count % 10 == 0 || frame_store.loaded_count == requested_count {
             info!(
                 "Loading progress (GLB): {}/{} frames loaded ({} meshes in frame {})",
@@ -1032,12 +1144,8 @@ fn track_asset_loading(
     }
 
     // Count how many frames we actually requested (have a handle or gltf handle)
-    let requested_count = frame_store
-        .frame_handles
-        .iter()
-        .zip(asset_index.gltf_handles.iter())
-        .filter(|(fh, gh)| fh.is_some() || gh.is_some())
-        .count();
+    let requested_count =
+        count_requested_frames(&frame_store.frame_handles, &asset_index.gltf_handles);
 
     for event in events.read() {
         match event {
@@ -1068,13 +1176,8 @@ fn track_asset_loading(
 
                 // Create shared material on first loaded frame
                 if loader_config.shared_material.is_none() {
-                    loader_config.shared_material = Some(materials.add(StandardMaterial {
-                        base_color: Color::srgb(0.3, 0.5, 0.8),
-                        perceptual_roughness: 0.4,
-                        metallic: 0.1,
-                        cull_mode: None, // Double-sided rendering
-                        ..default()
-                    }));
+                    loader_config.shared_material =
+                        Some(materials.add(default_material_properties()));
                 }
 
                 // Estimate frame size from first loaded mesh for memory budgeting
@@ -1229,10 +1332,8 @@ fn manage_frame_window(
     let transform = loader_config.coord_transform;
     let frame_bytes = frame_store.estimated_frame_bytes;
 
-    // Helper: check if `idx` falls inside any of the given window ranges.
-    let in_windows = |idx: usize, windows: &[(usize, usize)]| -> bool {
-        windows.iter().any(|&(lo, hi)| idx >= lo && idx < hi)
-    };
+    // Use the pure delta function to decide what to despawn/spawn.
+    let delta = compute_window_delta(&prev_windows, &new_windows);
 
     // 1. Despawn entities that were in old windows but are NOT in new windows.
     //    Despawns are NOT throttled — freeing memory is always welcome.
@@ -1242,35 +1343,31 @@ fn manage_frame_window(
     let mut despawns = 0usize;
     let mut demote_ok = 0usize;
     let mut demote_fail = 0usize;
-    for &(old_lo, old_hi) in prev_windows.iter() {
-        for idx in old_lo..old_hi {
-            if in_windows(idx, &new_windows) {
-                continue; // still needed
+    for idx in &delta.to_despawn {
+        let idx = *idx;
+        if let Some(entities) = frame_store.frame_entities[idx].take() {
+            for entity in &entities {
+                if let Ok(mut vis) = visibility_query.get_mut(*entity) {
+                    *vis = Visibility::Hidden;
+                }
+                commands.entity(*entity).despawn();
             }
-            if let Some(entities) = frame_store.frame_entities[idx].take() {
-                for entity in &entities {
-                    if let Ok(mut vis) = visibility_query.get_mut(*entity) {
-                        *vis = Visibility::Hidden;
-                    }
-                    commands.entity(*entity).despawn();
+            let has_handle = frame_store.frame_handles[idx].is_some();
+            if frame_store.demote_from_gpu(idx, &mut meshes) {
+                demote_ok += 1;
+            } else {
+                demote_fail += 1;
+                if demote_fail <= 3 {
+                    warn!(
+                        "demote_from_gpu FAILED for frame {} (handle present: {})",
+                        idx, has_handle
+                    );
                 }
-                let has_handle = frame_store.frame_handles[idx].is_some();
-                if frame_store.demote_from_gpu(idx, &mut meshes) {
-                    demote_ok += 1;
-                } else {
-                    demote_fail += 1;
-                    if demote_fail <= 3 {
-                        warn!(
-                            "demote_from_gpu FAILED for frame {} (handle present: {})",
-                            idx, has_handle
-                        );
-                    }
-                }
-                if frame_bytes > 0 {
-                    memory_budget.record_frame_unloaded(frame_bytes);
-                }
-                despawns += 1;
             }
+            if frame_bytes > 0 {
+                memory_budget.record_frame_unloaded(frame_bytes);
+            }
+            despawns += 1;
         }
     }
     if despawns > 0 {
@@ -1285,61 +1382,53 @@ fn manage_frame_window(
     // 2. Spawn entities that are in new windows but were NOT in old windows.
     //    Capped at SPAWNS_PER_FRAME to spread GPU upload work.
     let mut spawns_this_frame = 0usize;
-    for &(win_lo, win_hi) in &new_windows {
-        for idx in win_lo..win_hi {
-            if spawns_this_frame >= SPAWNS_PER_FRAME {
-                break;
-            }
-            if frame_store.frame_entities[idx].is_some() {
-                continue; // already spawned
-            }
-            if !frame_store.is_frame_loaded(idx) {
-                continue; // asset not ready yet
-            }
-            let Some(mesh_handles) = frame_store.get_frame_meshes(idx) else {
-                continue;
-            };
-            let mesh_handles: Vec<Handle<Mesh>> = mesh_handles.to_vec();
-
-            frame_store.promote_to_gpu(idx, &mut meshes);
-
-            let visibility = if idx == current {
-                Visibility::Visible
-            } else {
-                Visibility::Hidden
-            };
-
-            let mut entities = Vec::with_capacity(mesh_handles.len());
-            for (mesh_i, handle) in mesh_handles.iter().enumerate() {
-                let entity = commands
-                    .spawn((
-                        Mesh3d(handle.clone()),
-                        MeshMaterial3d(material.clone()),
-                        transform,
-                        SequenceMeshDisplay,
-                        visibility,
-                        Name::new(format!("Frame {} mesh {}", idx, mesh_i)),
-                    ))
-                    .id();
-                entities.push(entity);
-            }
-
-            debug!(
-                "Spawned frame {} — {} entities (window [{}, {}))",
-                idx,
-                entities.len(),
-                win_lo,
-                win_hi
-            );
-
-            frame_store.frame_entities[idx] = Some(entities);
-
-            if frame_bytes > 0 {
-                memory_budget.record_frame_loaded(frame_bytes);
-            }
-
-            spawns_this_frame += 1;
+    for &idx in &delta.to_spawn {
+        if spawns_this_frame >= SPAWNS_PER_FRAME {
+            break;
         }
+        if frame_store.frame_entities[idx].is_some() {
+            continue; // already spawned
+        }
+        if !frame_store.is_frame_loaded(idx) {
+            continue; // asset not ready yet
+        }
+        let Some(mesh_handles) = frame_store.get_frame_meshes(idx) else {
+            continue;
+        };
+        let mesh_handles: Vec<Handle<Mesh>> = mesh_handles.to_vec();
+
+        frame_store.promote_to_gpu(idx, &mut meshes);
+
+        let visibility = if idx == current {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
+
+        let mut entities = Vec::with_capacity(mesh_handles.len());
+        for (mesh_i, handle) in mesh_handles.iter().enumerate() {
+            let entity = commands
+                .spawn((
+                    Mesh3d(handle.clone()),
+                    MeshMaterial3d(material.clone()),
+                    transform,
+                    SequenceMeshDisplay,
+                    visibility,
+                    Name::new(format!("Frame {} mesh {}", idx, mesh_i)),
+                ))
+                .id();
+            entities.push(entity);
+        }
+
+        debug!("Spawned frame {} — {} entities", idx, entities.len(),);
+
+        frame_store.frame_entities[idx] = Some(entities);
+
+        if frame_bytes > 0 {
+            memory_budget.record_frame_loaded(frame_bytes);
+        }
+
+        spawns_this_frame += 1;
     }
 
     // Log window changes
@@ -1431,5 +1520,295 @@ impl LoadingStats {
             loading: store.loading,
             progress_percent: store.progress() * 100.0,
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── reconcile_section_loads ────────────────────────────────────────
+
+    #[test]
+    fn test_reconcile_empty_needed() {
+        let r = reconcile_section_loads(&[], 5, |_| false);
+        assert!(r.to_load.is_empty());
+        assert!(r.to_unload.is_empty());
+    }
+
+    #[test]
+    fn test_reconcile_all_needed_none_loaded() {
+        let needed = vec![0, 1, 2];
+        let r = reconcile_section_loads(&needed, 5, |_| false);
+        assert_eq!(r.to_load, vec![0, 1, 2]);
+        assert!(r.to_unload.is_empty());
+    }
+
+    #[test]
+    fn test_reconcile_all_needed_all_loaded() {
+        let needed = vec![0, 1, 2];
+        let r = reconcile_section_loads(&needed, 5, |_| true);
+        assert!(r.to_load.is_empty());
+        // Frames 3 and 4 have handles but are not needed → unload
+        assert_eq!(r.to_unload, vec![3, 4]);
+    }
+
+    #[test]
+    fn test_reconcile_partial_overlap() {
+        // Frames 0..5, needed=[2,3,4], handles at [1,2,3]
+        let needed = vec![2, 3, 4];
+        let has_handle = |idx: usize| idx >= 1 && idx <= 3;
+        let r = reconcile_section_loads(&needed, 5, has_handle);
+        // Frame 4 is needed but has no handle → load
+        assert_eq!(r.to_load, vec![4]);
+        // Frame 1 has a handle but is not needed → unload
+        assert_eq!(r.to_unload, vec![1]);
+    }
+
+    #[test]
+    fn test_reconcile_zero_total_frames() {
+        let r = reconcile_section_loads(&[], 0, |_| false);
+        assert!(r.to_load.is_empty());
+        assert!(r.to_unload.is_empty());
+    }
+
+    #[test]
+    fn test_reconcile_needed_subset_of_loaded() {
+        // 10 frames, all loaded, only 2-4 needed
+        let needed = vec![2, 3, 4];
+        let r = reconcile_section_loads(&needed, 10, |_| true);
+        assert!(r.to_load.is_empty());
+        assert_eq!(r.to_unload, vec![0, 1, 5, 6, 7, 8, 9]);
+    }
+
+    // ── compute_window_delta ──────────────────────────────────────────
+
+    #[test]
+    fn test_window_delta_no_change() {
+        let windows = vec![(5, 10)];
+        let delta = compute_window_delta(&windows, &windows);
+        assert!(delta.to_despawn.is_empty());
+        assert!(delta.to_spawn.is_empty());
+    }
+
+    #[test]
+    fn test_window_delta_shift_right() {
+        let old = vec![(5, 10)];
+        let new = vec![(7, 12)];
+        let delta = compute_window_delta(&old, &new);
+        assert_eq!(delta.to_despawn, vec![5, 6]);
+        assert_eq!(delta.to_spawn, vec![10, 11]);
+    }
+
+    #[test]
+    fn test_window_delta_shift_left() {
+        let old = vec![(5, 10)];
+        let new = vec![(3, 8)];
+        let delta = compute_window_delta(&old, &new);
+        assert_eq!(delta.to_despawn, vec![8, 9]);
+        assert_eq!(delta.to_spawn, vec![3, 4]);
+    }
+
+    #[test]
+    fn test_window_delta_completely_new() {
+        let old = vec![(0, 5)];
+        let new = vec![(10, 15)];
+        let delta = compute_window_delta(&old, &new);
+        assert_eq!(delta.to_despawn, vec![0, 1, 2, 3, 4]);
+        assert_eq!(delta.to_spawn, vec![10, 11, 12, 13, 14]);
+    }
+
+    #[test]
+    fn test_window_delta_empty_to_some() {
+        let delta = compute_window_delta(&[], &[(0, 3)]);
+        assert!(delta.to_despawn.is_empty());
+        assert_eq!(delta.to_spawn, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn test_window_delta_some_to_empty() {
+        let delta = compute_window_delta(&[(0, 3)], &[]);
+        assert_eq!(delta.to_despawn, vec![0, 1, 2]);
+        assert!(delta.to_spawn.is_empty());
+    }
+
+    #[test]
+    fn test_window_delta_multi_window() {
+        let old = vec![(0, 5), (10, 15)];
+        let new = vec![(3, 8), (10, 15)];
+        let delta = compute_window_delta(&old, &new);
+        // 0,1,2 leave; 5,6,7 enter; 10..15 unchanged
+        assert_eq!(delta.to_despawn, vec![0, 1, 2]);
+        assert_eq!(delta.to_spawn, vec![5, 6, 7]);
+    }
+
+    #[test]
+    fn test_window_delta_overlapping_new_windows() {
+        // Two new windows that overlap: [0,5) and [3,8)
+        // Old was [0,5)
+        let old = vec![(0, 5)];
+        let new = vec![(0, 5), (3, 8)];
+        let delta = compute_window_delta(&old, &new);
+        assert!(delta.to_despawn.is_empty());
+        assert_eq!(delta.to_spawn, vec![5, 6, 7]);
+    }
+
+    // ── count_requested_frames ────────────────────────────────────────
+
+    #[test]
+    fn test_count_requested_none() {
+        let fh: Vec<Option<Vec<Handle<Mesh>>>> = vec![None, None, None];
+        let gh: Vec<Option<Handle<Gltf>>> = vec![None, None, None];
+        assert_eq!(count_requested_frames(&fh, &gh), 0);
+    }
+
+    #[test]
+    fn test_count_requested_empty() {
+        let fh: Vec<Option<Vec<Handle<Mesh>>>> = vec![];
+        let gh: Vec<Option<Handle<Gltf>>> = vec![];
+        assert_eq!(count_requested_frames(&fh, &gh), 0);
+    }
+
+    // ── default_material_properties ───────────────────────────────────
+
+    #[test]
+    fn test_default_material_is_double_sided() {
+        let mat = default_material_properties();
+        assert_eq!(
+            mat.cull_mode, None,
+            "Default material should be double-sided"
+        );
+    }
+
+    #[test]
+    fn test_default_material_color() {
+        let mat = default_material_properties();
+        assert_eq!(mat.base_color, Color::srgb(0.3, 0.5, 0.8));
+    }
+
+    // ── LoadingStats ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_loading_stats_from_frame_store() {
+        let mut store = FrameStore::default();
+        store.total_frames = 100;
+        store.loaded_count = 50;
+        store.loading = true;
+
+        let stats = LoadingStats::from_frame_store(&store);
+        assert_eq!(stats.total_frames, 100);
+        assert_eq!(stats.loaded_frames, 50);
+        assert!(stats.loading);
+        assert!((stats.progress_percent - 50.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_loading_stats_zero_frames() {
+        let store = FrameStore::default();
+        let stats = LoadingStats::from_frame_store(&store);
+        assert_eq!(stats.progress_percent, 0.0);
+    }
+
+    // ── FrameStore ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_frame_store_reset() {
+        let mut store = FrameStore::default();
+        store.total_frames = 10;
+        store.loaded_count = 5;
+        store.loading = true;
+        store.format = Some(MeshFileFormat::Stl);
+        store.estimated_frame_bytes = 1024;
+
+        store.reset();
+
+        assert_eq!(store.total_frames, 0);
+        assert_eq!(store.loaded_count, 0);
+        assert!(!store.loading);
+        assert!(store.format.is_none());
+        assert_eq!(store.estimated_frame_bytes, 0);
+    }
+
+    #[test]
+    fn test_frame_store_progress() {
+        let mut store = FrameStore::default();
+        store.total_frames = 200;
+        store.loaded_count = 100;
+        assert!((store.progress() - 0.5).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_frame_store_is_fully_loaded() {
+        let mut store = FrameStore::default();
+        assert!(!store.is_fully_loaded());
+
+        store.total_frames = 10;
+        store.loaded_count = 10;
+        assert!(store.is_fully_loaded());
+    }
+
+    #[test]
+    fn test_frame_store_is_frame_loaded() {
+        let mut store = FrameStore::default();
+        store.loaded_frames = vec![false, true, false];
+        assert!(!store.is_frame_loaded(0));
+        assert!(store.is_frame_loaded(1));
+        assert!(!store.is_frame_loaded(2));
+        assert!(!store.is_frame_loaded(999)); // out of bounds
+    }
+
+    #[test]
+    fn test_frame_store_window_range() {
+        let mut store = FrameStore::default();
+        store.total_frames = 100;
+
+        // Center at 50, window 10 → [45, 56)
+        let (lo, hi) = store.window_range(50, 10);
+        assert_eq!(lo, 45);
+        assert_eq!(hi, 56);
+
+        // Near start → clamped
+        let (lo, hi) = store.window_range(2, 10);
+        assert_eq!(lo, 0);
+        assert_eq!(hi, 8);
+
+        // Near end → clamped
+        let (lo, hi) = store.window_range(98, 10);
+        assert_eq!(lo, 93);
+        assert_eq!(hi, 100);
+    }
+
+    // ── MeshFileFormat ────────────────────────────────────────────────
+
+    #[test]
+    fn test_mesh_format_from_extension() {
+        assert_eq!(
+            MeshFileFormat::from_extension("stl"),
+            Some(MeshFileFormat::Stl)
+        );
+        assert_eq!(
+            MeshFileFormat::from_extension("STL"),
+            Some(MeshFileFormat::Stl)
+        );
+        assert_eq!(
+            MeshFileFormat::from_extension("gltf"),
+            Some(MeshFileFormat::Gltf)
+        );
+        assert_eq!(
+            MeshFileFormat::from_extension("glb"),
+            Some(MeshFileFormat::Glb)
+        );
+        assert_eq!(MeshFileFormat::from_extension("obj"), None);
+    }
+
+    #[test]
+    fn test_mesh_format_is_gltf() {
+        assert!(!MeshFileFormat::Stl.is_gltf());
+        assert!(MeshFileFormat::Gltf.is_gltf());
+        assert!(MeshFileFormat::Glb.is_gltf());
     }
 }
