@@ -12,12 +12,14 @@ mod lighting_section;
 mod material_section;
 mod perf_section;
 mod rendering_section;
+mod spatial_section;
 
 pub use environment_light_section::render_environment_light_controls;
 pub use lighting_section::{render_lighting_controls, GenerateGroupState};
 pub use material_section::render_material_controls;
 pub use perf_section::render_perf_section;
 pub use rendering_section::render_rendering_section;
+pub use spatial_section::render_spatial_section;
 
 use bevy::diagnostic::DiagnosticsStore;
 use bevy::prelude::*;
@@ -27,6 +29,7 @@ use crate::app::systems::diagnostics::RenderingStats;
 use crate::app::ui::state::{MaterialConfig, RenderConfig, UiState};
 use crate::lib::lighting::{EnvironmentLightConfig, LightingRig};
 use crate::lib::mesh_info::MeshDimensions;
+use crate::lib::sequence::loader::SpatialIndex;
 use crate::lib::sequence::FrameStore;
 
 /// System that renders the environment panel (left sidebar).
@@ -43,6 +46,7 @@ pub fn environment_panel_system(
     mut render_config: ResMut<RenderConfig>,
     mesh_dims: Res<MeshDimensions>,
     frame_store: Res<FrameStore>,
+    spatial_index: Res<SpatialIndex>,
     diagnostics: Res<DiagnosticsStore>,
     rendering_stats: Res<RenderingStats>,
 ) {
@@ -103,6 +107,11 @@ pub fn environment_panel_system(
 
                     // ── Rendering ──────────────────────────────────────
                     render_rendering_section(ui, &mut ui_state, &mut render_config, &frame_store);
+
+                    ui.add_space(5.0);
+
+                    // ── Spatial ────────────────────────────────────────
+                    render_spatial_section(ui, &mut ui_state, &frame_store, &spatial_index);
 
                     ui.add_space(5.0);
 
