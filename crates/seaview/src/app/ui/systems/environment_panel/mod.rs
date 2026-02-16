@@ -30,7 +30,7 @@ use crate::app::systems::diagnostics::RenderingStats;
 use crate::app::ui::state::{MaterialConfig, RenderConfig, UiState};
 use crate::lib::lighting::{EnvironmentLightConfig, LightingRig};
 use crate::lib::mesh_info::MeshDimensions;
-use crate::lib::sequence::loader::SpatialIndex;
+use crate::lib::sequence::loader::spatial_index::SpatialIndex;
 use crate::lib::sequence::FrameStore;
 
 /// System that renders the environment panel (left sidebar).
@@ -47,8 +47,8 @@ pub fn environment_panel_system(
     mut render_config: ResMut<RenderConfig>,
     mesh_dims: Res<MeshDimensions>,
     frame_store: Res<FrameStore>,
-    spatial_index: Res<SpatialIndex>,
-    mut bvh_config: ResMut<BvhGizmoConfig>,
+    spatial_index: Option<Res<SpatialIndex>>,
+    mut bvh_config: Option<ResMut<BvhGizmoConfig>>,
     diagnostics: Res<DiagnosticsStore>,
     rendering_stats: Res<RenderingStats>,
 ) {
@@ -112,14 +112,11 @@ pub fn environment_panel_system(
 
                     ui.add_space(5.0);
 
-                    // ── Spatial ────────────────────────────────────────
-                    render_spatial_section(
-                        ui,
-                        &mut ui_state,
-                        &frame_store,
-                        &spatial_index,
-                        &mut bvh_config,
-                    );
+                    // ── Spatial (only when SpatialAcceleratorPlugin is loaded) ──
+                    if let (Some(si), Some(mut bvh)) = (spatial_index.as_ref(), bvh_config.as_mut())
+                    {
+                        render_spatial_section(ui, &mut ui_state, &frame_store, &si, &mut bvh);
+                    }
 
                     ui.add_space(5.0);
 

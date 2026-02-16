@@ -20,6 +20,8 @@ pub mod lib {
 
 pub mod app {
     pub mod cli;
+    #[cfg(feature = "spatial")]
+    pub mod spatial_accelerator;
     pub mod systems;
     pub mod ui;
 }

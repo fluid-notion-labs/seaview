@@ -175,9 +175,11 @@ fn main() {
         .add_plugins(SeaviewUiPlugin)
         .add_plugins(NightLightingPlugin)
         .add_plugins(MeshInfoPlugin)
-        .add_plugins(seaview::app::systems::AppSystemsPlugin)
-        .add_plugins(seaview::app::systems::bvh_gizmos::BvhGizmosPlugin)
-        .insert_resource(args)
+        .add_plugins(seaview::app::systems::AppSystemsPlugin);
+    #[cfg(feature = "spatial")]
+    app.add_plugins(seaview::app::spatial_accelerator::SpatialAcceleratorPlugin);
+
+    app.insert_resource(args)
         .insert_resource(source_orientation)
         .insert_resource(settings_resource)
         .insert_resource(global_settings)

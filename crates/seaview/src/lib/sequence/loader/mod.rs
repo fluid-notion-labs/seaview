@@ -56,7 +56,7 @@ mod assets;
 mod frame_window;
 mod load_queue;
 mod loading_tracker;
-mod spatial_index;
+pub(crate) mod spatial_index;
 
 // ── Public re-exports ─────────────────────────────────────────────────────
 pub(crate) use assets::AssetIndex;
@@ -113,7 +113,6 @@ impl Plugin for SequenceLoaderPlugin {
             .init_resource::<LoaderConfig>()
             .init_resource::<AssetIndex>()
             .init_resource::<LoadQueue>()
-            .init_resource::<SpatialIndex>()
             .add_message::<FrameLoadedEvent>()
             .add_message::<LoadSequenceRequest>()
             .add_systems(
@@ -124,7 +123,6 @@ impl Plugin for SequenceLoaderPlugin {
                     load_queue::drain_load_queue,
                     loading_tracker::extract_gltf_meshes,
                     loading_tracker::track_asset_loading,
-                    spatial_index::build_spatial_meshes,
                 )
                     .chain(),
             )
@@ -285,7 +283,7 @@ fn handle_load_requests(
     mut timeline: ResMut<Timeline>,
     memory_budget: Res<MemoryBudget>,
     mut load_queue: ResMut<LoadQueue>,
-    mut spatial_index: ResMut<SpatialIndex>,
+    mut spatial_index: Option<ResMut<SpatialIndex>>,
 ) {
     for request in load_requests.read() {
         info!(
@@ -328,10 +326,10 @@ fn handle_load_requests(
         asset_index.reset();
         load_queue.clear();
 
-        // SpatialIndex is reset after we know the frame count (below).
-
         let n = request.frame_paths.len();
-        spatial_index.reset(n);
+        if let Some(ref mut si) = spatial_index {
+            si.reset(n);
+        }
         frame_store.total_frames = n;
         frame_store.loading = true;
         frame_store.format = Some(format);

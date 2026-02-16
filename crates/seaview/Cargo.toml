@@ -47,6 +47,11 @@ tempfile = "3.8"
 
 [features]
 default = []
+# Spatial mesh acceleration structures (BVH via parry3d).  Builds a
+# per-frame BVH for ray casting / point projection.  Currently expensive
+# (~300-700 ms per frame on large meshes) and not yet lazy/async, so
+# disabled by default until the lazy-build epic lands.
+spatial = []
 # After bulk mesh unloads, call libc::malloc_trim(0) to return freed pages
 # to the OS.  Without this glibc keeps the pages in its arena and RSS stays
 # high even though the memory is logically free.  Can be expensive on

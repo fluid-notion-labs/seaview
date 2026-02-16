@@ -32,22 +32,31 @@ pub fn render_spatial_section(
             let built = spatial_index.built_count();
             let total = spatial_index.total_slots();
 
+            let queue_len = spatial_index.deferred_queue_len();
             let (status_text, status_color) = if total == 0 {
-                ("No sequence loaded", egui::Color32::GRAY)
+                ("No sequence loaded".to_string(), egui::Color32::GRAY)
             } else if built == total {
-                ("\u{2714} Available", egui::Color32::from_rgb(100, 255, 100))
+                (
+                    "\u{2714} Available".to_string(),
+                    egui::Color32::from_rgb(100, 255, 100),
+                )
+            } else if queue_len > 0 {
+                (
+                    format!("\u{231b} Building\u{2026} ({} queued)", queue_len),
+                    egui::Color32::from_rgb(255, 255, 100),
+                )
             } else if built > 0 {
                 (
-                    "\u{231b} Building\u{2026}",
+                    format!("\u{231b} Building\u{2026} ({}/{})", built, total),
                     egui::Color32::from_rgb(255, 255, 100),
                 )
             } else {
-                ("Waiting for frames", egui::Color32::GRAY)
+                ("Waiting for frames".to_string(), egui::Color32::GRAY)
             };
 
             ui.horizontal(|ui| {
                 ui.label("Status:");
-                ui.colored_label(status_color, status_text);
+                ui.colored_label(status_color, &status_text);
             });
 
             if total > 0 {
@@ -83,6 +92,35 @@ pub fn render_spatial_section(
                             if built > 0 {
                                 ui.label("Avg per frame:");
                                 ui.label(format_time(build_time / built as f64));
+                                ui.end_row();
+                            }
+
+                            let queue_len = spatial_index.deferred_queue_len();
+                            if queue_len > 0 {
+                                ui.label("Deferred queue:");
+                                ui.label(format!("{}", queue_len));
+                                ui.end_row();
+                            }
+
+                            ui.label("Eager / Lazy:");
+                            ui.label(format!(
+                                "{} / {}",
+                                spatial_index.eager_build_count, spatial_index.lazy_build_count,
+                            ));
+                            ui.end_row();
+
+                            if spatial_index.tick_count > 0 {
+                                ui.label("Avg system time:");
+                                ui.label(format_time(
+                                    spatial_index.total_system_time_ms
+                                        / spatial_index.tick_count as f64,
+                                ));
+                                ui.end_row();
+                            }
+
+                            if spatial_index.peak_queue_len > 0 {
+                                ui.label("Peak queue:");
+                                ui.label(format!("{}", spatial_index.peak_queue_len));
                                 ui.end_row();
                             }
                         });
