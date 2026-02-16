@@ -14,6 +14,7 @@ pub mod lib {
     pub mod sequence;
     pub mod session;
     pub mod settings;
+    pub mod spatial;
     pub mod toast;
 }
 
@@ -41,4 +42,5 @@ pub use lib::sequence::{
     distribute_sections, FrameInfo, LoadSection, MeshFileFormat, Sequence, Timeline,
 };
 pub use lib::session::{self, Session, SessionManager, SessionPlugin};
+pub use lib::spatial::{PointProjection, RayHit, SpatialMesh, SpatialMeshError};
 pub use lib::toast::{Toast, ToastLevel, ToastQueue};
