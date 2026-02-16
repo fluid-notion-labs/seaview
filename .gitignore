@@ -3,7 +3,7 @@ tmp
 assets/test_sequences/right-hander
 assets/test_sequences/sphere-fluid
 output
-vendor
+#vendor
 /bin
 runs
 trace-*.json
