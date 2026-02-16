@@ -1,11 +1,12 @@
 //! Spatial section for the Environment Panel
 //!
 //! This module renders spatial mesh diagnostics (BVH build status, triangle
-//! count, AABB dimensions, build time) inside the environment panel's
-//! accordion UI.
+//! count, AABB dimensions, build time) and BVH wireframe visualization
+//! controls inside the environment panel's accordion UI.
 
 use bevy_egui::egui;
 
+use crate::app::systems::bvh_gizmos::BvhGizmoConfig;
 use crate::app::ui::state::UiState;
 use crate::lib::sequence::loader::SpatialIndex;
 use crate::lib::sequence::FrameStore;
@@ -13,12 +14,14 @@ use crate::lib::sequence::FrameStore;
 /// Renders the spatial section inside an existing egui `Ui` context.
 ///
 /// Shows BVH build progress, per-frame spatial mesh stats (triangles,
-/// vertices, AABB), and cumulative build time.
+/// vertices, AABB), cumulative build time, and BVH wireframe visualization
+/// controls.
 pub fn render_spatial_section(
     ui: &mut egui::Ui,
     ui_state: &mut UiState,
     frame_store: &FrameStore,
     spatial_index: &SpatialIndex,
+    bvh_config: &mut BvhGizmoConfig,
 ) {
     egui::CollapsingHeader::new("\u{1f4d0} Spatial")
         .default_open(ui_state.collapsible.spatial_open)
@@ -151,10 +154,77 @@ pub fn render_spatial_section(
                                     ui.end_row();
                                 });
                         }
+
+                        // ── BVH visualization controls ─────────────
+                        ui.add_space(6.0);
+                        ui.heading("BVH Visualization");
+                        ui.add_space(2.0);
+
+                        ui.checkbox(&mut bvh_config.enabled, "Show BVH wireframes")
+                            .on_hover_text(
+                                "Draw wireframe boxes for the bounding volume hierarchy nodes",
+                            );
+
+                        if bvh_config.enabled {
+                            ui.add_space(4.0);
+
+                            // Depth slider
+                            let max_bvh_depth =
+                                meshes.first().map(|sm| sm.bvh_depth()).unwrap_or(10);
+                            let slider_max = max_bvh_depth.max(1);
+                            ui.add(
+                                egui::Slider::new(&mut bvh_config.max_depth, 0..=slider_max)
+                                    .text("Depth")
+                                    .clamping(egui::SliderClamping::Always),
+                            )
+                            .on_hover_text(
+                                "Maximum BVH tree depth to display (0 = root children only)",
+                            );
+
+                            ui.add_space(2.0);
+
+                            // Node type filters
+                            ui.horizontal(|ui| {
+                                ui.checkbox(&mut bvh_config.show_internal, "Internal");
+                                ui.checkbox(&mut bvh_config.show_leaves, "Leaves");
+                            });
+
+                            ui.add_space(2.0);
+
+                            // Opacity slider
+                            ui.add(
+                                egui::Slider::new(&mut bvh_config.opacity, 0.05..=1.0)
+                                    .text("Opacity")
+                                    .fixed_decimals(2),
+                            );
+
+                            // Node count preview
+                            if let Some(first) = meshes.first() {
+                                let nodes = first.bvh_node_aabbs(bvh_config.max_depth);
+                                let shown = nodes
+                                    .iter()
+                                    .filter(|n| {
+                                        (n.is_leaf && bvh_config.show_leaves)
+                                            || (!n.is_leaf && bvh_config.show_internal)
+                                    })
+                                    .count();
+                                ui.add_space(2.0);
+                                ui.label(
+                                    egui::RichText::new(format!(
+                                        "{} boxes drawn ({} internal, {} leaves)",
+                                        shown,
+                                        nodes.iter().filter(|n| !n.is_leaf).count(),
+                                        nodes.iter().filter(|n| n.is_leaf).count(),
+                                    ))
+                                    .small()
+                                    .color(egui::Color32::GRAY),
+                                );
+                            }
+                        }
                     } else {
                         ui.colored_label(
                             egui::Color32::GRAY,
-                            format!("Frame {} — not yet built", current),
+                            format!("Frame {} \u{2014} not yet built", current),
                         );
                     }
                 }

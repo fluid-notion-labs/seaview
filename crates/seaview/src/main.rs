@@ -176,6 +176,7 @@ fn main() {
         .add_plugins(NightLightingPlugin)
         .add_plugins(MeshInfoPlugin)
         .add_plugins(seaview::app::systems::AppSystemsPlugin)
+        .add_plugins(seaview::app::systems::bvh_gizmos::BvhGizmosPlugin)
         .insert_resource(args)
         .insert_resource(source_orientation)
         .insert_resource(settings_resource)

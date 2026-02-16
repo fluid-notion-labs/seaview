@@ -42,5 +42,5 @@ pub use lib::sequence::{
     distribute_sections, FrameInfo, LoadSection, MeshFileFormat, Sequence, SpatialIndex, Timeline,
 };
 pub use lib::session::{self, Session, SessionManager, SessionPlugin};
-pub use lib::spatial::{PointProjection, RayHit, SpatialMesh, SpatialMeshError};
+pub use lib::spatial::{BvhNodeAabb, PointProjection, RayHit, SpatialMesh, SpatialMeshError};
 pub use lib::toast::{Toast, ToastLevel, ToastQueue};

@@ -25,6 +25,7 @@ use bevy::diagnostic::DiagnosticsStore;
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 
+use crate::app::systems::bvh_gizmos::BvhGizmoConfig;
 use crate::app::systems::diagnostics::RenderingStats;
 use crate::app::ui::state::{MaterialConfig, RenderConfig, UiState};
 use crate::lib::lighting::{EnvironmentLightConfig, LightingRig};
@@ -47,6 +48,7 @@ pub fn environment_panel_system(
     mesh_dims: Res<MeshDimensions>,
     frame_store: Res<FrameStore>,
     spatial_index: Res<SpatialIndex>,
+    mut bvh_config: ResMut<BvhGizmoConfig>,
     diagnostics: Res<DiagnosticsStore>,
     rendering_stats: Res<RenderingStats>,
 ) {
@@ -111,7 +113,13 @@ pub fn environment_panel_system(
                     ui.add_space(5.0);
 
                     // ── Spatial ────────────────────────────────────────
-                    render_spatial_section(ui, &mut ui_state, &frame_store, &spatial_index);
+                    render_spatial_section(
+                        ui,
+                        &mut ui_state,
+                        &frame_store,
+                        &spatial_index,
+                        &mut bvh_config,
+                    );
 
                     ui.add_space(5.0);
 

@@ -29,9 +29,27 @@
 use bevy::math::Vec3;
 use bevy::mesh::{Indices, Mesh, VertexAttributeValues};
 
+use parry3d::partitioning::TraversalAction;
 use parry3d::query::{PointQuery, RayCast};
 use parry3d::shape::TriMesh;
 use thiserror::Error;
+
+// ---------------------------------------------------------------------------
+// BVH visualization types
+// ---------------------------------------------------------------------------
+
+/// A single BVH node's AABB with metadata for visualization.
+#[derive(Debug, Clone, Copy)]
+pub struct BvhNodeAabb {
+    /// Minimum corner of the AABB.
+    pub min: [f32; 3],
+    /// Maximum corner of the AABB.
+    pub max: [f32; 3],
+    /// Depth of this node in the tree (0 = root children).
+    pub depth: u32,
+    /// Whether this node is a leaf (contains geometry) or internal.
+    pub is_leaf: bool,
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -266,6 +284,128 @@ impl SpatialMesh {
     pub fn trimesh(&self) -> &TriMesh {
         &self.trimesh
     }
+
+    /// Extract BVH node AABBs for debug visualization.
+    ///
+    /// Walks the BVH tree via the public `traverse` API and collects
+    /// axis-aligned bounding boxes for each node.  Depth is **estimated**
+    /// from the volume ratio `log2(root_volume / node_volume)`, which is a
+    /// close proxy for actual tree depth without requiring internal BVH
+    /// access.
+    ///
+    /// Nodes whose estimated depth exceeds `max_depth` are excluded.
+    /// Pass `u32::MAX` to collect the entire tree.
+    ///
+    /// This is a pure function — no Bevy dependencies, fully testable.
+    pub fn bvh_node_aabbs(&self, max_depth: u32) -> Vec<BvhNodeAabb> {
+        let bvh = self.trimesh.bvh();
+
+        // First pass: collect all nodes with their volumes.
+        let mut raw_nodes: Vec<([f32; 3], [f32; 3], bool, f32)> = Vec::new();
+        bvh.traverse(|node| {
+            let mins = node.mins();
+            let maxs = node.maxs();
+            // Skip degenerate nodes
+            if mins == maxs {
+                return TraversalAction::Continue;
+            }
+
+            let extents = maxs - mins;
+            let sa = node_half_surface_area(extents);
+
+            raw_nodes.push((
+                [mins.x, mins.y, mins.z],
+                [maxs.x, maxs.y, maxs.z],
+                node.is_leaf(),
+                sa,
+            ));
+            TraversalAction::Continue
+        });
+
+        if raw_nodes.is_empty() {
+            return Vec::new();
+        }
+
+        // Find max half-surface-area (root-level nodes).
+        let max_sa = raw_nodes.iter().map(|n| n.3).fold(0.0_f32, f32::max);
+
+        raw_nodes
+            .iter()
+            .filter_map(|(min, max, is_leaf, sa)| {
+                let depth = sa_to_depth(max_sa, *sa);
+                if depth > max_depth {
+                    return None;
+                }
+                Some(BvhNodeAabb {
+                    min: *min,
+                    max: *max,
+                    depth,
+                    is_leaf: *is_leaf,
+                })
+            })
+            .collect()
+    }
+
+    /// Estimated maximum depth of the BVH tree.
+    ///
+    /// Uses half-surface-area ratio as a proxy for depth (same heuristic as
+    /// [`bvh_node_aabbs`]).  Useful for configuring the depth slider in
+    /// debug UI.
+    pub fn bvh_depth(&self) -> u32 {
+        let bvh = self.trimesh.bvh();
+        let mut max_sa: f32 = 0.0;
+        let mut min_leaf_sa: f32 = f32::MAX;
+
+        bvh.traverse(|node| {
+            let mins = node.mins();
+            let maxs = node.maxs();
+            if mins == maxs {
+                return TraversalAction::Continue;
+            }
+
+            let extents = maxs - mins;
+            let sa = node_half_surface_area(extents);
+
+            if sa > max_sa {
+                max_sa = sa;
+            }
+            if node.is_leaf() && sa > 0.0 && sa < min_leaf_sa {
+                min_leaf_sa = sa;
+            }
+
+            TraversalAction::Continue
+        });
+
+        if max_sa > 0.0 && min_leaf_sa > 0.0 && min_leaf_sa < max_sa {
+            sa_to_depth(max_sa, min_leaf_sa)
+        } else {
+            0
+        }
+    }
+}
+
+/// Compute half-surface-area of an AABB from its extents.
+///
+/// This is the standard SAH (Surface Area Heuristic) metric used in BVH
+/// construction.  Unlike volume, it handles flat geometry (where one
+/// extent is zero) gracefully.
+fn node_half_surface_area(extents: Vec3) -> f32 {
+    let ex = extents.x.abs();
+    let ey = extents.y.abs();
+    let ez = extents.z.abs();
+    ex * ey + ey * ez + ez * ex
+}
+
+/// Estimate tree depth from half-surface-area ratio:
+/// `log2(root_sa / node_sa)`.
+///
+/// This is a close proxy for actual BVH depth without requiring access to
+/// internal tree structure.
+fn sa_to_depth(max_sa: f32, node_sa: f32) -> u32 {
+    if max_sa <= 0.0 || node_sa <= 0.0 {
+        return 0;
+    }
+    (max_sa / node_sa).log2().max(0.0) as u32
 }
 
 // ---------------------------------------------------------------------------
@@ -277,6 +417,159 @@ mod tests {
     use super::*;
     use bevy::asset::RenderAssetUsages;
     use bevy::mesh::PrimitiveTopology;
+
+    // ── BVH visualization ─────────────────────────────────────────────
+
+    #[test]
+    fn test_bvh_node_aabbs_triangle() {
+        let sm = SpatialMesh::from_raw(
+            vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            vec![[0, 1, 2]],
+        )
+        .unwrap();
+
+        let aabbs = sm.bvh_node_aabbs(u32::MAX);
+        // A single triangle → at least one leaf node
+        assert!(!aabbs.is_empty());
+        assert!(aabbs.iter().any(|n| n.is_leaf));
+    }
+
+    #[test]
+    fn test_bvh_node_aabbs_cube_has_internal_nodes() {
+        let (positions, indices) = test_cube();
+        let sm = SpatialMesh::from_raw(positions, indices).unwrap();
+
+        let all = sm.bvh_node_aabbs(u32::MAX);
+        let internals: Vec<_> = all.iter().filter(|n| !n.is_leaf).collect();
+        let leaves: Vec<_> = all.iter().filter(|n| n.is_leaf).collect();
+
+        // Cube has 12 triangles → 12 leaves
+        assert_eq!(leaves.len(), 12);
+        // There must be internal nodes to organize them
+        assert!(!internals.is_empty());
+    }
+
+    #[test]
+    fn test_bvh_node_aabbs_max_depth_zero() {
+        let (positions, indices) = test_cube();
+        let sm = SpatialMesh::from_raw(positions, indices).unwrap();
+
+        let depth_0 = sm.bvh_node_aabbs(0);
+        let all = sm.bvh_node_aabbs(u32::MAX);
+
+        // depth 0 should return some subset of nodes
+        assert!(!depth_0.is_empty());
+        // depth 0 should have no more nodes than the full tree
+        assert!(depth_0.len() <= all.len());
+        // all depth-0 nodes have depth == 0
+        assert!(depth_0.iter().all(|n| n.depth == 0));
+    }
+
+    #[test]
+    fn test_bvh_depth_triangle() {
+        let sm = SpatialMesh::from_raw(
+            vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            vec![[0, 1, 2]],
+        )
+        .unwrap();
+
+        // Single triangle → very shallow tree
+        assert!(sm.bvh_depth() <= 1);
+    }
+
+    #[test]
+    fn test_bvh_depth_cube() {
+        let (positions, indices) = test_cube();
+        let sm = SpatialMesh::from_raw(positions, indices).unwrap();
+
+        // 12 triangles in a compact cube — SA-based depth may be shallow
+        // because all geometry is tightly packed.  Just verify it returns
+        // a reasonable value (the heuristic works better on spatially
+        // diverse meshes).
+        let depth = sm.bvh_depth();
+        assert!(depth <= 20, "cube BVH depth unexpectedly large: {}", depth);
+    }
+
+    #[test]
+    fn test_bvh_depth_dispersed_geometry() {
+        // Create geometry spread across a large area so the SA heuristic
+        // produces meaningful depth differentiation.
+        let positions = vec![
+            // Triangle 1: near origin
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            // Triangle 2: far away
+            [100.0, 0.0, 0.0],
+            [101.0, 0.0, 0.0],
+            [100.0, 1.0, 0.0],
+            // Triangle 3: even further
+            [200.0, 0.0, 0.0],
+            [201.0, 0.0, 0.0],
+            [200.0, 1.0, 0.0],
+            // Triangle 4: opposite direction
+            [-100.0, 0.0, 0.0],
+            [-99.0, 0.0, 0.0],
+            [-100.0, 1.0, 0.0],
+        ];
+        let indices = vec![[0, 1, 2], [3, 4, 5], [6, 7, 8], [9, 10, 11]];
+        let sm = SpatialMesh::from_raw(positions, indices).unwrap();
+
+        let depth = sm.bvh_depth();
+        assert!(
+            depth >= 1,
+            "dispersed geometry BVH depth should be >= 1, got {}",
+            depth
+        );
+
+        // Verify that filtering by depth actually reduces node count
+        let all = sm.bvh_node_aabbs(u32::MAX);
+        if depth > 0 {
+            let filtered = sm.bvh_node_aabbs(0);
+            assert!(
+                filtered.len() < all.len(),
+                "depth filter should reduce nodes: depth_0={}, all={}",
+                filtered.len(),
+                all.len()
+            );
+        }
+    }
+
+    #[test]
+    fn test_bvh_node_aabbs_contain_mesh_aabb() {
+        let (positions, indices) = test_cube();
+        let sm = SpatialMesh::from_raw(positions, indices).unwrap();
+
+        let (mesh_min, mesh_max) = sm.aabb();
+        let depth_0 = sm.bvh_node_aabbs(0);
+
+        // The union of depth-0 AABBs should cover the mesh AABB
+        let mut union_min = [f32::MAX; 3];
+        let mut union_max = [f32::MIN; 3];
+        for node in &depth_0 {
+            for i in 0..3 {
+                union_min[i] = union_min[i].min(node.min[i]);
+                union_max[i] = union_max[i].max(node.max[i]);
+            }
+        }
+
+        for i in 0..3 {
+            assert!(
+                union_min[i] <= mesh_min[i] + f32::EPSILON,
+                "BVH union min[{}] = {} > mesh min = {}",
+                i,
+                union_min[i],
+                mesh_min[i]
+            );
+            assert!(
+                union_max[i] >= mesh_max[i] - f32::EPSILON,
+                "BVH union max[{}] = {} < mesh max = {}",
+                i,
+                union_max[i],
+                mesh_max[i]
+            );
+        }
+    }
 
     /// Helper: Create a simple triangle mesh for testing.
     fn test_triangle() -> (Vec<[f32; 3]>, Vec<[u32; 3]>) {

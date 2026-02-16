@@ -1,3 +1,4 @@
+pub mod bvh_gizmos;
 pub mod camera;
 pub mod diagnostics;
 // pub mod network;
