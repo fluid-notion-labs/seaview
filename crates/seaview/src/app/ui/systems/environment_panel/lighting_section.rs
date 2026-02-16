@@ -528,17 +528,49 @@ fn render_light_map(
     istate.hovered = nearest.map(|(gid, lid, _)| (gid, lid));
 
     // ------------------------------------------------------------------
-    // 5. Interaction: ctrl-click toggles visibility, drag repositions
+    // 5. Interaction: click toggles visibility, ctrl-click adds light,
+    //    drag repositions
     // ------------------------------------------------------------------
 
-    // Ctrl-click → toggle per-light visibility
-    if response.clicked() && modifiers.command {
-        if let Some((gid, lid)) = istate.hovered {
+    // Click on a light → toggle per-light visibility
+    // Ctrl-click on empty space → add a new light at that position
+    if response.clicked() {
+        if modifiers.command {
+            // Ctrl-click → add a new light at the clicked position
+            if let Some(pp) = pointer_pos {
+                let mut world = from_px(pp.x, pp.y);
+                if modifiers.shift {
+                    world.x = snap(world.x, SNAP_GRID);
+                    world.y = snap(world.y, SNAP_GRID);
+                }
+
+                // Use the active group, or create one if none exists
+                let target_group_id = match rig.active_group {
+                    Some(gid) if rig.group(gid).is_some() => gid,
+                    _ => {
+                        let group = LightGroup::new("Manual");
+                        let gid = rig.add_group(group);
+                        rig.active_group = Some(gid);
+                        gid
+                    }
+                };
+
+                // Auto-name: count existing lights in the target group
+                let next_num = rig
+                    .group(target_group_id)
+                    .map_or(1, |g| g.lights.len() + 1);
+                let light =
+                    Light::new(format!("Light {}", next_num)).with_position(world);
+                rig.add_light(target_group_id, light);
+            }
+        } else if let Some((gid, lid)) = istate.hovered {
+            // Plain click on a light → toggle visibility
             rig.toggle_light_visibility(gid, lid);
         }
     }
 
-    // Drag start → latch the hovered light
+    // Drag start → latch the hovered light (only without ctrl to avoid
+    // conflicting with ctrl-click-to-add)
     if response.drag_started() && !modifiers.command {
         istate.dragged = istate.hovered;
     }
@@ -733,7 +765,7 @@ fn render_light_map(
     // Interaction hint below the map
     ui.add_space(2.0);
     ui.label(
-        egui::RichText::new("Drag to move · Ctrl-click to toggle · Shift snaps to grid")
+        egui::RichText::new("Click to toggle · Ctrl-click to add · Drag to move · Shift snaps")
             .small()
             .color(egui::Color32::from_gray(100)),
     );
