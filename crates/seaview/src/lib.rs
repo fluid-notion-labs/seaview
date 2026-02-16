@@ -39,7 +39,7 @@ pub use lib::memory_budget::{
 pub use lib::sequence::{
     self, compute_spawn_window,
     discovery::{discover_sequences, SequencePatterns},
-    distribute_sections, FrameInfo, LoadSection, MeshFileFormat, Sequence, Timeline,
+    distribute_sections, FrameInfo, LoadSection, MeshFileFormat, Sequence, SpatialIndex, Timeline,
 };
 pub use lib::session::{self, Session, SessionManager, SessionPlugin};
 pub use lib::spatial::{PointProjection, RayHit, SpatialMesh, SpatialMeshError};

@@ -37,6 +37,7 @@ use crate::lib::memory_budget::MemoryBudget;
 // Re-export commonly used types from loader
 pub use loader::{
     FrameLoadedEvent, FrameStore, LoadSequenceRequest, LoaderConfig, LoadingStats, MeshFileFormat,
+    SpatialIndex,
 };
 pub use watch::{LoadingPhase, LoadingPhaseState, WatchConfig, WatchPlugin};
 

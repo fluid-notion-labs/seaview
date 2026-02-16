@@ -56,6 +56,7 @@ mod assets;
 mod frame_window;
 mod load_queue;
 mod loading_tracker;
+mod spatial_index;
 
 // ── Public re-exports ─────────────────────────────────────────────────────
 pub(crate) use assets::AssetIndex;
@@ -63,6 +64,7 @@ pub use assets::{FrameStore, LoaderConfig, LoadingStats, MeshFileFormat};
 pub use frame_window::{compute_window_delta, WindowDelta};
 pub use load_queue::LoadQueue;
 pub use loading_tracker::default_material_properties;
+pub use spatial_index::SpatialIndex;
 
 use bevy::asset::RenderAssetUsages;
 use bevy::gltf::{Gltf, GltfLoaderSettings};
@@ -111,6 +113,7 @@ impl Plugin for SequenceLoaderPlugin {
             .init_resource::<LoaderConfig>()
             .init_resource::<AssetIndex>()
             .init_resource::<LoadQueue>()
+            .init_resource::<SpatialIndex>()
             .add_message::<FrameLoadedEvent>()
             .add_message::<LoadSequenceRequest>()
             .add_systems(
@@ -121,6 +124,7 @@ impl Plugin for SequenceLoaderPlugin {
                     load_queue::drain_load_queue,
                     loading_tracker::extract_gltf_meshes,
                     loading_tracker::track_asset_loading,
+                    spatial_index::build_spatial_meshes,
                 )
                     .chain(),
             )
@@ -281,6 +285,7 @@ fn handle_load_requests(
     mut timeline: ResMut<Timeline>,
     memory_budget: Res<MemoryBudget>,
     mut load_queue: ResMut<LoadQueue>,
+    mut spatial_index: ResMut<SpatialIndex>,
 ) {
     for request in load_requests.read() {
         info!(
@@ -323,7 +328,10 @@ fn handle_load_requests(
         asset_index.reset();
         load_queue.clear();
 
+        // SpatialIndex is reset after we know the frame count (below).
+
         let n = request.frame_paths.len();
+        spatial_index.reset(n);
         frame_store.total_frames = n;
         frame_store.loading = true;
         frame_store.format = Some(format);
