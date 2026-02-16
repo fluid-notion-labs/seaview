@@ -2,16 +2,70 @@
 //!
 //! This module renders the material controls (base color, opacity, roughness,
 //! metallic, reflectance, emissive, double-sided) inside the environment
-//! panel's accordion UI.
+//! panel's accordion UI, with a material preset selector at the top.
 
 use bevy::prelude::*;
 use bevy_egui::egui;
 
 use crate::app::ui::state::MaterialConfig;
+use crate::lib::lighting::MaterialPreset;
+
+/// Persistent state for the material preset selector, stored in egui temp data.
+#[derive(Clone, Default)]
+struct MaterialPresetState {
+    /// Currently selected preset index, or `None` for "Custom".
+    selected: Option<usize>,
+}
 
 /// Renders the material controls inside an existing egui `Ui` context.
 pub fn render_material_controls(ui: &mut egui::Ui, material_config: &mut MaterialConfig) {
-    // Base color
+    // ── Preset selector ───────────────────────────────────────────────
+    let preset_id = egui::Id::new("mat_preset_state");
+    let mut preset_state: MaterialPresetState = ui
+        .data(|d| d.get_temp::<MaterialPresetState>(preset_id))
+        .unwrap_or_default();
+
+    let active_preset = preset_state
+        .selected
+        .and_then(|i| MaterialPreset::ALL.get(i).copied());
+
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new("Preset")
+                .strong()
+                .color(egui::Color32::from_gray(180)),
+        );
+        egui::ComboBox::from_id_salt("mat_preset_combo")
+            .width(ui.available_width() - 4.0)
+            .selected_text(active_preset.map_or("Custom", |p| p.label()))
+            .show_ui(ui, |ui| {
+                if ui
+                    .selectable_label(active_preset.is_none(), "Custom")
+                    .clicked()
+                {
+                    preset_state.selected = None;
+                }
+                ui.separator();
+                for (idx, &preset) in MaterialPreset::ALL.iter().enumerate() {
+                    let selected = preset_state.selected == Some(idx);
+                    let resp = ui
+                        .selectable_label(selected, preset.label())
+                        .on_hover_text(preset.description());
+                    if resp.clicked() && !selected {
+                        *material_config = preset.config();
+                        preset_state.selected = Some(idx);
+                    }
+                }
+            });
+    });
+
+    ui.data_mut(|d| d.insert_temp(preset_id, preset_state));
+
+    ui.add_space(5.0);
+    ui.separator();
+    ui.add_space(5.0);
+
+    // ── Base color ────────────────────────────────────────────────────
     ui.heading("Base Color");
     ui.add_space(2.0);
     let srgba = material_config.base_color.to_srgba();

@@ -6,7 +6,14 @@
 
 use bevy_egui::egui;
 
-use crate::lib::lighting::EnvironmentLightConfig;
+use crate::lib::lighting::{EnvironmentLightConfig, EnvironmentPreset};
+
+/// Persistent state for the lighting preset selector, stored in egui temp data.
+#[derive(Clone, Default)]
+struct LightingPresetState {
+    /// Currently selected preset index, or `None` for "Custom".
+    selected: Option<usize>,
+}
 
 /// Renders the environment light controls inside an existing egui `Ui` context.
 ///
@@ -15,6 +22,52 @@ use crate::lib::lighting::EnvironmentLightConfig;
 /// - Ambient light colour and brightness
 /// - Directional light illuminance and colour
 pub fn render_environment_light_controls(ui: &mut egui::Ui, config: &mut EnvironmentLightConfig) {
+    // ── Preset selector ───────────────────────────────────────────────
+    let preset_id = egui::Id::new("env_preset_state");
+    let mut preset_state: LightingPresetState = ui
+        .data(|d| d.get_temp::<LightingPresetState>(preset_id))
+        .unwrap_or_default();
+
+    let active_preset = preset_state
+        .selected
+        .and_then(|i| EnvironmentPreset::ALL.get(i).copied());
+
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new("Preset")
+                .strong()
+                .color(egui::Color32::from_gray(180)),
+        );
+        egui::ComboBox::from_id_salt("env_preset_combo")
+            .width(ui.available_width() - 4.0)
+            .selected_text(active_preset.map_or("Custom", |p| p.label()))
+            .show_ui(ui, |ui| {
+                if ui
+                    .selectable_label(active_preset.is_none(), "Custom")
+                    .clicked()
+                {
+                    preset_state.selected = None;
+                }
+                ui.separator();
+                for (idx, &preset) in EnvironmentPreset::ALL.iter().enumerate() {
+                    let selected = preset_state.selected == Some(idx);
+                    let resp = ui
+                        .selectable_label(selected, preset.label())
+                        .on_hover_text(preset.description());
+                    if resp.clicked() && !selected {
+                        *config = preset.config();
+                        preset_state.selected = Some(idx);
+                    }
+                }
+            });
+    });
+
+    ui.data_mut(|d| d.insert_temp(preset_id, preset_state));
+
+    ui.add_space(5.0);
+    ui.separator();
+    ui.add_space(5.0);
+
     // Master toggle
     ui.horizontal(|ui| {
         ui.checkbox(&mut config.enabled, "Enabled");
