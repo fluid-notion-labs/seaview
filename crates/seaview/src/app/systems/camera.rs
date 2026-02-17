@@ -8,12 +8,15 @@
 //! - Escape: Release cursor
 //! - Shift: 10x movement speed boost
 //! - Alt: 0.1x movement speed (precision mode)
+//! - Ctrl+C: Center camera on mesh
 
-// use crate::lib::sequence::async_cache::AsyncMeshCache;
 use bevy::input::mouse::MouseMotion;
 use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 use bevy_egui::EguiContexts;
+
+use crate::lib::mesh_info::MeshDimensions;
+use crate::lib::sequence::loader::LoaderConfig;
 
 #[derive(Message)]
 pub struct CenterOnMeshEvent;
@@ -35,190 +38,64 @@ impl Default for FpsCamera {
     }
 }
 
-/// System that handles centering the camera on the current mesh
-/// TODO: Reimplement after switching to Bevy's asset loading
+/// System that handles centering the camera on the current mesh.
+///
+/// Uses [`MeshDimensions`] (pre-computed AABB) and [`LoaderConfig`]
+/// (coordinate transform) to position the camera at a good viewing distance
+/// looking at the mesh center.
 pub fn handle_center_on_mesh(
     mut center_events: MessageReader<CenterOnMeshEvent>,
-    _camera_query: Query<(&mut Transform, &mut FpsCamera), (With<Camera3d>, With<FpsCamera>)>,
-    // mesh_cache: Res<AsyncMeshCache>,
-    _meshes: Res<Assets<Mesh>>,
+    mut camera_query: Query<(&mut Transform, &mut FpsCamera), (With<Camera3d>, With<FpsCamera>)>,
+    mesh_dims: Res<MeshDimensions>,
+    loader_config: Res<LoaderConfig>,
 ) {
     for _event in center_events.read() {
-        warn!("CenterOnMeshEvent received but handler is disabled - needs reimplementation with Bevy asset loading");
-        // TODO: Reimplement mesh centering logic
-        /*
-        if let Some((path, mesh_handle)) = mesh_cache.cache.iter().next() {
-                        debug!("📁 Using mesh from path: {:?}", path);
-                        trace!("🔗 Mesh handle: {:?}", mesh_handle);
+        let (Some(mn), Some(mx)) = (mesh_dims.min, mesh_dims.max) else {
+            warn!("CenterOnMeshEvent: no mesh bounds available yet");
+            return;
+        };
 
-                        match meshes.get(mesh_handle) {
-                            Some(mesh) => {
-                                debug!("✅ Mesh found in assets");
+        // AABB center and radius in mesh-local space
+        let local_center = (mn + mx) * 0.5;
+        let local_radius = mn.distance(mx) * 0.5;
 
-                                // Calculate mesh centroid using 5% random sampling for performance
-                                let centroid = calculate_mesh_centroid(mesh);
-                                debug!("📊 Calculated centroid: {:?}", centroid);
+        // Transform to world space via the coordinate transform
+        let coord = loader_config.coord_transform;
+        let world_center = coord.transform_point(local_center);
 
-                                let bounds_radius = calculate_mesh_bounds_radius(mesh, centroid);
-                                debug!("📏 Mesh bounds radius: {:.2}", bounds_radius);
+        // Place camera at 2.5× the bounding-sphere radius, offset diagonally
+        let camera_distance = (local_radius * 2.5).max(10.0);
+        let camera_position =
+            world_center + Vec3::new(camera_distance, camera_distance * 0.5, camera_distance);
 
-                                // Position camera at a good viewing distance (2.5x the mesh bounds radius)
-                                let camera_distance = bounds_radius * 2.5;
-                                let camera_position = centroid
-                                    + Vec3::new(
-                                        camera_distance,
-                                        camera_distance * 0.5,
-                                        camera_distance,
-                                    );
+        let Ok((mut transform, mut fps_camera)) = camera_query.single_mut() else {
+            warn!("CenterOnMeshEvent: no camera entity found");
+            return;
+        };
 
-                                debug!("📹 Moving camera to: {:?}", camera_position);
-                                debug!("🎯 Looking at: {:?}", centroid);
+        transform.translation = camera_position;
+        transform.look_at(world_center, Vec3::Y);
 
-                                // Update camera transform
-                                transform.translation = camera_position;
-                                transform.look_at(centroid, Vec3::Y);
+        // Exit escape mode so the user can immediately control the camera
+        fps_camera.escape_mode = false;
 
-                                // Disable escape mode to allow immediate camera control
-                                fps_camera.escape_mode = false;
-                                debug!("🔓 Disabled escape mode");
-
-                                debug!("🎉 Camera centering completed successfully!");
-                            }
-                            None => {
-                                error!("❌ Mesh not found in assets for handle: {:?}", mesh_handle);
-                            }
-                        }
-                    } else {
-                        warn!("⚠️ No meshes in cache");
-                    }
-                } else {
-                    warn!("⚠️ No current mesh entity in cache");
-
-                    // Try anyway if we have meshes in cache
-                    if !mesh_cache.cache.is_empty() {
-                        debug!("🔄 Trying to center on first mesh in cache anyway...");
-
-                        if let Some((path, mesh_handle)) = mesh_cache.cache.iter().next() {
-                            debug!("📁 Using mesh from path: {:?}", path);
-
-                            if let Some(mesh) = meshes.get(mesh_handle) {
-                                let centroid = calculate_mesh_centroid(mesh);
-                                let bounds_radius = calculate_mesh_bounds_radius(mesh, centroid);
-                                let camera_distance = bounds_radius * 2.5;
-                                let camera_position = centroid
-                                    + Vec3::new(
-                                        camera_distance,
-                                        camera_distance * 0.5,
-                                        camera_distance,
-                                    );
-
-                                transform.translation = camera_position;
-                                transform.look_at(centroid, Vec3::Y);
-                                fps_camera.escape_mode = false;
-
-                                debug!("🎉 Fallback camera centering completed!");
-                            }
-                        }
-                    }
-                }
-            }
-            Err(e) => {
-                error!("❌ Camera query failed: {:?}", e);
-            }
-        }
-        */
-    }
-}
-
-/// Calculate mesh centroid using random sampling for performance
-fn _calculate_mesh_centroid(mesh: &Mesh) -> Vec3 {
-    if let Some(positions) = mesh.attribute(Mesh::ATTRIBUTE_POSITION) {
-        match positions {
-            bevy::mesh::VertexAttributeValues::Float32x3(vertices) => {
-                if vertices.is_empty() {
-                    return Vec3::ZERO;
-                }
-
-                // Use 5% sampling for large meshes, minimum 100 samples
-                let sample_count = (vertices.len() / 20).max(100).min(vertices.len());
-                let step = vertices.len() / sample_count;
-
-                let mut sum = Vec3::ZERO;
-                let mut count = 0;
-
-                for (i, vertex) in vertices.iter().enumerate() {
-                    if i % step == 0 {
-                        sum += Vec3::from_array(*vertex);
-                        count += 1;
-                    }
-                }
-
-                if count > 0 {
-                    sum / count as f32
-                } else {
-                    Vec3::ZERO
-                }
-            }
-            _ => Vec3::ZERO,
-        }
-    } else {
-        Vec3::ZERO
-    }
-}
-
-/// Calculate approximate mesh bounds radius from centroid
-fn _calculate_mesh_bounds_radius(mesh: &Mesh, centroid: Vec3) -> f32 {
-    if let Some(positions) = mesh.attribute(Mesh::ATTRIBUTE_POSITION) {
-        match positions {
-            bevy::mesh::VertexAttributeValues::Float32x3(vertices) => {
-                if vertices.is_empty() {
-                    return 50.0; // Default fallback
-                }
-
-                let mut max_distance_squared: f32 = 0.0;
-                let sample_count = (vertices.len() / 20).max(100).min(vertices.len());
-                let step = vertices.len() / sample_count;
-
-                for (i, vertex) in vertices.iter().enumerate() {
-                    if i % step == 0 {
-                        let vertex_pos = Vec3::from_array(*vertex);
-                        let distance_squared = centroid.distance_squared(vertex_pos);
-                        max_distance_squared = max_distance_squared.max(distance_squared);
-                    }
-                }
-
-                max_distance_squared.sqrt().max(10.0) // Minimum 10 units
-            }
-            _ => 50.0, // Default fallback
-        }
-    } else {
-        50.0 // Default fallback
-    }
-}
-
-/// Debug system to log mesh cache status
-/// TODO: Remove or reimplement after switching to Bevy asset loading
-#[allow(dead_code)]
-pub fn debug_mesh_cache_status(/* mesh_cache: Res<AsyncMeshCache>, */ meshes: Res<Assets<Mesh>>,) {
-    /*
-    if mesh_cache.is_changed() {
-        debug!("🔍 MESH CACHE STATUS:");
         debug!(
-            "  Current mesh entity: {:?}",
-            mesh_cache.current_mesh_entity
+            "🎯 Camera centred on mesh — center: {:?}, radius: {:.1}, camera: {:?}",
+            world_center, local_radius, camera_position,
         );
-        debug!("  Cache entries: {}", mesh_cache.cache.len());
-
-        for (path, handle) in &mesh_cache.cache {
-            let mesh_exists = meshes.get(handle).is_some();
-            debug!(
-                "  - {:?} -> Handle {:?} (exists: {})",
-                path, handle, mesh_exists
-            );
-        }
     }
-    */
-    let _ = meshes; // Silence unused warning
+}
+
+/// System that fires [`CenterOnMeshEvent`] on Ctrl+C.
+pub fn keyboard_center_on_mesh(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mut center_events: MessageWriter<CenterOnMeshEvent>,
+) {
+    let ctrl = keyboard.pressed(KeyCode::ControlLeft) || keyboard.pressed(KeyCode::ControlRight);
+    if ctrl && keyboard.just_pressed(KeyCode::KeyC) {
+        center_events.write(CenterOnMeshEvent);
+        debug!("🎯 Center camera triggered via Ctrl+C");
+    }
 }
 
 /// System that provides fps-style camera controls

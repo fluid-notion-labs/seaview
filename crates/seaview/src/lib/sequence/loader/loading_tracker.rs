@@ -126,7 +126,13 @@ pub(super) fn track_asset_loading(
                     // Flag degenerate frames: <10% of expected vertex count
                     let expected_verts = frame_store.estimated_frame_bytes as usize / 32; // rough: 32 bytes/vert
                     if expected_verts > 0 && vertex_count < expected_verts / 10 {
-                        frame_store.degenerate_frames[index] = true;
+                        if index < frame_store.degenerate_frames.len() {
+                            frame_store.degenerate_frames[index] = true;
+                        } else {
+                            // Grow the vec if watch mode added frames without resizing
+                            frame_store.degenerate_frames.resize(index + 1, false);
+                            frame_store.degenerate_frames[index] = true;
+                        }
                         warn!(
                             "⚠ Degenerate frame {}: {} vertices (expected ~{}) — will be skipped",
                             index, vertex_count, expected_verts,
@@ -148,7 +154,7 @@ pub(super) fn track_asset_loading(
                 // Log progress at intervals
                 if frame_store.loaded_count % 10 == 0 || frame_store.loaded_count == requested_count
                 {
-                    info!(
+                    debug!(
                         "Loading progress: {}/{} frames loaded",
                         frame_store.loaded_count, requested_count,
                     );

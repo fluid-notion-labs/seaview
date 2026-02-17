@@ -12,7 +12,8 @@ use seaview::{
 
 use seaview::app::cli::Args;
 use seaview::app::systems::camera::{
-    camera_controller, cursor_grab_system, handle_center_on_mesh, CenterOnMeshEvent, FpsCamera,
+    camera_controller, cursor_grab_system, handle_center_on_mesh, keyboard_center_on_mesh,
+    CenterOnMeshEvent, FpsCamera,
 };
 use seaview::app::systems::diagnostics::RenderingDiagnosticsPlugin;
 use seaview::app::ui::state::MaterialConfig;
@@ -196,8 +197,8 @@ fn main() {
                 camera_controller,
                 cursor_grab_system,
                 handle_center_on_mesh,
+                keyboard_center_on_mesh,
                 handle_save_view,
-                // debug_mesh_cache_status,
             ),
         )
         .run();

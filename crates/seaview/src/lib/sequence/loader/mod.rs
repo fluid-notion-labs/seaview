@@ -91,13 +91,20 @@ const SPAWNS_PER_FRAME: usize = 8;
 // ---------------------------------------------------------------------------
 
 /// Read current process RSS in MB from `/proc/self/statm`.
-/// Returns 0.0 on non-Linux or if the read fails.
+/// Returns 0.0 when the `debug_mem` feature is disabled or on non-Linux.
+#[cfg(feature = "debug_mem")]
 fn rss_mb() -> f64 {
     std::fs::read_to_string("/proc/self/statm")
         .ok()
         .and_then(|s| s.split_whitespace().nth(1)?.parse::<u64>().ok())
         .map(|pages| pages as f64 * 4096.0 / 1_048_576.0)
         .unwrap_or(0.0)
+}
+
+#[cfg(not(feature = "debug_mem"))]
+#[inline(always)]
+fn rss_mb() -> f64 {
+    0.0
 }
 
 // ---------------------------------------------------------------------------

@@ -222,7 +222,7 @@ pub(super) fn sync_section_loads(
 
     if loads_enqueued > 0 || unloads > 0 {
         frame_store.loading = true;
-        info!(
+        debug!(
             "Section sync: {} loads enqueued, {} handles dropped ({} had live entities, {} meshes removed), queue len: {} | RSS {:.1} → {:.1} MB (Δ {:.1})",
             loads_enqueued,
             unloads,

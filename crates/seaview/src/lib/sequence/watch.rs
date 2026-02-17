@@ -293,6 +293,7 @@ fn handle_incremental_load(
             frame_store.frame_handles.push(None);
             frame_store.loaded_frames.push(false);
             frame_store.frame_entities.push(None);
+            frame_store.degenerate_frames.push(false);
         }
 
         // Update total frames and mark as loading so sync_section_loads

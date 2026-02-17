@@ -57,6 +57,8 @@ spatial = []
 # high even though the memory is logically free.  Can be expensive on
 # highly-fragmented heaps, so opt-in.
 mesh_unload_malloc_trim = ["libc"]
+# Enable RSS memory tracking in loader log lines (reads /proc/self/statm)
+debug_mem = []
 # Maximum performance: disable all logging at compile time
 max-perf = [
     "log/max_level_off",
