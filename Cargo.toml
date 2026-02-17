@@ -3,6 +3,8 @@ members = ["crates/seaview"]
 exclude = [
     "vendor/bevy",
     "vendor/bevy_brp",
+    "vendor/loadfu",
+    "vendor/loadfu-old",
     "vendor/mesh-ripper",
     "vendor/stl_io",
     "vendor/bevy_egui",
@@ -18,7 +20,7 @@ authors = ["Seaview Contributors"]
 bevy = { version = "0.18.0", default-features = false, features = [
     "bevy_asset",
     "bevy_core_pipeline",
-    "bevy_gltf",
+
     "bevy_pbr",
     "bevy_render",
     "bevy_sprite",

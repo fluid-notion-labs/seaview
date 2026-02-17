@@ -52,6 +52,43 @@ Quick reference guide with code patterns for loading glTF/GLB files from arbitra
 - Migration checklist from current implementation
 - **Status**: Ready to implement
 
+### [Mesh Loading Ecosystem — Research & Strategy](./mesh_loading_ecosystem.md)
+Analysis of the Bevy mesh loading ecosystem, asset system capabilities, and Seaview's loader-agnostic architecture strategy. Covers:
+
+- Bevy's built-in asset system: what it solves, what it doesn't
+- Community loader landscape (STL, OBJ, FBX, PLY, voxel, point cloud)
+- Missing ecosystem pieces (PLY mesh, VTK, point clouds)
+- Quads/n-gons and GPU reality (why TriangleList normalization is correct)
+- Loader-agnostic `MeshSource` trait design
+- Capability querying (`MeshCapabilities`) for format-aware UI/logic
+- TriMesh normalization performance analysis
+- **Status**: Research complete, informs seaview-bdz.4 (MeshSource trait)
+
+### [mmap Loader Architecture — Research & Data Flow](./mmap_loader_architecture.md)
+Analysis of the full data flow from disk through parse crates to GPU, with Mermaid graphs showing where mmap can intervene. Covers:
+
+- Current pipeline copy audit (STL, OBJ, GLB — every byte gets copied 4–5 times)
+- Full dependency matrix: format × layer (disk I/O, parse crate, triangulation, Mesh build)
+- Four mmap intervention levels (read buffer → zero-copy parse → direct Mesh → GPU DMA)
+- Custom `svmesh` format design (memory-mappable, pre-triangulated, pre-indexed) — note: svmesh is a *format*, orthogonal to loadfu (the *loader*)
+- Integration points: which files change, which don't
+- Peak RSS analysis: ~500 MB → ~140 MB per 5M-vertex frame
+- Risks: page faults, Bevy Mesh ownership (owned Vec only), NFS
+- **Status**: Research complete, informs seaview-joh (zero-copy mmap format)
+
+### [loadfu — 3D Asset Loader for Bevy](../../vendor/loadfu/docs/loadfu.md)
+Design doc for `loadfu`, a format-agnostic Bevy ecosystem crate for 3D asset loading (single assets and sequences). Covers:
+
+- Crate architecture: single crate, Bevy behind feature flag, core parsers standalone
+- Extraction plan from seaview's `lib/asset_loaders/` and `MeshFileFormat`
+- Key types: `MeshData`, `MeshFormat`, `MeshCapabilities`
+- Upstream path to Bevy proper
+- Agentic refactoring skill with step-by-step extraction checklist
+- **Status**: Design, pre-implementation
+- **Relation to svmesh**: Orthogonal. svmesh is a format; loadfu is the loader.
+- **Prior research**: [mesh_loading_ecosystem.md](./mesh_loading_ecosystem.md), [mmap_loader_architecture.md](./mmap_loader_architecture.md), [mesh-loading-bypass.md](./mesh-loading-bypass.md)
+- **Location**: Lives in `vendor/loadfu/` — loadfu is its own crate
+
 ### [Baby Shark Mesh Conversion Research](./baby_shark_mesh_conversion.md)
 Research on using the baby_shark library for converting polygon soup mesh data to indexed format. Covers:
 

@@ -6,59 +6,19 @@
 //!   loading state, progress.
 //! - **[`LoaderConfig`]** — semi-public: shared material handle and coordinate
 //!   transform.
-//! - **[`AssetIndex`]** — crate-private: reverse `AssetId → frame` maps and
-//!   intermediate glTF handles.
+//! - **[`AssetIndex`]** — crate-private: reverse `AssetId → frame` maps.
 //!
-//! Also contains [`MeshFileFormat`] (format detection) and [`LoadingStats`]
-//! (UI-friendly progress snapshot).
+//! Also contains [`LoadingStats`] (UI-friendly progress snapshot).
+//!
+//! Format detection is now handled by [`loadfu::MeshFormat`] — the old
+//! `MeshFileFormat` enum has been removed.
 
 use bevy::asset::RenderAssetUsages;
-use bevy::gltf::Gltf;
 use bevy::mesh::Mesh;
 use bevy::prelude::*;
+use loadfu::MeshFormat;
 use std::collections::HashMap;
 use std::path::PathBuf;
-
-// ---------------------------------------------------------------------------
-// MeshFileFormat
-// ---------------------------------------------------------------------------
-
-/// Recognised mesh file formats for sequence loading.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MeshFileFormat {
-    /// STL (binary or ASCII) – loaded directly as [`Mesh`] via our custom loader.
-    Stl,
-    /// glTF 2.0 text format – loaded via Bevy's gltf crate.
-    Gltf,
-    /// glTF 2.0 binary container – loaded via Bevy's gltf crate.
-    Glb,
-}
-
-impl MeshFileFormat {
-    /// Try to detect the format from a file extension string (case-insensitive).
-    pub fn from_extension(ext: &str) -> Option<Self> {
-        match ext.to_ascii_lowercase().as_str() {
-            "stl" => Some(Self::Stl),
-            "gltf" => Some(Self::Gltf),
-            "glb" => Some(Self::Glb),
-            _ => None,
-        }
-    }
-
-    /// Returns true if this format is a glTF variant (gltf or glb).
-    pub fn is_gltf(&self) -> bool {
-        matches!(self, Self::Gltf | Self::Glb)
-    }
-
-    /// Human-readable label for display.
-    pub fn label(&self) -> &'static str {
-        match self {
-            Self::Stl => "STL",
-            Self::Gltf => "glTF",
-            Self::Glb => "GLB",
-        }
-    }
-}
 
 // ---------------------------------------------------------------------------
 // FrameStore
@@ -93,7 +53,7 @@ pub struct FrameStore {
     /// Currently displayed (visible) frame index
     pub displayed_frame: Option<usize>,
     /// Detected file format for this sequence (set on first load request)
-    pub format: Option<MeshFileFormat>,
+    pub format: Option<MeshFormat>,
     /// Estimated GPU memory per frame in bytes (set after first frame loads)
     pub estimated_frame_bytes: u64,
 }
@@ -249,35 +209,27 @@ impl LoaderConfig {
 // AssetIndex
 // ---------------------------------------------------------------------------
 
-/// Loader-private resource holding reverse `AssetId → frame` index maps and
-/// intermediate glTF handles.
+/// Loader-private resource holding reverse `AssetId → frame` index maps.
 ///
 /// Write-heavy, only accessed by loader systems.  Separating it from
 /// [`FrameStore`] lets Bevy schedule UI reads in parallel.
+///
+/// With loadfu, all formats (STL, OBJ, GLB, glTF) produce `Handle<Mesh>`
+/// directly — the old two-phase glTF loading path and its intermediate
+/// `Handle<Gltf>` are no longer needed.
 #[derive(Resource, Default)]
 pub(crate) struct AssetIndex {
     /// O(1) reverse index from `AssetId<Mesh>` → frame index.
     ///
-    /// Populated by [`super::load_queue::drain_load_queue`] (STL) or
-    /// [`super::loading_tracker::extract_gltf_meshes`] (GLB) and consumed by
+    /// Populated by [`super::load_queue::drain_load_queue`] and consumed by
     /// [`super::loading_tracker::track_asset_loading`] to avoid a linear scan.
     pub(crate) asset_id_to_frame: HashMap<AssetId<Mesh>, usize>,
-
-    /// Intermediate Gltf asset handles for GLB two-phase loading.
-    /// Phase 1: `drain_load_queue` loads the top-level `Gltf` asset.
-    /// Phase 2: `extract_gltf_meshes` extracts all mesh primitives.
-    pub(crate) gltf_handles: Vec<Option<Handle<Gltf>>>,
-
-    /// Reverse index from `AssetId<Gltf>` → frame index.
-    pub(crate) gltf_id_to_frame: HashMap<AssetId<Gltf>, usize>,
 }
 
 impl AssetIndex {
     /// Reset for a new sequence.
     pub(crate) fn reset(&mut self) {
         self.asset_id_to_frame.clear();
-        self.gltf_handles.clear();
-        self.gltf_id_to_frame.clear();
     }
 }
 
@@ -321,7 +273,7 @@ mod tests {
         store.total_frames = 10;
         store.loaded_count = 5;
         store.loading = true;
-        store.format = Some(MeshFileFormat::Stl);
+        store.format = Some(MeshFormat::Stl);
         store.estimated_frame_bytes = 1024;
 
         store.reset();
@@ -382,34 +334,33 @@ mod tests {
         assert_eq!(hi, 100);
     }
 
-    // ── MeshFileFormat ────────────────────────────────────────────────
+    // ── MeshFormat (from loadfu) ──────────────────────────────────────
 
     #[test]
     fn test_mesh_format_from_extension() {
-        assert_eq!(
-            MeshFileFormat::from_extension("stl"),
-            Some(MeshFileFormat::Stl)
-        );
-        assert_eq!(
-            MeshFileFormat::from_extension("STL"),
-            Some(MeshFileFormat::Stl)
-        );
-        assert_eq!(
-            MeshFileFormat::from_extension("gltf"),
-            Some(MeshFileFormat::Gltf)
-        );
-        assert_eq!(
-            MeshFileFormat::from_extension("glb"),
-            Some(MeshFileFormat::Glb)
-        );
-        assert_eq!(MeshFileFormat::from_extension("obj"), None);
+        assert_eq!(MeshFormat::from_extension("stl"), Some(MeshFormat::Stl));
+        assert_eq!(MeshFormat::from_extension("STL"), Some(MeshFormat::Stl));
+        assert_eq!(MeshFormat::from_extension("obj"), Some(MeshFormat::Obj));
+        assert_eq!(MeshFormat::from_extension("OBJ"), Some(MeshFormat::Obj));
+        assert_eq!(MeshFormat::from_extension("gltf"), Some(MeshFormat::Gltf));
+        assert_eq!(MeshFormat::from_extension("glb"), Some(MeshFormat::Glb));
+        assert_eq!(MeshFormat::from_extension("fbx"), None);
     }
 
     #[test]
     fn test_mesh_format_is_gltf() {
-        assert!(!MeshFileFormat::Stl.is_gltf());
-        assert!(MeshFileFormat::Gltf.is_gltf());
-        assert!(MeshFileFormat::Glb.is_gltf());
+        assert!(!MeshFormat::Stl.is_gltf());
+        assert!(!MeshFormat::Obj.is_gltf());
+        assert!(MeshFormat::Gltf.is_gltf());
+        assert!(MeshFormat::Glb.is_gltf());
+    }
+
+    #[test]
+    fn test_mesh_format_is_direct_mesh() {
+        assert!(MeshFormat::Stl.is_direct_mesh());
+        assert!(MeshFormat::Obj.is_direct_mesh());
+        assert!(!MeshFormat::Gltf.is_direct_mesh());
+        assert!(!MeshFormat::Glb.is_direct_mesh());
     }
 
     // ── LoadingStats ──────────────────────────────────────────────────

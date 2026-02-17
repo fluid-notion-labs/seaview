@@ -6,8 +6,8 @@ use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 use seaview::lib::lighting::{EnvironmentLightConfig, GlobalLight};
 use seaview::{
-    AssetLoadersPlugin, MemoryBudgetPlugin, MeshDimensions, MeshInfoPlugin, NightLightingPlugin,
-    SeaviewUiPlugin, SessionPlugin,
+    MemoryBudgetPlugin, MeshDimensions, MeshInfoPlugin, NightLightingPlugin, SeaviewUiPlugin,
+    SessionPlugin,
 };
 
 use seaview::app::cli::Args;
@@ -165,7 +165,7 @@ fn main() {
     app.insert_resource(DefaultOpaqueRendererMethod::deferred())
         .add_plugins(DefaultPlugins)
         .add_plugins(WireframePlugin::default())
-        .add_plugins(AssetLoadersPlugin)
+        .add_plugins(loadfu::LoadfuPlugin)
         .add_plugins(FrameTimeDiagnosticsPlugin::default())
         .add_plugins(RenderingDiagnosticsPlugin)
         .add_plugins(SequencePlugin)

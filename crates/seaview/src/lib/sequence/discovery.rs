@@ -102,6 +102,13 @@ impl Default for SequencePatterns {
                 SequencePattern::new("time_glb", r"^(.+?)[\._-]?[Tt]ime[\._-]?(\d+)\.glb$", 2),
                 // Generic numbered pattern - GLB
                 SequencePattern::new("numbered_glb", r"^(.+?)(\d{3,})\.glb$", 2),
+                // Common simulation output patterns - OBJ
+                SequencePattern::new("frame_number_obj", r"^(.+?)[\._-]?(\d{3,6})\.obj$", 2),
+                SequencePattern::new("timestep_obj", r"^(.+?)[\._-]?[Tt](\d+)\.obj$", 2),
+                SequencePattern::new("step_obj", r"^(.+?)[\._-]?[Ss]tep[\._-]?(\d+)\.obj$", 2),
+                SequencePattern::new("time_obj", r"^(.+?)[\._-]?[Tt]ime[\._-]?(\d+)\.obj$", 2),
+                // Generic numbered pattern - OBJ
+                SequencePattern::new("numbered_obj", r"^(.+?)(\d{3,})\.obj$", 2),
             ],
         }
     }

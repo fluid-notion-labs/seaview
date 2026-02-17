@@ -1,7 +1,8 @@
 //! Headless debug loader for sequence analysis without GPU/window.
 //!
-//! Discovers sequences, parses mesh files directly (GLB/glTF/STL), computes
-//! memory estimates, applies budget logic, and reports metrics.
+//! Discovers sequences, parses mesh files directly (STL/OBJ/GLB/glTF) via
+//! loadfu's core parsers, computes memory estimates, applies budget logic,
+//! and reports metrics.
 //!
 //! Usage:
 //!     cargo run --bin debug_loader --release -- <directory> [OPTIONS]
@@ -17,10 +18,11 @@ use std::time::Instant;
 
 use nvml_wrapper::Nvml;
 
+use loadfu::MeshFormat;
 use seaview::{
     discover_sequences, estimate_mesh_gpu_bytes, human_bytes, GlobalSettings, MemoryBudget,
-    MemorySettings, MeshFileFormat, NoVramDetector, NvmlBackend, RamDetector, Sequence,
-    SequencePatterns, SysInfoBackend,
+    MemorySettings, NoVramDetector, NvmlBackend, RamDetector, Sequence, SequencePatterns,
+    SysInfoBackend,
 };
 
 // ---------------------------------------------------------------------------
@@ -101,13 +103,11 @@ fn parse_args() -> Args {
 // ---------------------------------------------------------------------------
 
 /// Detect the mesh format of a sequence from its first frame's extension.
-fn detect_format(seq: &Sequence) -> MeshFileFormat {
+fn detect_format(seq: &Sequence) -> MeshFormat {
     seq.frames
         .first()
-        .and_then(|f| f.path.extension())
-        .and_then(|e| e.to_str())
-        .and_then(MeshFileFormat::from_extension)
-        .unwrap_or(MeshFileFormat::Glb)
+        .and_then(|f| MeshFormat::from_path(&f.path))
+        .unwrap_or(MeshFormat::Glb)
 }
 
 // ---------------------------------------------------------------------------
@@ -126,61 +126,31 @@ struct MeshStats {
     parse_us: u64,
 }
 
-fn parse_glb_stats(path: &Path) -> Result<MeshStats, String> {
+fn parse_frame_stats(path: &Path) -> Result<MeshStats, String> {
     let t0 = Instant::now();
     let file_bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    let bytes = std::fs::read(path).map_err(|e| format!("read error: {}", e))?;
 
-    let (document, buffers, _) =
-        gltf::import(path).map_err(|e| format!("gltf import error: {}", e))?;
+    let format = MeshFormat::from_path(path)
+        .ok_or_else(|| format!("unrecognised extension for {:?}", path))?;
 
-    let mut total_vertices = 0usize;
-    let mut total_indices = 0usize;
-
-    for mesh in document.meshes() {
-        for primitive in mesh.primitives() {
-            if let Some(positions) = primitive.get(&gltf::Semantic::Positions) {
-                total_vertices += positions.count();
-            }
-            if let Some(accessor) = primitive.indices() {
-                total_indices += accessor.count();
-            }
+    let (vertex_count, index_count) = match format {
+        MeshFormat::Stl => {
+            let md = loadfu::parsers::stl::parse(&bytes)
+                .map_err(|e| format!("STL parse error: {}", e))?;
+            (md.vertex_count(), md.indices.len())
         }
-    }
-
-    // If we got zero from accessors, try reading buffer data directly
-    if total_vertices == 0 && !buffers.is_empty() {
-        for mesh in document.meshes() {
-            for primitive in mesh.primitives() {
-                if let Some(pos_accessor) = primitive.get(&gltf::Semantic::Positions) {
-                    total_vertices += pos_accessor.count();
-                }
-            }
+        MeshFormat::Obj => {
+            let md = loadfu::parsers::obj::parse(&bytes)
+                .map_err(|e| format!("OBJ parse error: {}", e))?;
+            (md.vertex_count(), md.indices.len())
         }
-    }
-
-    let parse_us = t0.elapsed().as_micros() as u64;
-
-    Ok(MeshStats {
-        vertex_count: total_vertices,
-        index_count: total_indices,
-        file_bytes,
-        estimated_gpu_bytes: estimate_mesh_gpu_bytes(total_vertices, total_indices),
-        parse_us,
-    })
-}
-
-fn parse_stl_stats(path: &Path) -> Result<MeshStats, String> {
-    let t0 = Instant::now();
-    let file_bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-
-    let mut file = std::fs::File::open(path).map_err(|e| format!("open error: {}", e))?;
-    let mut reader = std::io::BufReader::new(&mut file);
-    let stl = stl_io::read_stl(&mut reader).map_err(|e| format!("STL parse error: {}", e))?;
-
-    let triangle_count = stl.faces.len();
-    // STL: 3 vertices per triangle (no sharing), 3 indices per triangle
-    let vertex_count = triangle_count * 3;
-    let index_count = triangle_count * 3;
+        MeshFormat::Glb | MeshFormat::Gltf => {
+            let md = loadfu::parsers::glb::parse_merged(&bytes)
+                .map_err(|e| format!("GLB parse error: {}", e))?;
+            (md.vertex_count(), md.indices.len())
+        }
+    };
 
     let parse_us = t0.elapsed().as_micros() as u64;
 
@@ -193,11 +163,8 @@ fn parse_stl_stats(path: &Path) -> Result<MeshStats, String> {
     })
 }
 
-fn parse_frame(path: &Path, format: MeshFileFormat) -> Result<MeshStats, String> {
-    match format {
-        MeshFileFormat::Glb | MeshFileFormat::Gltf => parse_glb_stats(path),
-        MeshFileFormat::Stl => parse_stl_stats(path),
-    }
+fn parse_frame(path: &Path, _format: MeshFormat) -> Result<MeshStats, String> {
+    parse_frame_stats(path)
 }
 
 // ---------------------------------------------------------------------------
@@ -259,7 +226,7 @@ fn detect_gpus() -> Vec<GpuInfo> {
 
 fn print_json(
     seq: &Sequence,
-    format: MeshFileFormat,
+    format: MeshFormat,
     sampled: &[MeshStats],
     budget: &MemoryBudget,
     mem_settings: &MemorySettings,

@@ -11,13 +11,16 @@
 //!   items per tick and issues the actual `asset_server.load()` calls.
 //!
 //! The pure function [`reconcile_section_loads`] is extracted for testability.
+//!
+//! With loadfu, **all** formats (STL, OBJ, GLB, glTF) produce `Handle<Mesh>`
+//! directly — there is no longer a two-phase glTF loading path.
 
 use bevy::mesh::Mesh;
 use bevy::prelude::*;
 use std::collections::{HashSet, VecDeque};
 
-use super::assets::{AssetIndex, FrameStore, MeshFileFormat};
-use super::{load_gltf_handle, load_stl_mesh_handle, rss_mb, LOADS_PER_FRAME};
+use super::assets::{AssetIndex, FrameStore};
+use super::{load_mesh_handle, rss_mb, LOADS_PER_FRAME};
 use crate::lib::sequence::{frames_to_load, Timeline};
 
 // ---------------------------------------------------------------------------
@@ -84,8 +87,8 @@ pub(crate) struct SectionReconciliation {
 /// predicate indicating whether a handle already exists, returns which frames
 /// to enqueue for loading and which to unload.
 ///
-/// `has_handle` should return `true` when frame `idx` already has either a
-/// mesh handle or an intermediate glTF handle.
+/// `has_handle` should return `true` when frame `idx` already has a mesh
+/// handle.
 pub(crate) fn reconcile_section_loads(
     needed: &[usize],
     total_frames: usize,
@@ -160,7 +163,7 @@ pub(super) fn sync_section_loads(
 
     // Use the pure reconciliation function to decide what to load/unload.
     let reconciliation = reconcile_section_loads(&needed, frame_store.total_frames, |idx| {
-        frame_store.frame_handles[idx].is_some() || asset_index.gltf_handles[idx].is_some()
+        frame_store.frame_handles[idx].is_some()
     });
 
     let mut loads_enqueued = 0usize;
@@ -190,10 +193,6 @@ pub(super) fn sync_section_loads(
             if meshes.remove(id).is_some() {
                 meshes_removed += 1;
             }
-        }
-        // Also remove the intermediate Gltf handle if present.
-        if let Some(gltf_handle) = asset_index.gltf_handles[idx].take() {
-            asset_index.gltf_id_to_frame.remove(&gltf_handle.id());
         }
         frame_store.frame_handles[idx] = None;
         if frame_store.loaded_frames[idx] {
@@ -241,6 +240,9 @@ pub(super) fn sync_section_loads(
 /// [`LoadQueue`], issuing `asset_server.load()` for each and populating the
 /// reverse `AssetId → frame` index for O(1) lookups in
 /// [`track_asset_loading`](super::loading_tracker::track_asset_loading).
+///
+/// With loadfu, all formats (STL, OBJ, GLB, glTF) produce `Handle<Mesh>`
+/// directly — the load path is identical regardless of format.
 pub(super) fn drain_load_queue(
     mut load_queue: ResMut<LoadQueue>,
     mut frame_store: ResMut<FrameStore>,
@@ -250,9 +252,9 @@ pub(super) fn drain_load_queue(
     if load_queue.is_empty() {
         return;
     }
-    let Some(format) = frame_store.format else {
+    if frame_store.format.is_none() {
         return;
-    };
+    }
 
     let mut loaded_this_frame = 0usize;
 
@@ -262,8 +264,8 @@ pub(super) fn drain_load_queue(
             break;
         }
 
-        // Skip if already has a handle (mesh or intermediate Gltf).
-        if frame_store.frame_handles[idx].is_some() || asset_index.gltf_handles[idx].is_some() {
+        // Skip if already has a handle.
+        if frame_store.frame_handles[idx].is_some() {
             continue;
         }
 
@@ -278,20 +280,11 @@ pub(super) fn drain_load_queue(
             .unwrap_or("unknown")
             .to_owned();
 
-        match format {
-            MeshFileFormat::Stl => {
-                let handle = load_stl_mesh_handle(&asset_server, &filename);
-                // Populate the reverse index for O(1) event lookup.
-                asset_index.asset_id_to_frame.insert(handle.id(), idx);
-                frame_store.frame_handles[idx] = Some(vec![handle]);
-            }
-            MeshFileFormat::Gltf | MeshFileFormat::Glb => {
-                let gltf_handle = load_gltf_handle(&asset_server, &filename);
-                asset_index.gltf_id_to_frame.insert(gltf_handle.id(), idx);
-                asset_index.gltf_handles[idx] = Some(gltf_handle);
-                // frame_handles[idx] stays None — populated by extract_gltf_meshes
-            }
-        }
+        // Unified load path: all formats produce Handle<Mesh> directly via loadfu.
+        let handle = load_mesh_handle(&asset_server, &filename);
+        // Populate the reverse index for O(1) event lookup.
+        asset_index.asset_id_to_frame.insert(handle.id(), idx);
+        frame_store.frame_handles[idx] = Some(vec![handle]);
 
         loaded_this_frame += 1;
         trace!("Kicked load for frame {} ('{}')", idx, filename);

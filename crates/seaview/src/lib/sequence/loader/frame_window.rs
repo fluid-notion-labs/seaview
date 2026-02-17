@@ -219,8 +219,7 @@ pub(super) fn manage_frame_window(
 
     // Log window changes
     if new_windows != *prev_windows {
-        // Count active handles — gltf_handles lives in AssetIndex which we
-        // don't have here.  Just count frame_handles for the log line.
+        // Count active handles for the log line.
         let active_handles = frame_store
             .frame_handles
             .iter()

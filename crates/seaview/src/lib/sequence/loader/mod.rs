@@ -1,15 +1,16 @@
 //! Mesh sequence loading using Bevy's native asset system
 //!
 //! This module provides loading functionality for mesh sequences supporting
-//! multiple file formats:
+//! multiple file formats via **loadfu**:
 //!
-//! - **glTF / GLB**: Loaded via Bevy's built-in `bevy_gltf` crate.  Multi-mesh
-//!   files are fully supported: the loader first loads the top-level [`Gltf`]
-//!   asset, then extracts every mesh primitive once it finishes loading.  Each
-//!   primitive becomes a separate [`Mesh3d`] entity sharing the same material.
-//! - **STL**: Loaded directly as [`Mesh`] assets via the custom
-//!   [`StlLoader`](crate::lib::asset_loaders::stl_loader::StlLoader) registered
-//!   by [`AssetLoadersPlugin`](crate::lib::asset_loaders::AssetLoadersPlugin).
+//! - **STL**: Loaded directly as [`Mesh`] assets via loadfu's `StlLoader`.
+//! - **OBJ**: Loaded directly as [`Mesh`] assets via loadfu's `ObjLoader`.
+//! - **glTF / GLB**: Loaded directly as [`Mesh`] assets via loadfu's
+//!   `GlbLoader`, which merges all primitives into a single mesh by default.
+//!   No more two-phase `bevy_gltf` delegation.
+//!
+//! All formats produce `Handle<Mesh>` directly — format detection is handled
+//! by [`loadfu::MeshFormat`].
 //!
 //! File format is detected by extension at load time so that a single sequence
 //! can only contain one format (mixing is not supported).
@@ -47,7 +48,7 @@
 //!   [`manage_frame_window`](frame_window::manage_frame_window) when spawning
 //!   entities.
 //! - **[`AssetIndex`]** — private to the loader: reverse `AssetId → frame`
-//!   maps and intermediate glTF handles.  Write-heavy, never read by UI.
+//!   map.  Write-heavy, never read by UI.
 //!
 //! This separation lets Bevy schedule UI reads of [`FrameStore`] in parallel
 //! with loader writes to [`AssetIndex`].
@@ -60,16 +61,15 @@ pub(crate) mod spatial_index;
 
 // ── Public re-exports ─────────────────────────────────────────────────────
 pub(crate) use assets::AssetIndex;
-pub use assets::{FrameStore, LoaderConfig, LoadingStats, MeshFileFormat};
+pub use assets::{FrameStore, LoaderConfig, LoadingStats};
 pub use frame_window::{compute_window_delta, WindowDelta};
 pub use load_queue::LoadQueue;
 pub use loading_tracker::default_material_properties;
 pub use spatial_index::SpatialIndex;
 
-use bevy::asset::RenderAssetUsages;
-use bevy::gltf::{Gltf, GltfLoaderSettings};
 use bevy::mesh::Mesh;
 use bevy::prelude::*;
+use loadfu::MeshFormat;
 use std::path::PathBuf;
 
 use super::{frames_to_load, Timeline};
@@ -121,7 +121,6 @@ impl Plugin for SequenceLoaderPlugin {
                     handle_load_requests,
                     load_queue::sync_section_loads,
                     load_queue::drain_load_queue,
-                    loading_tracker::extract_gltf_meshes,
                     loading_tracker::track_asset_loading,
                 )
                     .chain(),
@@ -162,28 +161,17 @@ pub struct SequenceMeshDisplay;
 // Helper functions
 // ---------------------------------------------------------------------------
 
-/// Load a single STL mesh frame.
+/// Load a mesh file as a `Handle<Mesh>` via the asset server.
 ///
-/// Returns a `Handle<Mesh>` directly — STL files always contain exactly one
-/// mesh, so no two-phase loading is needed.
-pub fn load_stl_mesh_handle(asset_server: &AssetServer, filename: &str) -> Handle<Mesh> {
+/// With loadfu, **all** formats (STL, OBJ, GLB, glTF) produce `Handle<Mesh>`
+/// directly — the asset server dispatches to the appropriate loadfu loader
+/// based on file extension.  No two-phase loading is needed for any format.
+///
+/// GLB/glTF files are merged into a single mesh by default
+/// (`GlbLoaderSettings { merge: true }`).
+pub fn load_mesh_handle(asset_server: &AssetServer, filename: &str) -> Handle<Mesh> {
     let asset_path = format!("seq://{}", filename);
-    // The StlLoader registered for ".stl" will produce a Mesh directly.
-    // STL loader already creates meshes with MAIN_WORLD only.
     asset_server.load(asset_path)
-}
-
-/// Load a GLB/glTF file as a top-level [`Gltf`] asset.
-///
-/// This is phase 1 of multi-mesh loading.  The returned handle must be
-/// watched for `LoadedWithDependencies`; at that point
-/// [`extract_gltf_meshes`](loading_tracker::extract_gltf_meshes) pulls out
-/// every mesh primitive.
-pub fn load_gltf_handle(asset_server: &AssetServer, filename: &str) -> Handle<Gltf> {
-    let asset_path = format!("seq://{}", filename);
-    asset_server.load_with_settings(asset_path, |settings: &mut GltfLoaderSettings| {
-        settings.load_meshes = RenderAssetUsages::MAIN_WORLD;
-    })
 }
 
 /// Pre-estimate the maximum number of frames that fit in the memory budget by
@@ -243,18 +231,17 @@ fn pre_estimate_max_frames(
 
 /// Detect format from the first path in the request and log a warning if any
 /// frame has a different extension.
-fn detect_sequence_format(paths: &[PathBuf]) -> Option<MeshFileFormat> {
+fn detect_sequence_format(paths: &[PathBuf]) -> Option<MeshFormat> {
     let first = paths.first()?;
-    let ext = first.extension()?.to_str()?;
-    let format = MeshFileFormat::from_extension(ext)?;
+    let format = MeshFormat::from_path(first)?;
 
     // Warn about mixed extensions (we don't support mixing formats).
     for (i, p) in paths.iter().enumerate().skip(1) {
-        if let Some(other_ext) = p.extension().and_then(|e| e.to_str()) {
-            if MeshFileFormat::from_extension(other_ext) != Some(format) {
+        if let Some(other_format) = MeshFormat::from_path(p) {
+            if other_format != format {
                 warn!(
-                    "Frame {} has extension '{}' but sequence format is {:?} – it may fail to load",
-                    i, other_ext, format
+                    "Frame {} has format {:?} but sequence format is {:?} – it may fail to load",
+                    i, other_format, format
                 );
             }
         }
@@ -294,7 +281,7 @@ fn handle_load_requests(
         // Detect file format from the first frame.
         let format = match detect_sequence_format(&request.frame_paths) {
             Some(fmt) => {
-                info!("Detected format: {:?}", fmt);
+                info!("Detected format: {}", fmt.label());
                 fmt
             }
             None => {
@@ -337,7 +324,6 @@ fn handle_load_requests(
         frame_store.frame_handles = vec![None; n];
         frame_store.frame_entities = vec![None; n];
         frame_store.loaded_frames = vec![false; n];
-        asset_index.gltf_handles = vec![None; n];
         // Store all paths for on-demand loading
         frame_store.frame_paths = request.frame_paths.clone();
 
@@ -373,9 +359,9 @@ fn handle_load_requests(
         }
 
         info!(
-            "Asset loading queued: {} {:?} frames (of {} total) from {:?}",
+            "Asset loading queued: {} {} frames (of {} total) from {:?}",
             load_queue.len(),
-            format,
+            format.label(),
             frame_store.total_frames,
             frame_store.base_path
         );

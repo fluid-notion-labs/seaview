@@ -17,9 +17,10 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use loadfu::MeshFormat;
 use seaview::{
     discover_sequences, distribute_sections, estimate_mesh_gpu_bytes, human_bytes, GlobalSettings,
-    LoadSection, MemoryBudget, MeshFileFormat, NoVramDetector, NvmlBackend, RamDetector, Sequence,
+    LoadSection, MemoryBudget, NoVramDetector, NvmlBackend, RamDetector, Sequence,
     SequencePatterns, SysInfoBackend, VramDetector,
 };
 
@@ -152,48 +153,44 @@ fn parse_args() -> Args {
 // ---------------------------------------------------------------------------
 
 /// Detect the mesh format of a sequence from its first frame's extension.
-fn detect_format(seq: &Sequence) -> MeshFileFormat {
+fn detect_format(seq: &Sequence) -> MeshFormat {
     seq.frames
         .first()
-        .and_then(|f| f.path.extension())
-        .and_then(|e| e.to_str())
-        .and_then(MeshFileFormat::from_extension)
-        .unwrap_or(MeshFileFormat::Glb)
+        .and_then(|f| MeshFormat::from_path(&f.path))
+        .unwrap_or(MeshFormat::Glb)
 }
 
 // ---------------------------------------------------------------------------
 // Mesh parsing (headless)
 // ---------------------------------------------------------------------------
 
-fn parse_glb_frame_size(path: &Path) -> Result<u64, String> {
-    let (document, _buffers, _) = gltf::import(path).map_err(|e| format!("gltf import: {}", e))?;
+fn parse_frame_size(path: &Path) -> Result<u64, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("read: {}", e))?;
+    let format = MeshFormat::from_path(path)
+        .ok_or_else(|| format!("unrecognised extension for {:?}", path))?;
 
-    let mut total_vertices = 0usize;
-    let mut total_indices = 0usize;
-
-    for mesh in document.meshes() {
-        for primitive in mesh.primitives() {
-            if let Some(positions) = primitive.get(&gltf::Semantic::Positions) {
-                total_vertices += positions.count();
-            }
-            if let Some(accessor) = primitive.indices() {
-                total_indices += accessor.count();
-            }
+    let (vertex_count, index_count) = match format {
+        MeshFormat::Stl => {
+            let md =
+                loadfu::parsers::stl::parse(&bytes).map_err(|e| format!("STL parse: {}", e))?;
+            (md.vertex_count(), md.indices.len())
         }
-    }
+        MeshFormat::Obj => {
+            let md =
+                loadfu::parsers::obj::parse(&bytes).map_err(|e| format!("OBJ parse: {}", e))?;
+            (md.vertex_count(), md.indices.len())
+        }
+        MeshFormat::Glb | MeshFormat::Gltf => {
+            let md = loadfu::parsers::glb::parse_merged(&bytes)
+                .map_err(|e| format!("GLB parse: {}", e))?;
+            (md.vertex_count(), md.indices.len())
+        }
+    };
 
-    Ok(estimate_mesh_gpu_bytes(total_vertices, total_indices))
+    Ok(estimate_mesh_gpu_bytes(vertex_count, index_count))
 }
 
-fn parse_stl_frame_size(path: &Path) -> Result<u64, String> {
-    let mut file = std::fs::File::open(path).map_err(|e| format!("open: {}", e))?;
-    let mut reader = std::io::BufReader::new(&mut file);
-    let stl = stl_io::read_stl(&mut reader).map_err(|e| format!("STL parse: {}", e))?;
-    let tri = stl.faces.len();
-    Ok(estimate_mesh_gpu_bytes(tri * 3, tri * 3))
-}
-
-fn sample_frame_size(seq: &Sequence, format: MeshFileFormat, sample_count: usize) -> u64 {
+fn sample_frame_size(seq: &Sequence, _format: MeshFormat, sample_count: usize) -> u64 {
     let n = seq.frames.len();
     let count = sample_count.min(n).max(1);
 
@@ -208,10 +205,7 @@ fn sample_frame_size(seq: &Sequence, format: MeshFileFormat, sample_count: usize
     let mut sizes: Vec<u64> = Vec::new();
     for &idx in &indices {
         let path = &seq.frames[idx].path;
-        let result = match format {
-            MeshFileFormat::Glb | MeshFileFormat::Gltf => parse_glb_frame_size(path),
-            MeshFileFormat::Stl => parse_stl_frame_size(path),
-        };
+        let result = parse_frame_size(path);
         if let Ok(sz) = result {
             sizes.push(sz);
         }

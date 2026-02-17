@@ -8,7 +8,6 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use super::loader::AssetIndex;
 use super::{FrameInfo, FrameStore, Sequence, SequenceManager};
 
 /// Plugin for watch mode functionality
@@ -258,7 +257,6 @@ fn handle_incremental_load(
     mut incremental_requests: MessageReader<IncrementalLoadRequest>,
     mut sequence_manager: ResMut<SequenceManager>,
     mut frame_store: ResMut<FrameStore>,
-    mut asset_index: ResMut<AssetIndex>,
 ) {
     for request in incremental_requests.read() {
         debug!(
@@ -295,7 +293,6 @@ fn handle_incremental_load(
             frame_store.frame_handles.push(None);
             frame_store.loaded_frames.push(false);
             frame_store.frame_entities.push(None);
-            asset_index.gltf_handles.push(None);
         }
 
         // Update total frames and mark as loading so sync_section_loads

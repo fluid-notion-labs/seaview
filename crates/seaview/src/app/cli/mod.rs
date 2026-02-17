@@ -4,9 +4,9 @@ use std::path::PathBuf;
 
 #[derive(Parser, Debug, Resource)]
 #[command(name = "seaview")]
-#[command(about = "A 3D mesh viewer for STL files", long_about = None)]
+#[command(about = "A 3D mesh viewer for STL, OBJ, GLB, and glTF files", long_about = None)]
 pub struct Args {
-    /// Path to an STL file or directory containing a sequence
+    /// Path to a mesh file or directory containing a sequence
     pub path: Option<PathBuf>,
 
     /// Enable verbose output
