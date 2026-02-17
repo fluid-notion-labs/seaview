@@ -185,6 +185,9 @@ fn parse_frame_size(path: &Path) -> Result<u64, String> {
                 .map_err(|e| format!("GLB parse: {}", e))?;
             (md.vertex_count(), md.indices.len())
         }
+        MeshFormat::Ply => {
+            return Err(format!("PLY format not yet supported by timeline_debug"));
+        }
     };
 
     Ok(estimate_mesh_gpu_bytes(vertex_count, index_count))

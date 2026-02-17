@@ -150,6 +150,9 @@ fn parse_frame_stats(path: &Path) -> Result<MeshStats, String> {
                 .map_err(|e| format!("GLB parse error: {}", e))?;
             (md.vertex_count(), md.indices.len())
         }
+        MeshFormat::Ply => {
+            return Err(format!("PLY format not yet supported by debug_loader"));
+        }
     };
 
     let parse_us = t0.elapsed().as_micros() as u64;
