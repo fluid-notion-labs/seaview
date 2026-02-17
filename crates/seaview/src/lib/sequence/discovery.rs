@@ -63,6 +63,17 @@ struct PendingDiscovery {
 // Patterns
 // ---------------------------------------------------------------------------
 
+/// Supported mesh file extensions
+const SUPPORTED_EXTENSIONS: &[&str] = &["stl", "obj", "glb", "gltf"];
+
+/// Check if a filename ends with a supported mesh extension
+fn has_supported_extension(filename: &str) -> bool {
+    let lower = filename.to_lowercase();
+    SUPPORTED_EXTENSIONS
+        .iter()
+        .any(|ext| lower.ends_with(&format!(".{}", ext)))
+}
+
 /// Resource for managing sequence discovery patterns
 #[derive(Resource)]
 pub struct SequencePatterns {
@@ -81,55 +92,16 @@ impl Default for SequencePatterns {
     fn default() -> Self {
         Self {
             patterns: vec![
-                // Common simulation output patterns - STL
-                SequencePattern::new("frame_number", r"^(.+?)[\._-]?(\d{3,6})\.stl$", 2),
-                SequencePattern::new("timestep", r"^(.+?)[\._-]?[Tt](\d+)\.stl$", 2),
-                SequencePattern::new("step", r"^(.+?)[\._-]?[Ss]tep[\._-]?(\d+)\.stl$", 2),
-                SequencePattern::new("time", r"^(.+?)[\._-]?[Tt]ime[\._-]?(\d+)\.stl$", 2),
-                // Generic numbered pattern - STL
-                SequencePattern::new("numbered", r"^(.+?)(\d{3,})\.stl$", 2),
-                // Common simulation output patterns - glTF
-                SequencePattern::new("frame_number_gltf", r"^(.+?)[\._-]?(\d{3,6})\.gltf$", 2),
-                SequencePattern::new("timestep_gltf", r"^(.+?)[\._-]?[Tt](\d+)\.gltf$", 2),
-                SequencePattern::new("step_gltf", r"^(.+?)[\._-]?[Ss]tep[\._-]?(\d+)\.gltf$", 2),
-                SequencePattern::new("time_gltf", r"^(.+?)[\._-]?[Tt]ime[\._-]?(\d+)\.gltf$", 2),
-                // Generic numbered pattern - glTF
-                SequencePattern::new("numbered_gltf", r"^(.+?)(\d{3,})\.gltf$", 2),
-                // Common simulation output patterns - GLB
-                SequencePattern::new("frame_number_glb", r"^(.+?)[\._-]?(\d{3,6})\.glb$", 2),
-                SequencePattern::new("timestep_glb", r"^(.+?)[\._-]?[Tt](\d+)\.glb$", 2),
-                SequencePattern::new("step_glb", r"^(.+?)[\._-]?[Ss]tep[\._-]?(\d+)\.glb$", 2),
-                SequencePattern::new("time_glb", r"^(.+?)[\._-]?[Tt]ime[\._-]?(\d+)\.glb$", 2),
-                // Generic numbered pattern - GLB
-                SequencePattern::new("numbered_glb", r"^(.+?)(\d{3,})\.glb$", 2),
-                // Common simulation output patterns - OBJ
-                SequencePattern::new("frame_number_obj", r"^(.+?)[\._-]?(\d{3,6})\.obj$", 2),
-                SequencePattern::new("timestep_obj", r"^(.+?)[\._-]?[Tt](\d+)\.obj$", 2),
-                SequencePattern::new("step_obj", r"^(.+?)[\._-]?[Ss]tep[\._-]?(\d+)\.obj$", 2),
-                SequencePattern::new("time_obj", r"^(.+?)[\._-]?[Tt]ime[\._-]?(\d+)\.obj$", 2),
-                // Generic numbered pattern - OBJ
-                SequencePattern::new("numbered_obj", r"^(.+?)(\d{3,})\.obj$", 2),
-                // Tolerant patterns for files with intermediate extensions (e.g., .ply.serde.obj)
-                SequencePattern::new(
-                    "numbered_tolerant_obj",
-                    r"^(.+?)[\._-]?(\d{3,})\.[\w.]+\.obj$",
-                    2,
-                ),
-                SequencePattern::new(
-                    "numbered_tolerant_stl",
-                    r"^(.+?)[\._-]?(\d{3,})\.[\w.]+\.stl$",
-                    2,
-                ),
-                SequencePattern::new(
-                    "numbered_tolerant_glb",
-                    r"^(.+?)[\._-]?(\d{3,})\.[\w.]+\.glb$",
-                    2,
-                ),
-                SequencePattern::new(
-                    "numbered_tolerant_gltf",
-                    r"^(.+?)[\._-]?(\d{3,})\.[\w.]+\.gltf$",
-                    2,
-                ),
+                // Generic numbered patterns that work regardless of extension
+                // Pattern 1: name-NNN (with optional separator)
+                SequencePattern::new("numbered", r"^(.+?)[\._-](\d{3,})", 2),
+                // Pattern 2: nameNNN (no separator)
+                SequencePattern::new("numbered_nosep", r"^([a-zA-Z_]+)(\d{3,})", 2),
+                // Pattern 3: named variants (timestep, step, time, frame)
+                SequencePattern::new("timestep", r"^(.+?)[\._-]?[Tt](\d+)", 2),
+                SequencePattern::new("step", r"^(.+?)[\._-]?[Ss]tep[\._-]?(\d+)", 2),
+                SequencePattern::new("time", r"^(.+?)[\._-]?[Tt]ime[\._-]?(\d+)", 2),
+                SequencePattern::new("frame", r"^(.+?)[\._-]?[Ff]rame[\._-]?(\d+)", 2),
             ],
         }
     }
@@ -340,7 +312,12 @@ fn scan_directory(
             scan_directory(&path, recursive, patterns, file_groups)?;
         } else if path.is_file() {
             if let Some(filename) = path.file_name().and_then(|f| f.to_str()) {
-                // Try each pattern
+                // First check if file has a supported extension
+                if !has_supported_extension(filename) {
+                    continue;
+                }
+
+                // Try each pattern to extract base name and frame number
                 for pattern in &patterns.patterns {
                     if let Some(captures) = pattern.regex.captures(filename) {
                         // Extract base name and frame number
@@ -484,5 +461,54 @@ mod tests {
         assert_eq!(sequence.frames[0].frame_number, 1000);
         assert_eq!(sequence.frames[1].frame_number, 1008);
         assert_eq!(sequence.frames[2].frame_number, 1016);
+    }
+
+    #[test]
+    fn test_extension_filter() {
+        // Verify only supported extensions are matched
+        assert!(has_supported_extension("test.stl"));
+        assert!(has_supported_extension("test.STL"));
+        assert!(has_supported_extension("test.obj"));
+        assert!(has_supported_extension("test.glb"));
+        assert!(has_supported_extension("test.gltf"));
+        assert!(has_supported_extension("test.ply.serde.obj"));
+        assert!(has_supported_extension("test.data.glb"));
+
+        assert!(!has_supported_extension("test.txt"));
+        assert!(!has_supported_extension("test.fbx"));
+        assert!(!has_supported_extension("test.ply"));
+        assert!(!has_supported_extension("test.dat"));
+    }
+
+    #[test]
+    fn test_unsupported_extension_ignored() {
+        // Files with unsupported extensions should be ignored
+        let temp_dir = TempDir::new().unwrap();
+        let dir_path = temp_dir.path();
+
+        let files = vec![
+            "frame_001.stl",
+            "frame_002.stl",
+            "frame_003.txt", // Unsupported
+            "frame_004.ply", // Unsupported
+            "frame_005.stl",
+        ];
+
+        for file in &files {
+            File::create(dir_path.join(file)).unwrap();
+        }
+
+        let patterns = SequencePatterns::default();
+        let sequences = discover_sequences(
+            dir_path,
+            false,
+            &patterns,
+            crate::lib::coordinates::SourceOrientation::default(),
+        )
+        .unwrap();
+
+        // Should find one sequence with only 3 STL files
+        assert_eq!(sequences.len(), 1);
+        assert_eq!(sequences[0].frame_count(), 3);
     }
 }
