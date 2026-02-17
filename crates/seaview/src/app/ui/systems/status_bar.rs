@@ -72,24 +72,22 @@ fn render_loading_status(ui: &mut egui::Ui, ui_state: &UiState) {
         let total = ui_state.loading.total_frames;
         let pct = (progress * 100.0) as u32;
 
-        // Compact progress bar + text
         let text = if let Some(ref name) = ui_state.loading.sequence_name {
             format!("Loading {name}: {loaded}/{total} ({pct}%)")
         } else {
             format!("Loading: {loaded}/{total} ({pct}%)")
         };
 
-        // Small inline progress bar
+        // Inline progress bar with text overlay
         ui.add(
             egui::ProgressBar::new(progress)
-                .desired_width(120.0)
-                .text(""),
-        );
-
-        ui.label(
-            egui::RichText::new(text)
-                .size(11.0)
-                .color(egui::Color32::from_gray(180)),
+                .desired_width(240.0)
+                .text(
+                    egui::RichText::new(text)
+                        .size(11.0)
+                        .color(egui::Color32::from_gray(220)),
+                )
+                .fill(egui::Color32::from_rgb(40, 100, 180)),
         );
     } else if ui_state.loading.is_complete() {
         let total = ui_state.loading.total_frames;
