@@ -164,6 +164,11 @@ fn main() {
         warn!("Provide a path via CLI to load meshes");
     }
 
+    // Register "env" asset source pointing to filesystem root so environment
+    // objects can be loaded from any absolute path on disk.  Must be registered
+    // before AssetPlugin (part of DefaultPlugins).
+    app.register_asset_source("env", AssetSourceBuilder::platform_default("/", None));
+
     app.insert_resource(DefaultOpaqueRendererMethod::deferred())
         .add_plugins(DefaultPlugins)
         .add_plugins(WireframePlugin::default())

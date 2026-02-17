@@ -47,12 +47,9 @@ pub struct EnvironmentObjectPlugin;
 
 impl Plugin for EnvironmentObjectPlugin {
     fn build(&self, app: &mut App) {
-        // Register the "env" asset source pointing to filesystem root so we
-        // can load GLBs from arbitrary absolute paths.
-        app.register_asset_source(
-            "env",
-            bevy::asset::io::AssetSourceBuilder::platform_default("/", None),
-        );
+        // NOTE: The "env" asset source (filesystem root "/") is registered in
+        // main.rs *before* DefaultPlugins, because AssetPlugin finalises
+        // sources during its own build and ignores late registrations.
 
         app.init_resource::<EnvironmentObjectStoreRes>()
             .insert_resource(SpawnedEnvironmentObjects::default())
@@ -151,7 +148,11 @@ fn handle_import_events(
             "Importing environment object '{}' from {:?}",
             obj.name, obj.path
         );
-        store.add(obj);
+        let id = store.add(obj);
+        info!(
+            "  → Added to store with id={id}, generation={}",
+            store.generation()
+        );
     }
 }
 
@@ -202,7 +203,7 @@ fn spawn_new_objects(
             .to_string_lossy();
         let asset_path = format!("env://{rel}");
 
-        debug!("Loading Gltf asset for '{}': {}", obj.name, asset_path);
+        info!("Loading Gltf asset for '{}': {}", obj.name, asset_path);
         let gltf_handle: Handle<Gltf> = asset_server.load(&asset_path);
 
         // Spawn a root entity now (invisible until the scene is attached).
@@ -215,6 +216,11 @@ fn spawn_new_objects(
                 Name::new(format!("EnvObj:{}", obj.name)),
             ))
             .id();
+
+        info!(
+            "  → Spawned root entity {:?} for '{}' (id={}), transform={:?}",
+            root_entity, obj.name, obj.id, transform
+        );
 
         spawned.map.insert(
             obj.id,
@@ -246,8 +252,20 @@ fn poll_gltf_assets(
 
         let gltf = match gltf_assets.get(&state.gltf_handle) {
             Some(g) => g,
-            None => continue, // Still loading.
+            None => {
+                debug!("Gltf asset for env object {id} still loading...");
+                continue;
+            }
         };
+
+        info!(
+            "Gltf asset loaded for env object {id}: {} scene(s), default_scene={}, {} meshes, {} materials, {} nodes",
+            gltf.scenes.len(),
+            gltf.default_scene.is_some(),
+            gltf.meshes.len(),
+            gltf.materials.len(),
+            gltf.nodes.len(),
+        );
 
         let scene_handle = gltf
             .default_scene
@@ -255,11 +273,14 @@ fn poll_gltf_assets(
             .or_else(|| gltf.scenes.first().cloned());
 
         let Some(scene_handle) = scene_handle else {
-            warn!("Gltf asset for env object {id} has no scenes");
+            warn!("Gltf asset for env object {id} has no scenes — nothing to render!");
             continue;
         };
 
-        debug!("Spawning SceneRoot for env object {id}");
+        info!(
+            "Spawning SceneRoot for env object {id} on entity {:?}",
+            state.root_entity
+        );
         commands
             .entity(state.root_entity)
             .insert(SceneRoot(scene_handle));
@@ -289,8 +310,11 @@ fn discover_child_meshes(
 
         // The scene is ready when SceneInstance is present on the root entity.
         if scene_instance_query.get(state.root_entity).is_err() {
+            debug!("SceneInstance not yet present on root entity {:?} for env object {id}", state.root_entity);
             return true; // Keep waiting.
         }
+
+        info!("SceneInstance ready for env object {id} (root={:?}), discovering meshes...", state.root_entity);
 
         // Walk descendants to find all entities with Mesh3d.
         let mut mesh_entities = Vec::new();
@@ -303,10 +327,17 @@ fn discover_child_meshes(
             &mut mesh_entries,
         );
 
-        debug!(
-            "Discovered {} meshes for env object {id}",
-            mesh_entities.len()
-        );
+        if mesh_entities.is_empty() {
+            warn!(
+                "Discovered 0 meshes for env object {id} — scene may be empty or meshes not yet spawned"
+            );
+        } else {
+            info!(
+                "Discovered {} meshes for env object {id}: {:?}",
+                mesh_entities.len(),
+                mesh_entries.iter().map(|m| &m.name).collect::<Vec<_>>()
+            );
+        }
 
         state.mesh_entities = mesh_entities;
         state.meshes_discovered = true;

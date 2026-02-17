@@ -45,6 +45,7 @@ bevy = { version = "0.18.0", default-features = false, features = [
     "bevy_post_process",
     "bevy_log",
     "zstd_rust",
+    "reflect_auto_register",
 ] }
 bevy_egui = { git = "https://github.com/vladbat00/bevy_egui.git", rev = "fc54b193441e74e0317c5c8a158f73669670cf8f" }
 
