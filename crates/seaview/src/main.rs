@@ -4,7 +4,7 @@ use bevy::pbr::wireframe::WireframePlugin;
 use bevy::pbr::{DefaultOpaqueRendererMethod, ScreenSpaceReflections};
 use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
-use seaview::app::environment_objects::EnvironmentObjectPlugin;
+use seaview::app::environment_objects::{EnvironmentObjectPlugin, EnvironmentObjectStoreRes};
 use seaview::lib::lighting::{EnvironmentLightConfig, GlobalLight};
 use seaview::{
     MemoryBudgetPlugin, MeshDimensions, MeshInfoPlugin, NightLightingPlugin, SeaviewUiPlugin,
@@ -430,6 +430,15 @@ fn setup(
             );
             commands.insert_resource(material_cfg);
         }
+
+        // Environment objects (imported GLB scene props)
+        if let Some(store) = settings_res.settings.get_environment_objects() {
+            debug!(
+                "Restored {} environment object(s) from seaview.toml",
+                store.len(),
+            );
+            commands.insert_resource(EnvironmentObjectStoreRes(store));
+        }
     }
 }
 
@@ -508,6 +517,7 @@ fn handle_save_view(
     material_cfg: Res<MaterialConfig>,
     watch_config: Res<WatchConfig>,
     timeline: Res<Timeline>,
+    env_obj_store: Res<EnvironmentObjectStoreRes>,
 ) {
     for _event in save_events.read() {
         if let Ok(transform) = camera_query.single() {
@@ -532,6 +542,11 @@ fn handle_save_view(
 
             // Load sections — persist multi-section layout
             settings_res.settings.set_load_sections(&timeline.sections);
+
+            // Environment objects — persist imported GLB scene props
+            settings_res
+                .settings
+                .set_environment_objects(&env_obj_store);
 
             match settings_res.save() {
                 Ok(()) => {

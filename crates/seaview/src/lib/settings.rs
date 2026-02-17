@@ -10,6 +10,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::app::ui::state::MaterialConfig;
+use crate::lib::environment_objects::{
+    EnvironmentObject, EnvironmentObjectStore, MeshEntry, Transform3D,
+};
 use crate::lib::lighting::{Light, LightGroup, LightingRig};
 use crate::lib::sequence::LoadSection;
 use uuid::Uuid;
@@ -551,6 +554,151 @@ impl From<&MaterialSettings> for MaterialConfig {
 }
 
 // ---------------------------------------------------------------------------
+// EnvironmentObjectSettings — persistence for imported GLB scene props
+// ---------------------------------------------------------------------------
+
+/// Per-mesh visibility override saved to TOML.
+///
+/// On reload, after mesh discovery, the app layer matches by name and applies
+/// the saved visibility state.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MeshVisibilitySettings {
+    pub name: String,
+    #[serde(default = "default_true")]
+    pub visible: bool,
+}
+
+/// Persisted state for a single environment object (GLB/glTF scene prop).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnvironmentObjectSettings {
+    /// Absolute path to the GLB/glTF file on disk.
+    pub path: String,
+
+    /// User-edited display name.  Falls back to filename stem on load if
+    /// absent (old TOML files).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+
+    /// Master visibility toggle.
+    #[serde(default = "default_true")]
+    pub visible: bool,
+
+    /// Whether PBR textures are enabled (false → flat fallback material).
+    #[serde(default = "default_true")]
+    pub textures_enabled: bool,
+
+    /// World-space position `[x, y, z]`.
+    #[serde(default, skip_serializing_if = "is_zero_vec3")]
+    pub position: [f32; 3],
+
+    /// Euler rotation in degrees `[pitch, yaw, roll]`.
+    #[serde(default, skip_serializing_if = "is_zero_vec3")]
+    pub rotation_degrees: [f32; 3],
+
+    /// Non-uniform scale `[x, y, z]`.
+    #[serde(default = "default_one_vec3", skip_serializing_if = "is_one_vec3")]
+    pub scale: [f32; 3],
+
+    /// Per-mesh visibility overrides (matched by name after scene loads).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mesh_visibility: Vec<MeshVisibilitySettings>,
+}
+
+fn is_zero_vec3(v: &[f32; 3]) -> bool {
+    v[0] == 0.0 && v[1] == 0.0 && v[2] == 0.0
+}
+
+fn default_one_vec3() -> [f32; 3] {
+    [1.0, 1.0, 1.0]
+}
+
+fn is_one_vec3(v: &[f32; 3]) -> bool {
+    v[0] == 1.0 && v[1] == 1.0 && v[2] == 1.0
+}
+
+impl From<&EnvironmentObject> for EnvironmentObjectSettings {
+    fn from(obj: &EnvironmentObject) -> Self {
+        Self {
+            path: obj.path.to_string_lossy().to_string(),
+            name: Some(obj.name.clone()),
+            visible: obj.visible,
+            textures_enabled: obj.textures_enabled,
+            position: obj.transform.position,
+            rotation_degrees: obj.transform.rotation_degrees,
+            scale: obj.transform.scale,
+            mesh_visibility: obj
+                .meshes
+                .iter()
+                .map(|m| MeshVisibilitySettings {
+                    name: m.name.clone(),
+                    visible: m.visible,
+                })
+                .collect(),
+        }
+    }
+}
+
+impl From<&EnvironmentObjectSettings> for EnvironmentObject {
+    fn from(s: &EnvironmentObjectSettings) -> Self {
+        let path = std::path::PathBuf::from(&s.path);
+        let name = s.name.clone().unwrap_or_else(|| {
+            path.file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("Object")
+                .to_string()
+        });
+        Self {
+            id: crate::lib::environment_objects::EnvironmentObjectId::new(),
+            name,
+            path,
+            visible: s.visible,
+            textures_enabled: s.textures_enabled,
+            transform: Transform3D {
+                position: s.position,
+                rotation_degrees: s.rotation_degrees,
+                scale: s.scale,
+            },
+            meshes: s
+                .mesh_visibility
+                .iter()
+                .map(|mv| MeshEntry {
+                    name: mv.name.clone(),
+                    visible: mv.visible,
+                })
+                .collect(),
+        }
+    }
+}
+
+/// Convert an [`EnvironmentObjectStore`] to settings for persistence.
+pub fn environment_objects_to_settings(
+    store: &EnvironmentObjectStore,
+) -> Vec<EnvironmentObjectSettings> {
+    store.iter().map(EnvironmentObjectSettings::from).collect()
+}
+
+/// Reconstruct an [`EnvironmentObjectStore`] from persisted settings.
+///
+/// Missing files are logged as warnings but still added to the store so the
+/// user can see them in the UI and fix paths manually.
+pub fn settings_to_environment_objects(
+    settings: &[EnvironmentObjectSettings],
+) -> EnvironmentObjectStore {
+    let mut store = EnvironmentObjectStore::new();
+    for s in settings {
+        let path = std::path::Path::new(&s.path);
+        if !path.exists() {
+            log::warn!(
+                "Environment object file not found: {} — adding anyway",
+                s.path
+            );
+        }
+        store.add(EnvironmentObject::from(s));
+    }
+    store
+}
+
+// ---------------------------------------------------------------------------
 // EnvironmentSettings — grouping struct
 // ---------------------------------------------------------------------------
 
@@ -572,10 +720,10 @@ pub struct EnvironmentSettings {
     /// Named materials map. `"fluid"` is the default key for the sequence mesh.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub materials: HashMap<String, MaterialSettings>,
-    // --- future sections (reserved, not implemented) ---
-    // pub props:           Option<Vec<PropSettings>>,
-    // pub background:      Option<BackgroundSettings>,
-    // pub post_processing: Option<PostProcessingSettings>,
+
+    /// Imported environment objects (GLB/glTF scene props).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub objects: Vec<EnvironmentObjectSettings>,
 }
 
 // ---------------------------------------------------------------------------
@@ -876,6 +1024,25 @@ impl Settings {
             loop_enabled: Some(loop_enabled),
             watch: Some(watch),
         });
+    }
+
+    /// Save environment objects into the environment settings.
+    pub fn set_environment_objects(&mut self, store: &EnvironmentObjectStore) {
+        let env = self
+            .environment
+            .get_or_insert_with(EnvironmentSettings::default);
+        env.objects = environment_objects_to_settings(store);
+    }
+
+    /// Reconstruct an [`EnvironmentObjectStore`] from persisted settings.
+    ///
+    /// Returns `None` if there are no objects in the TOML.
+    pub fn get_environment_objects(&self) -> Option<EnvironmentObjectStore> {
+        let env = self.environment.as_ref()?;
+        if env.objects.is_empty() {
+            return None;
+        }
+        Some(settings_to_environment_objects(&env.objects))
     }
 
     /// Build a [`SavedCameras`] resource from the current settings.
@@ -1505,6 +1672,7 @@ alpha_cutoff = 0.5
                     m.insert("fluid".to_string(), MaterialSettings::default());
                     m
                 },
+                objects: vec![],
             }),
             load_section: None,
             load_sections: vec![],
@@ -1867,6 +2035,7 @@ visible = true
             lighting: None,
             lighting_groups: vec![],
             materials: HashMap::new(),
+            objects: vec![],
         });
 
         let toml_str = toml::to_string_pretty(&settings).unwrap();
@@ -1983,5 +2152,225 @@ rotation = [0.0, 0.0, 0.0]
         assert_eq!(ls.end, 100);
         assert_eq!(ls.start, 0);
         assert_eq!(ls.frame_count(), 100);
+    }
+
+    // ── Environment object persistence ────────────────────────────────
+
+    #[test]
+    fn test_env_object_settings_roundtrip() {
+        use crate::lib::environment_objects::{EnvironmentObject, MeshEntry, Transform3D};
+
+        let mut obj = EnvironmentObject::new("/models/fountain.glb");
+        obj.name = "My Fountain".to_string();
+        obj.visible = false;
+        obj.textures_enabled = false;
+        obj.transform = Transform3D::default()
+            .with_position(1.0, 2.0, 3.0)
+            .with_rotation_degrees(45.0, 90.0, 0.0)
+            .with_uniform_scale(0.5);
+        obj.meshes = vec![
+            MeshEntry {
+                name: "Base".to_string(),
+                visible: true,
+            },
+            MeshEntry {
+                name: "Water".to_string(),
+                visible: false,
+            },
+        ];
+
+        let settings = EnvironmentObjectSettings::from(&obj);
+        assert_eq!(settings.path, "/models/fountain.glb");
+        assert_eq!(settings.name.as_deref(), Some("My Fountain"));
+        assert!(!settings.visible);
+        assert!(!settings.textures_enabled);
+        assert_eq!(settings.position, [1.0, 2.0, 3.0]);
+        assert_eq!(settings.rotation_degrees, [45.0, 90.0, 0.0]);
+        assert_eq!(settings.scale, [0.5, 0.5, 0.5]);
+        assert_eq!(settings.mesh_visibility.len(), 2);
+        assert!(settings.mesh_visibility[0].visible);
+        assert!(!settings.mesh_visibility[1].visible);
+
+        // Convert back to runtime type.
+        let restored = EnvironmentObject::from(&settings);
+        assert_eq!(restored.name, "My Fountain");
+        assert_eq!(restored.path.to_str().unwrap(), "/models/fountain.glb");
+        assert!(!restored.visible);
+        assert!(!restored.textures_enabled);
+        assert_eq!(restored.transform.position, [1.0, 2.0, 3.0]);
+        assert_eq!(restored.transform.scale, [0.5, 0.5, 0.5]);
+        assert_eq!(restored.meshes.len(), 2);
+        assert_eq!(restored.meshes[0].name, "Base");
+        assert!(restored.meshes[0].visible);
+        assert_eq!(restored.meshes[1].name, "Water");
+        assert!(!restored.meshes[1].visible);
+    }
+
+    #[test]
+    fn test_env_object_settings_toml_roundtrip() {
+        let settings = EnvironmentObjectSettings {
+            path: "/home/user/models/building.glb".to_string(),
+            name: Some("Office".to_string()),
+            visible: true,
+            textures_enabled: true,
+            position: [10.0, 0.0, -5.0],
+            rotation_degrees: [0.0, 0.0, 0.0],
+            scale: [1.0, 1.0, 1.0],
+            mesh_visibility: vec![MeshVisibilitySettings {
+                name: "Roof".to_string(),
+                visible: false,
+            }],
+        };
+
+        let mut env_settings = EnvironmentSettings::default();
+        env_settings.objects = vec![settings];
+
+        let mut s = Settings::default();
+        s.environment = Some(env_settings);
+
+        let toml_str = toml::to_string_pretty(&s).unwrap();
+        assert!(
+            toml_str.contains("building.glb"),
+            "path should appear in TOML:\n{toml_str}"
+        );
+        assert!(
+            toml_str.contains("Office"),
+            "name should appear in TOML:\n{toml_str}"
+        );
+
+        // Rotation and scale at defaults should be omitted.
+        assert!(
+            !toml_str.contains("rotation_degrees"),
+            "zero rotation should be omitted:\n{toml_str}"
+        );
+        assert!(
+            !toml_str.contains("scale"),
+            "identity scale should be omitted:\n{toml_str}"
+        );
+
+        // Position is non-zero, should be present.
+        assert!(
+            toml_str.contains("position"),
+            "non-zero position should be present:\n{toml_str}"
+        );
+
+        // Parse back.
+        let loaded: Settings = toml::from_str(&toml_str).unwrap();
+        let env = loaded.environment.unwrap();
+        assert_eq!(env.objects.len(), 1);
+        assert_eq!(env.objects[0].path, "/home/user/models/building.glb");
+        assert_eq!(env.objects[0].name.as_deref(), Some("Office"));
+        assert_eq!(env.objects[0].position, [10.0, 0.0, -5.0]);
+        // Omitted fields should deserialize to defaults.
+        assert_eq!(env.objects[0].rotation_degrees, [0.0, 0.0, 0.0]);
+        assert_eq!(env.objects[0].scale, [1.0, 1.0, 1.0]);
+        assert_eq!(env.objects[0].mesh_visibility.len(), 1);
+        assert_eq!(env.objects[0].mesh_visibility[0].name, "Roof");
+        assert!(!env.objects[0].mesh_visibility[0].visible);
+    }
+
+    #[test]
+    fn test_env_objects_store_roundtrip() {
+        use crate::lib::environment_objects::{EnvironmentObject, EnvironmentObjectStore};
+
+        let mut store = EnvironmentObjectStore::new();
+        let mut obj1 = EnvironmentObject::new("/a.glb");
+        obj1.name = "Alpha".to_string();
+        obj1.visible = false;
+        let mut obj2 = EnvironmentObject::new("/b.glb");
+        obj2.name = "Beta".to_string();
+        obj2.transform = Transform3D::default().with_position(5.0, 0.0, 0.0);
+        store.add(obj1);
+        store.add(obj2);
+
+        let settings_vec = environment_objects_to_settings(&store);
+        assert_eq!(settings_vec.len(), 2);
+
+        let restored = settings_to_environment_objects(&settings_vec);
+        assert_eq!(restored.len(), 2);
+
+        let items: Vec<_> = restored.iter().collect();
+        assert_eq!(items[0].name, "Alpha");
+        assert!(!items[0].visible);
+        assert_eq!(items[1].name, "Beta");
+        assert_eq!(items[1].transform.position, [5.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn test_env_objects_set_get_on_settings() {
+        use crate::lib::environment_objects::{EnvironmentObject, EnvironmentObjectStore};
+
+        let mut store = EnvironmentObjectStore::new();
+        store.add(EnvironmentObject::new("/test.glb"));
+
+        let mut settings = Settings::default();
+        settings.set_environment_objects(&store);
+
+        let restored = settings.get_environment_objects().unwrap();
+        assert_eq!(restored.len(), 1);
+        assert_eq!(restored.iter().next().unwrap().name, "test");
+    }
+
+    #[test]
+    fn test_env_objects_get_returns_none_when_empty() {
+        let settings = Settings::default();
+        assert!(settings.get_environment_objects().is_none());
+    }
+
+    #[test]
+    fn test_env_objects_empty_omitted_from_toml() {
+        let mut settings = Settings::default();
+        settings.environment = Some(EnvironmentSettings::default());
+
+        let toml_str = toml::to_string_pretty(&settings).unwrap();
+        assert!(
+            !toml_str.contains("objects"),
+            "empty objects should be omitted:\n{toml_str}"
+        );
+    }
+
+    #[test]
+    fn test_env_object_name_falls_back_to_stem() {
+        let settings = EnvironmentObjectSettings {
+            path: "/some/dir/cool_mesh.glb".to_string(),
+            name: None,
+            visible: true,
+            textures_enabled: true,
+            position: [0.0; 3],
+            rotation_degrees: [0.0; 3],
+            scale: [1.0, 1.0, 1.0],
+            mesh_visibility: vec![],
+        };
+
+        let obj = EnvironmentObject::from(&settings);
+        assert_eq!(obj.name, "cool_mesh");
+    }
+
+    #[test]
+    fn test_env_object_save_load_file_roundtrip() {
+        use crate::lib::environment_objects::{EnvironmentObject, EnvironmentObjectStore};
+
+        let dir = tempfile::tempdir().unwrap();
+
+        let mut store = EnvironmentObjectStore::new();
+        let mut obj = EnvironmentObject::new("/models/statue.glb");
+        obj.transform = Transform3D::default()
+            .with_position(1.0, 2.0, 3.0)
+            .with_rotation_degrees(0.0, 180.0, 0.0);
+        store.add(obj);
+
+        let mut settings = Settings::default();
+        settings.set_environment_objects(&store);
+        settings.save_to_dir(dir.path()).unwrap();
+
+        let loaded = Settings::load_from_dir(dir.path()).unwrap().unwrap();
+        let restored = loaded.get_environment_objects().unwrap();
+        assert_eq!(restored.len(), 1);
+
+        let item = restored.iter().next().unwrap();
+        assert_eq!(item.name, "statue");
+        assert_eq!(item.transform.position, [1.0, 2.0, 3.0]);
+        assert_eq!(item.transform.rotation_degrees, [0.0, 180.0, 0.0]);
+        assert_eq!(item.transform.scale, [1.0, 1.0, 1.0]);
     }
 }

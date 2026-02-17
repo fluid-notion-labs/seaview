@@ -54,7 +54,7 @@ impl Plugin for EnvironmentObjectPlugin {
             bevy::asset::io::AssetSourceBuilder::platform_default("/", None),
         );
 
-        app.insert_resource(EnvironmentObjectStoreRes::default())
+        app.init_resource::<EnvironmentObjectStoreRes>()
             .insert_resource(SpawnedEnvironmentObjects::default())
             .insert_resource(PendingSceneDiscovery::default())
             .add_message::<ImportEnvironmentObjectEvent>()
@@ -311,9 +311,28 @@ fn discover_child_meshes(
         state.mesh_entities = mesh_entities;
         state.meshes_discovered = true;
 
-        // Write mesh entries back to the store.
+        // Write mesh entries back to the store, preserving any saved
+        // visibility state from seaview.toml.  Match by name so that
+        // meshes whose visibility was persisted keep their saved state.
         if let Some(obj) = store.get_mut(*id) {
-            obj.meshes = mesh_entries;
+            if obj.meshes.is_empty() {
+                // No saved state — use freshly-discovered entries as-is.
+                obj.meshes = mesh_entries;
+            } else {
+                // Merge: carry over saved visibility for matching names,
+                // default to visible for newly-discovered meshes.
+                let saved: std::collections::HashMap<&str, bool> = obj
+                    .meshes
+                    .iter()
+                    .map(|m| (m.name.as_str(), m.visible))
+                    .collect();
+                for entry in &mut mesh_entries {
+                    if let Some(&vis) = saved.get(entry.name.as_str()) {
+                        entry.visible = vis;
+                    }
+                }
+                obj.meshes = mesh_entries;
+            }
         }
         store.bump_generation();
 
