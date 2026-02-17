@@ -589,6 +589,36 @@ impl Timeline {
         }
     }
 
+    // -- Watch / incremental growth -----------------------------------------
+
+    /// Expand any active section whose `end` was pinned to the old sequence
+    /// end so it grows to cover newly-arrived frames.
+    ///
+    /// A section is considered "pinned to the end" when its `end` equals
+    /// `old_total` — i.e. it extended all the way to the last known frame.
+    /// When the sequence grows (watch mode, incremental load), these sections
+    /// should grow with it so the new frames become loadable without manual
+    /// intervention.
+    ///
+    /// `self.total_frames` must already be set to the **new** total before
+    /// calling this method.
+    ///
+    /// Returns the number of sections that were expanded (useful for logging).
+    pub fn expand_trailing_sections(&mut self, old_total: usize) -> usize {
+        if self.total_frames <= old_total {
+            return 0; // Sequence didn't grow — nothing to do.
+        }
+        let new_total = self.total_frames;
+        let mut expanded = 0;
+        for section in &mut self.sections {
+            if section.active && section.end == old_total {
+                section.end = new_total;
+                expanded += 1;
+            }
+        }
+        expanded
+    }
+
     // -- Initialisation helpers ---------------------------------------------
 
     /// Reset the timeline for a newly-loaded sequence.
@@ -824,7 +854,21 @@ fn update_timeline_budget(
     }
 
     // Now take the mutable borrow.
+    let old_total = timeline.total_frames;
     timeline.total_frames = frame_store.total_frames;
+
+    // When the sequence grows (watch mode / incremental load), auto-expand
+    // any active section that was pinned to the old end so the new frames
+    // become visible without manual slider adjustment.
+    if frame_store.total_frames > old_total {
+        let expanded = timeline.expand_trailing_sections(old_total);
+        if expanded > 0 {
+            debug!(
+                "Auto-expanded {} trailing section(s): {} → {} total frames",
+                expanded, old_total, frame_store.total_frames,
+            );
+        }
+    }
 
     let old_sections = timeline.sections.clone();
 
@@ -1912,6 +1956,78 @@ mod tests {
         assert!(tl.is_frame_loaded(55));
         assert!(!tl.is_frame_loaded(30));
         assert!(!tl.is_frame_loaded(5));
+    }
+
+    // -- expand_trailing_sections -------------------------------------------
+
+    #[test]
+    fn test_expand_trailing_single_section_pinned() {
+        // Section [0, 200) pinned to end, sequence grows to 210
+        let mut tl = Timeline::new(200, 200);
+        assert_eq!(tl.sections[0].end, 200);
+        tl.total_frames = 210;
+        let expanded = tl.expand_trailing_sections(200);
+        assert_eq!(expanded, 1);
+        assert_eq!(tl.sections[0].end, 210);
+    }
+
+    #[test]
+    fn test_expand_trailing_section_not_pinned() {
+        // Section [0, 100) in a 200-frame sequence — not pinned to end
+        let mut tl = Timeline::new(200, 100);
+        tl.total_frames = 210;
+        let expanded = tl.expand_trailing_sections(200);
+        assert_eq!(expanded, 0);
+        assert_eq!(tl.sections[0].end, 100); // unchanged
+    }
+
+    #[test]
+    fn test_expand_trailing_multi_section() {
+        // Two sections: [0, 100) and [150, 200). Only the second is pinned.
+        let mut tl = Timeline {
+            total_frames: 220,
+            sections: vec![LoadSection::new(0, 100), LoadSection::new(150, 200)],
+            playhead: 0,
+        };
+        let expanded = tl.expand_trailing_sections(200);
+        assert_eq!(expanded, 1);
+        assert_eq!(tl.sections[0].end, 100); // unchanged
+        assert_eq!(tl.sections[1].end, 220); // expanded
+    }
+
+    #[test]
+    fn test_expand_trailing_inactive_section_ignored() {
+        // Inactive section pinned to end should NOT expand
+        let mut tl = Timeline {
+            total_frames: 210,
+            sections: vec![LoadSection {
+                start: 0,
+                end: 200,
+                active: false,
+            }],
+            playhead: 0,
+        };
+        let expanded = tl.expand_trailing_sections(200);
+        assert_eq!(expanded, 0);
+        assert_eq!(tl.sections[0].end, 200); // unchanged
+    }
+
+    #[test]
+    fn test_expand_trailing_no_growth() {
+        // Sequence didn't grow — nothing should change
+        let mut tl = Timeline::new(200, 200);
+        tl.total_frames = 200;
+        let expanded = tl.expand_trailing_sections(200);
+        assert_eq!(expanded, 0);
+    }
+
+    #[test]
+    fn test_expand_trailing_sequence_shrank() {
+        // Sequence shrank — nothing should change
+        let mut tl = Timeline::new(200, 200);
+        tl.total_frames = 190;
+        let expanded = tl.expand_trailing_sections(200);
+        assert_eq!(expanded, 0);
     }
 
     #[test]
