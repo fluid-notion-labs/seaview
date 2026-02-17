@@ -38,6 +38,8 @@ bevy = { version = "0.18.0", default-features = false, features = [
     "bevy_image",
     "bevy_color",
     "bevy_shader",
+    "bevy_gltf",
+    "bevy_scene",
     "bevy_camera",
     "bevy_light",
     "bevy_post_process",

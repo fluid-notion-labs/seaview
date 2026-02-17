@@ -4,6 +4,7 @@ use bevy::pbr::wireframe::WireframePlugin;
 use bevy::pbr::{DefaultOpaqueRendererMethod, ScreenSpaceReflections};
 use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
+use seaview::app::environment_objects::EnvironmentObjectPlugin;
 use seaview::lib::lighting::{EnvironmentLightConfig, GlobalLight};
 use seaview::{
     MemoryBudgetPlugin, MeshDimensions, MeshInfoPlugin, NightLightingPlugin, SeaviewUiPlugin,
@@ -176,6 +177,7 @@ fn main() {
         .add_plugins(SeaviewUiPlugin)
         .add_plugins(NightLightingPlugin)
         .add_plugins(MeshInfoPlugin)
+        .add_plugins(EnvironmentObjectPlugin)
         .add_plugins(seaview::app::systems::AppSystemsPlugin);
     #[cfg(feature = "spatial")]
     app.add_plugins(seaview::app::spatial_accelerator::SpatialAcceleratorPlugin);

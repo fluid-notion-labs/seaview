@@ -5,6 +5,7 @@
 
 pub mod lib {
     pub mod coordinates;
+    pub mod environment_objects;
     pub mod global_settings;
     pub mod lighting;
     pub mod memory_budget;
@@ -19,6 +20,7 @@ pub mod lib {
 
 pub mod app {
     pub mod cli;
+    pub mod environment_objects;
     #[cfg(feature = "spatial")]
     pub mod spatial_accelerator;
     pub mod systems;
@@ -42,6 +44,9 @@ pub use lib::sequence::{
     distribute_sections, FrameInfo, LoadSection, Sequence, SpatialIndex, Timeline,
 };
 // Re-export loadfu's MeshFormat so bins and downstream crates can use it
+pub use lib::environment_objects::{
+    EnvironmentObject, EnvironmentObjectId, EnvironmentObjectStore, MeshEntry, Transform3D,
+};
 pub use lib::session::{self, Session, SessionManager, SessionPlugin};
 pub use lib::spatial::{BvhNodeAabb, PointProjection, RayHit, SpatialMesh, SpatialMeshError};
 pub use lib::toast::{Toast, ToastLevel, ToastQueue};

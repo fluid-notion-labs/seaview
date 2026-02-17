@@ -1,0 +1,445 @@
+//! Environment objects — pure data model
+//!
+//! Static scene props (GLB/glTF files) imported alongside the fluid simulation.
+//! This module is **pure logic**: no Bevy systems, no ECS queries, no asset
+//! loading.  The Bevy integration lives in `app/environment_objects.rs`.
+//!
+//! # Design
+//!
+//! [`EnvironmentObjectStore`] is the single authoritative resource for
+//! environment object state.  The app layer reads it to spawn/despawn scenes
+//! and the UI layer reads/writes it for controls.
+//!
+//! GLB scene loading is intentionally absent here.  When `loadfu` gains
+//! multi-object scene support, only the app-layer spawning code needs to
+//! change — this module stays the same.
+
+use std::path::PathBuf;
+
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+// ---------------------------------------------------------------------------
+// Identifiers
+// ---------------------------------------------------------------------------
+
+/// Strongly-typed identifier for an environment object.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct EnvironmentObjectId(pub Uuid);
+
+impl EnvironmentObjectId {
+    pub fn new() -> Self {
+        Self(Uuid::new_v4())
+    }
+}
+
+impl Default for EnvironmentObjectId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl std::fmt::Display for EnvironmentObjectId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Transform (lib-side, no Bevy Transform)
+// ---------------------------------------------------------------------------
+
+/// Position / rotation / scale for an environment object.
+///
+/// Uses plain arrays so the type is Bevy-free.  The app layer converts to/from
+/// `bevy::prelude::Transform` via `From` / `Into` impls.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Transform3D {
+    /// World-space position `[x, y, z]`.
+    pub position: [f32; 3],
+    /// Euler rotation in **degrees** `[pitch, yaw, roll]` (XYZ order).
+    pub rotation_degrees: [f32; 3],
+    /// Non-uniform scale `[x, y, z]`.
+    pub scale: [f32; 3],
+}
+
+impl Default for Transform3D {
+    fn default() -> Self {
+        Self {
+            position: [0.0, 0.0, 0.0],
+            rotation_degrees: [0.0, 0.0, 0.0],
+            scale: [1.0, 1.0, 1.0],
+        }
+    }
+}
+
+impl Transform3D {
+    pub fn with_position(mut self, x: f32, y: f32, z: f32) -> Self {
+        self.position = [x, y, z];
+        self
+    }
+
+    pub fn with_rotation_degrees(mut self, pitch: f32, yaw: f32, roll: f32) -> Self {
+        self.rotation_degrees = [pitch, yaw, roll];
+        self
+    }
+
+    pub fn with_scale(mut self, x: f32, y: f32, z: f32) -> Self {
+        self.scale = [x, y, z];
+        self
+    }
+
+    pub fn with_uniform_scale(mut self, s: f32) -> Self {
+        self.scale = [s, s, s];
+        self
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Mesh entry (discovered after scene loads)
+// ---------------------------------------------------------------------------
+
+/// A single mesh primitive within a loaded GLB scene.
+///
+/// Populated by the app layer once the scene's child entities are enumerated.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MeshEntry {
+    /// Human-readable name (from glTF node name, or fallback like "Mesh 0").
+    pub name: String,
+    /// Whether this individual mesh is visible.
+    pub visible: bool,
+}
+
+impl MeshEntry {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            visible: true,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Environment object
+// ---------------------------------------------------------------------------
+
+/// A single imported environment object (one GLB/glTF file).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnvironmentObject {
+    /// Unique identifier.
+    pub id: EnvironmentObjectId,
+    /// Display name (defaults to filename stem, user-editable).
+    pub name: String,
+    /// Path to the source GLB/glTF file on disk.
+    pub path: PathBuf,
+    /// Master visibility toggle.
+    pub visible: bool,
+    /// Whether PBR textures/materials are applied (false → flat fallback).
+    pub textures_enabled: bool,
+    /// Object transform (position / rotation / scale).
+    pub transform: Transform3D,
+    /// Individual mesh primitives discovered after the scene loads.
+    /// Empty until the app layer enumerates child entities.
+    pub meshes: Vec<MeshEntry>,
+}
+
+impl EnvironmentObject {
+    /// Create a new environment object from a file path.
+    ///
+    /// The name defaults to the file stem (e.g. `"fountain"` from
+    /// `"/models/fountain.glb"`).
+    pub fn new(path: impl Into<PathBuf>) -> Self {
+        let path = path.into();
+        let name = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("Object")
+            .to_string();
+        Self {
+            id: EnvironmentObjectId::new(),
+            name,
+            path,
+            visible: true,
+            textures_enabled: true,
+            transform: Transform3D::default(),
+            meshes: Vec::new(),
+        }
+    }
+
+    /// Returns `true` if the scene's meshes have been discovered by the app
+    /// layer.
+    pub fn meshes_discovered(&self) -> bool {
+        !self.meshes.is_empty()
+    }
+
+    /// Toggle master visibility, returning the new state.
+    pub fn toggle_visible(&mut self) -> bool {
+        self.visible = !self.visible;
+        self.visible
+    }
+
+    /// Toggle textures, returning the new state.
+    pub fn toggle_textures(&mut self) -> bool {
+        self.textures_enabled = !self.textures_enabled;
+        self.textures_enabled
+    }
+
+    /// Set all mesh entries to the given visibility.
+    pub fn set_all_meshes_visible(&mut self, visible: bool) {
+        for mesh in &mut self.meshes {
+            mesh.visible = visible;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Store
+// ---------------------------------------------------------------------------
+
+/// Authoritative collection of all imported environment objects.
+///
+/// This is inserted as a Bevy `Resource` (via `derive(Resource)` in the app
+/// layer) but contains no ECS logic itself.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct EnvironmentObjectStore {
+    objects: Vec<EnvironmentObject>,
+    /// Monotonically increasing counter bumped on every mutation.
+    /// The app layer uses this to detect changes without Bevy change-detection
+    /// on the inner `Vec`.
+    #[serde(skip)]
+    generation: u64,
+}
+
+impl EnvironmentObjectStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    // -- Queries -------------------------------------------------------------
+
+    /// Number of objects in the store.
+    pub fn len(&self) -> usize {
+        self.objects.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.objects.is_empty()
+    }
+
+    /// Current generation counter (bumped on every add/remove/clear).
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Iterate over all objects.
+    pub fn iter(&self) -> impl Iterator<Item = &EnvironmentObject> {
+        self.objects.iter()
+    }
+
+    /// Iterate mutably (does **not** bump generation — caller is responsible
+    /// for calling [`bump_generation`] if they make meaningful changes).
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut EnvironmentObject> {
+        self.objects.iter_mut()
+    }
+
+    /// Look up an object by id.
+    pub fn get(&self, id: EnvironmentObjectId) -> Option<&EnvironmentObject> {
+        self.objects.iter().find(|o| o.id == id)
+    }
+
+    /// Look up an object mutably by id.
+    pub fn get_mut(&mut self, id: EnvironmentObjectId) -> Option<&mut EnvironmentObject> {
+        self.objects.iter_mut().find(|o| o.id == id)
+    }
+
+    /// All object ids in insertion order.
+    pub fn ids(&self) -> Vec<EnvironmentObjectId> {
+        self.objects.iter().map(|o| o.id).collect()
+    }
+
+    // -- Mutations -----------------------------------------------------------
+
+    /// Add an object, returning its id.
+    pub fn add(&mut self, obj: EnvironmentObject) -> EnvironmentObjectId {
+        let id = obj.id;
+        self.objects.push(obj);
+        self.generation += 1;
+        id
+    }
+
+    /// Remove an object by id.  Returns `Some(object)` if found.
+    pub fn remove(&mut self, id: EnvironmentObjectId) -> Option<EnvironmentObject> {
+        if let Some(idx) = self.objects.iter().position(|o| o.id == id) {
+            self.generation += 1;
+            Some(self.objects.remove(idx))
+        } else {
+            None
+        }
+    }
+
+    /// Remove all objects.  Returns the removed objects.
+    pub fn clear(&mut self) -> Vec<EnvironmentObject> {
+        if !self.objects.is_empty() {
+            self.generation += 1;
+        }
+        std::mem::take(&mut self.objects)
+    }
+
+    /// Manually bump the generation counter (e.g. after mutating objects
+    /// through `get_mut` or `iter_mut`).
+    pub fn bump_generation(&mut self) {
+        self.generation += 1;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_object_has_filename_as_name() {
+        let obj = EnvironmentObject::new("/models/cool_fountain.glb");
+        assert_eq!(obj.name, "cool_fountain");
+        assert!(obj.visible);
+        assert!(obj.textures_enabled);
+        assert!(obj.meshes.is_empty());
+    }
+
+    #[test]
+    fn default_transform_is_identity() {
+        let t = Transform3D::default();
+        assert_eq!(t.position, [0.0, 0.0, 0.0]);
+        assert_eq!(t.rotation_degrees, [0.0, 0.0, 0.0]);
+        assert_eq!(t.scale, [1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn transform_builder_methods() {
+        let t = Transform3D::default()
+            .with_position(1.0, 2.0, 3.0)
+            .with_rotation_degrees(45.0, 90.0, 0.0)
+            .with_uniform_scale(2.0);
+        assert_eq!(t.position, [1.0, 2.0, 3.0]);
+        assert_eq!(t.rotation_degrees, [45.0, 90.0, 0.0]);
+        assert_eq!(t.scale, [2.0, 2.0, 2.0]);
+    }
+
+    #[test]
+    fn store_add_and_get() {
+        let mut store = EnvironmentObjectStore::new();
+        assert_eq!(store.generation(), 0);
+
+        let obj = EnvironmentObject::new("test.glb");
+        let id = obj.id;
+        store.add(obj);
+
+        assert_eq!(store.len(), 1);
+        assert_eq!(store.generation(), 1);
+        assert!(store.get(id).is_some());
+        assert_eq!(store.get(id).unwrap().name, "test");
+    }
+
+    #[test]
+    fn store_remove() {
+        let mut store = EnvironmentObjectStore::new();
+        let id = store.add(EnvironmentObject::new("a.glb"));
+        let _ = store.add(EnvironmentObject::new("b.glb"));
+        assert_eq!(store.len(), 2);
+
+        let removed = store.remove(id);
+        assert!(removed.is_some());
+        assert_eq!(removed.unwrap().name, "a");
+        assert_eq!(store.len(), 1);
+        assert!(store.get(id).is_none());
+    }
+
+    #[test]
+    fn store_remove_nonexistent_returns_none() {
+        let mut store = EnvironmentObjectStore::new();
+        let bogus = EnvironmentObjectId::new();
+        assert!(store.remove(bogus).is_none());
+    }
+
+    #[test]
+    fn store_clear() {
+        let mut store = EnvironmentObjectStore::new();
+        store.add(EnvironmentObject::new("a.glb"));
+        store.add(EnvironmentObject::new("b.glb"));
+        let gen_before = store.generation();
+
+        let removed = store.clear();
+        assert_eq!(removed.len(), 2);
+        assert!(store.is_empty());
+        assert!(store.generation() > gen_before);
+    }
+
+    #[test]
+    fn store_ids_preserves_insertion_order() {
+        let mut store = EnvironmentObjectStore::new();
+        let id1 = store.add(EnvironmentObject::new("first.glb"));
+        let id2 = store.add(EnvironmentObject::new("second.glb"));
+        let id3 = store.add(EnvironmentObject::new("third.glb"));
+
+        assert_eq!(store.ids(), vec![id1, id2, id3]);
+    }
+
+    #[test]
+    fn toggle_visible() {
+        let mut obj = EnvironmentObject::new("test.glb");
+        assert!(obj.visible);
+        assert!(!obj.toggle_visible());
+        assert!(!obj.visible);
+        assert!(obj.toggle_visible());
+        assert!(obj.visible);
+    }
+
+    #[test]
+    fn toggle_textures() {
+        let mut obj = EnvironmentObject::new("test.glb");
+        assert!(obj.textures_enabled);
+        assert!(!obj.toggle_textures());
+        assert!(!obj.textures_enabled);
+    }
+
+    #[test]
+    fn set_all_meshes_visible() {
+        let mut obj = EnvironmentObject::new("test.glb");
+        obj.meshes = vec![
+            MeshEntry::new("Mesh A"),
+            MeshEntry::new("Mesh B"),
+            MeshEntry::new("Mesh C"),
+        ];
+
+        obj.set_all_meshes_visible(false);
+        assert!(obj.meshes.iter().all(|m| !m.visible));
+
+        obj.set_all_meshes_visible(true);
+        assert!(obj.meshes.iter().all(|m| m.visible));
+    }
+
+    #[test]
+    fn mesh_entry_defaults_to_visible() {
+        let entry = MeshEntry::new("test");
+        assert!(entry.visible);
+        assert_eq!(entry.name, "test");
+    }
+
+    #[test]
+    fn store_get_mut_and_bump() {
+        let mut store = EnvironmentObjectStore::new();
+        let id = store.add(EnvironmentObject::new("test.glb"));
+        let gen = store.generation();
+
+        if let Some(obj) = store.get_mut(id) {
+            obj.name = "renamed".to_string();
+        }
+        store.bump_generation();
+
+        assert_eq!(store.get(id).unwrap().name, "renamed");
+        assert_eq!(store.generation(), gen + 1);
+    }
+}
