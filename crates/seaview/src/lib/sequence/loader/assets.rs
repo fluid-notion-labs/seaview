@@ -56,6 +56,9 @@ pub struct FrameStore {
     pub format: Option<MeshFormat>,
     /// Estimated GPU memory per frame in bytes (set after first frame loads)
     pub estimated_frame_bytes: u64,
+    /// Frames flagged as degenerate (e.g. runt files with near-zero geometry).
+    /// Indexed by frame number. Degenerate frames are skipped during display.
+    pub degenerate_frames: Vec<bool>,
 }
 
 impl FrameStore {
@@ -71,6 +74,7 @@ impl FrameStore {
         self.format = None;
         self.frame_entities.clear();
         self.estimated_frame_bytes = 0;
+        self.degenerate_frames.clear();
     }
 
     /// Check if all frames are loaded.

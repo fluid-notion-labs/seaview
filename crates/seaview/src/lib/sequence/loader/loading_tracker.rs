@@ -105,10 +105,13 @@ pub(super) fn track_asset_loading(
                         Some(materials.add(default_material_properties()));
                 }
 
-                // Estimate frame size from first loaded mesh for memory budgeting
-                if frame_store.estimated_frame_bytes == 0 {
-                    if let Some(mesh) = meshes.get(&handle) {
-                        let vertex_count = mesh.count_vertices();
+                // Estimate frame size from first loaded mesh for memory budgeting,
+                // and flag degenerate frames (runt files with near-zero geometry).
+                if let Some(mesh) = meshes.get(&handle) {
+                    let vertex_count = mesh.count_vertices();
+
+                    // Set baseline estimate from the first real frame
+                    if frame_store.estimated_frame_bytes == 0 {
                         let estimated_bytes = estimate_mesh_gpu_bytes_from_vertices(vertex_count);
                         frame_store.estimated_frame_bytes = estimated_bytes;
                         memory_budget.update_frame_estimate(estimated_bytes);
@@ -117,6 +120,16 @@ pub(super) fn track_asset_loading(
                             vertex_count,
                             estimated_bytes as f64 / 1_048_576.0,
                             memory_budget.max_frames
+                        );
+                    }
+
+                    // Flag degenerate frames: <10% of expected vertex count
+                    let expected_verts = frame_store.estimated_frame_bytes as usize / 32; // rough: 32 bytes/vert
+                    if expected_verts > 0 && vertex_count < expected_verts / 10 {
+                        frame_store.degenerate_frames[index] = true;
+                        warn!(
+                            "⚠ Degenerate frame {}: {} vertices (expected ~{}) — will be skipped",
+                            index, vertex_count, expected_verts,
                         );
                     }
                 }

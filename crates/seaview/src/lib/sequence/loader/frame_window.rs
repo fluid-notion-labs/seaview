@@ -125,12 +125,22 @@ pub(super) fn manage_frame_window(
     //    Despawns are NOT throttled — freeing memory is always welcome.
     //    We also demote the mesh back to MAIN_WORLD only so Bevy's render
     //    asset system releases the GPU buffer.
+    //
+    //    IMPORTANT: defer despawning the previously displayed frame — we may
+    //    need it as a visual fallback if the new playhead frame isn't ready.
+    let prev_displayed = frame_store.displayed_frame;
     let rss_before_despawn = rss_mb();
     let mut despawns = 0usize;
     let mut demote_ok = 0usize;
     let mut demote_fail = 0usize;
+    let mut deferred_despawn: Option<usize> = None;
     for idx in &delta.to_despawn {
         let idx = *idx;
+        // Keep the previously displayed frame alive for now
+        if Some(idx) == prev_displayed {
+            deferred_despawn = Some(idx);
+            continue;
+        }
         if let Some(entities) = frame_store.frame_entities[idx].take() {
             for entity in &entities {
                 if let Ok(mut vis) = visibility_query.get_mut(*entity) {
@@ -237,28 +247,110 @@ pub(super) fn manage_frame_window(
         );
     }
 
-    // 3. Set visibility on all entities across all windows.
-    //    Only the current frame is Visible; everything else is Hidden.
-    for &(win_lo, win_hi) in &new_windows {
-        for idx in win_lo..win_hi {
-            if let Some(Some(entities)) = frame_store.frame_entities.get(idx) {
-                let desired = if idx == current {
-                    Visibility::Visible
-                } else {
-                    Visibility::Hidden
-                };
-                for entity in entities {
+    // 3. Determine which frame to actually display.
+    //    If the current playhead frame has a spawned entity and isn't
+    //    degenerate, show it.  Otherwise, scan forward for the nearest
+    //    available non-degenerate spawned frame.  As a last resort, use the
+    //    deferred (previously displayed) frame.
+    let is_displayable = |idx: usize| -> bool {
+        let has_entity = frame_store
+            .frame_entities
+            .get(idx)
+            .and_then(|e| e.as_ref())
+            .is_some();
+        let is_degenerate = frame_store
+            .degenerate_frames
+            .get(idx)
+            .copied()
+            .unwrap_or(false);
+        has_entity && !is_degenerate
+    };
+
+    let display_frame = if is_displayable(current) {
+        current
+    } else {
+        // Scan forward from playhead for the nearest spawned frame
+        let n = frame_store.total_frames;
+        let mut found = None;
+        for offset in 1..n {
+            let candidate = (current + offset) % n;
+            if is_displayable(candidate) {
+                found = Some(candidate);
+                break;
+            }
+        }
+        if let Some(fb) = found {
+            debug!(
+                "Frame {} not ready, skipping to next available frame {}",
+                current, fb,
+            );
+            fb
+        } else if deferred_despawn.is_some() && is_displayable(deferred_despawn.unwrap()) {
+            // Fall back to the previously displayed frame we kept alive
+            let fb = deferred_despawn.unwrap();
+            debug!("Frame {} not ready, holding previous frame {}", current, fb,);
+            fb
+        } else {
+            // Nothing spawned at all — will be black but unavoidable
+            warn!(
+                "⚫ No fallback: frame {} not ready and no spawned frames available",
+                current,
+            );
+            current
+        }
+    };
+
+    // Now despawn the deferred frame if it's not being used as the display
+    if let Some(idx) = deferred_despawn {
+        if idx != display_frame {
+            if let Some(entities) = frame_store.frame_entities[idx].take() {
+                for entity in &entities {
                     if let Ok(mut vis) = visibility_query.get_mut(*entity) {
-                        if *vis != desired {
-                            *vis = desired;
-                        }
+                        *vis = Visibility::Hidden;
+                    }
+                    commands.entity(*entity).despawn();
+                }
+                frame_store.demote_from_gpu(idx, &mut meshes);
+                if frame_bytes > 0 {
+                    memory_budget.record_frame_unloaded(frame_bytes);
+                }
+                debug!(
+                    "Deferred despawn of frame {} (replaced by {})",
+                    idx, display_frame
+                );
+            }
+        }
+    }
+
+    // Set visibility: only the display_frame is Visible; everything else Hidden.
+    // We iterate ALL spawned entities (across all windows AND the fallback) to
+    // ensure exactly one frame is visible.
+    for (idx, entity_opt) in frame_store.frame_entities.iter().enumerate() {
+        if let Some(entities) = entity_opt {
+            let desired = if idx == display_frame {
+                Visibility::Visible
+            } else {
+                Visibility::Hidden
+            };
+            for entity in entities {
+                if let Ok(mut vis) = visibility_query.get_mut(*entity) {
+                    if *vis != desired {
+                        *vis = desired;
                     }
                 }
             }
         }
     }
 
-    frame_store.displayed_frame = Some(current);
+    // Log frame transitions (only when actually switching what's on screen)
+    if frame_store.displayed_frame != Some(display_frame) {
+        debug!(
+            "▶ display frame {} (playhead: {}, prev: {:?})",
+            display_frame, current, frame_store.displayed_frame,
+        );
+    }
+
+    frame_store.displayed_frame = Some(display_frame);
     *prev_windows = new_windows;
 }
 

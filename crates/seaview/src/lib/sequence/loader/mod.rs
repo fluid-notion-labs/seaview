@@ -324,6 +324,7 @@ fn handle_load_requests(
         frame_store.frame_handles = vec![None; n];
         frame_store.frame_entities = vec![None; n];
         frame_store.loaded_frames = vec![false; n];
+        frame_store.degenerate_frames = vec![false; n];
         // Store all paths for on-demand loading
         frame_store.frame_paths = request.frame_paths.clone();
 
