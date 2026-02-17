@@ -259,9 +259,14 @@ do_install() {
     fi
 }
 
+do_build() {
+    cargo build --release
+}
+
 # Main
 if $UNINSTALL; then
     do_uninstall
 else
+    do_build
     do_install
 fi
