@@ -222,6 +222,9 @@ pub struct CollapsibleState {
 
     /// Whether the spatial section is open
     pub spatial_open: bool,
+
+    /// Whether the environment objects section is open
+    pub environment_objects_open: bool,
 }
 
 impl Default for CollapsibleState {
@@ -235,6 +238,7 @@ impl Default for CollapsibleState {
             perf_open: true,
             rendering_open: true,
             spatial_open: false,
+            environment_objects_open: false,
         }
     }
 }

@@ -6,10 +6,16 @@
 //!
 //! Each section is implemented in its own submodule and rendered as a plain
 //! function taking `&mut egui::Ui` plus the resources it needs.
+//!
+//! The **Environment Objects** section is rendered by a separate Bevy system
+//! (`environment_objects_panel_system`) to stay within Bevy's 16-parameter
+//! limit.  It writes into a shared `egui::SidePanel` using the same panel ID,
+//! which egui merges into a single visual panel.
 
 mod environment_light_section;
 mod lighting_section;
 mod material_section;
+mod objects_section;
 mod perf_section;
 mod rendering_section;
 mod spatial_section;
@@ -17,14 +23,18 @@ mod spatial_section;
 pub use environment_light_section::render_environment_light_controls;
 pub use lighting_section::{render_lighting_controls, GenerateGroupState};
 pub use material_section::render_material_controls;
+pub use objects_section::{render_objects_section, FileDialogReceiver};
 pub use perf_section::render_perf_section;
 pub use rendering_section::render_rendering_section;
 pub use spatial_section::render_spatial_section;
+
+use std::path::PathBuf;
 
 use bevy::diagnostic::DiagnosticsStore;
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 
+use crate::app::environment_objects::{EnvironmentObjectStoreRes, ImportEnvironmentObjectEvent};
 use crate::app::systems::bvh_gizmos::BvhGizmoConfig;
 use crate::app::systems::diagnostics::RenderingStats;
 use crate::app::ui::state::{MaterialConfig, RenderConfig, UiState};
@@ -36,13 +46,16 @@ use crate::lib::sequence::loader::spatial_index::SpatialIndex;
 use crate::lib::sequence::FrameStore;
 
 // ---------------------------------------------------------------------------
-// Panel system
+// Panel system (everything except environment objects)
 // ---------------------------------------------------------------------------
 
 /// System that renders the environment panel (left sidebar).
 ///
 /// Contains collapsible sections for Environment Light, Spot Lights, Material,
 /// Rendering, and Performance.
+///
+/// **Environment Objects** are rendered by [`environment_objects_panel_system`]
+/// which runs after this system and appends into the same egui panel.
 pub fn environment_panel_system(
     mut contexts: EguiContexts,
     mut ui_state: ResMut<UiState>,
@@ -78,6 +91,7 @@ pub fn environment_panel_system(
 
             // Main scroll area for all accordion sections
             egui::ScrollArea::vertical()
+                .id_salt("env_panel_scroll")
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     // ── Environment Map (IBL + Skybox) ─────────────────
@@ -202,6 +216,68 @@ pub fn environment_panel_system(
 
                     // ── Performance ────────────────────────────────────
                     render_perf_section(ui, &mut ui_state, &diagnostics, &rendering_stats);
+                });
+        });
+}
+
+// ---------------------------------------------------------------------------
+// Environment objects panel system (separate to stay under param limit)
+// ---------------------------------------------------------------------------
+
+/// System that renders the Environment Objects section inside the environment
+/// panel.
+///
+/// Runs alongside [`environment_panel_system`].  We re-enter the same
+/// `SidePanel` ID; egui appends our content to the existing panel area.
+///
+/// Pending file-dialog paths are converted to [`ImportEnvironmentObjectEvent`]
+/// messages so the app-layer plugin can handle the actual spawning.
+pub fn environment_objects_panel_system(
+    mut contexts: EguiContexts,
+    ui_state: Res<UiState>,
+    mut env_obj_store: ResMut<EnvironmentObjectStoreRes>,
+    mut import_events: MessageWriter<ImportEnvironmentObjectEvent>,
+    mut file_dialog_rx: Local<Option<FileDialogReceiver>>,
+    mut objects_open: Local<Option<bool>>,
+) {
+    if !ui_state.show_environment_panel {
+        return;
+    }
+
+    // Initialise the local open state from the collapsible state on first run.
+    if objects_open.is_none() {
+        *objects_open = Some(ui_state.collapsible.environment_objects_open);
+    }
+    let open = objects_open.as_mut().unwrap();
+
+    let ctx = contexts.ctx_mut().unwrap();
+
+    // Re-enter the same side panel.  egui merges content into the panel that
+    // was already created by `environment_panel_system`.
+    egui::SidePanel::left("environment_panel")
+        .resizable(true)
+        .show(ctx, |ui| {
+            egui::ScrollArea::vertical()
+                .id_salt("env_panel_scroll")
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.add_space(5.0);
+
+                    // ── Environment Objects ────────────────────────────
+                    let mut pending_imports: Vec<PathBuf> = Vec::new();
+
+                    render_objects_section(
+                        ui,
+                        &mut env_obj_store,
+                        open,
+                        &mut pending_imports,
+                        &mut file_dialog_rx,
+                    );
+
+                    // Fire import messages for any paths the file dialog returned.
+                    for path in pending_imports {
+                        import_events.write(ImportEnvironmentObjectEvent { path });
+                    }
                 });
         });
 }

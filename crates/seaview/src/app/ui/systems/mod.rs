@@ -37,6 +37,7 @@ impl Plugin for UiSystemsPlugin {
             (
                 menu_bar_system,
                 environment_panel_system,
+                environment_objects_panel_system,
                 new_session_dialog_system,
                 delete_confirmation_dialog_system,
                 message_display_system,
