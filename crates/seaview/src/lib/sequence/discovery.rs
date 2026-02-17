@@ -109,6 +109,27 @@ impl Default for SequencePatterns {
                 SequencePattern::new("time_obj", r"^(.+?)[\._-]?[Tt]ime[\._-]?(\d+)\.obj$", 2),
                 // Generic numbered pattern - OBJ
                 SequencePattern::new("numbered_obj", r"^(.+?)(\d{3,})\.obj$", 2),
+                // Tolerant patterns for files with intermediate extensions (e.g., .ply.serde.obj)
+                SequencePattern::new(
+                    "numbered_tolerant_obj",
+                    r"^(.+?)[\._-]?(\d{3,})\.[\w.]+\.obj$",
+                    2,
+                ),
+                SequencePattern::new(
+                    "numbered_tolerant_stl",
+                    r"^(.+?)[\._-]?(\d{3,})\.[\w.]+\.stl$",
+                    2,
+                ),
+                SequencePattern::new(
+                    "numbered_tolerant_glb",
+                    r"^(.+?)[\._-]?(\d{3,})\.[\w.]+\.glb$",
+                    2,
+                ),
+                SequencePattern::new(
+                    "numbered_tolerant_gltf",
+                    r"^(.+?)[\._-]?(\d{3,})\.[\w.]+\.gltf$",
+                    2,
+                ),
             ],
         }
     }
@@ -423,5 +444,45 @@ mod tests {
         let sequence = &sequences[0];
         assert_eq!(sequence.name, "simulation");
         assert_eq!(sequence.frame_count(), 3);
+    }
+
+    #[test]
+    fn test_intermediate_extension_discovery() {
+        // Test files with intermediate extensions like .ply.serde.obj
+        let temp_dir = TempDir::new().unwrap();
+        let dir_path = temp_dir.path();
+
+        // Create test files with intermediate extensions
+        let files = vec![
+            "particles-1000.ply.serde.obj",
+            "particles-1008.ply.serde.obj",
+            "particles-1016.ply.serde.obj",
+            "unrelated_file.txt",
+        ];
+
+        for file in &files {
+            File::create(dir_path.join(file)).unwrap();
+        }
+
+        // Discover sequences
+        let patterns = SequencePatterns::default();
+        let sequences = discover_sequences(
+            dir_path,
+            false,
+            &patterns,
+            crate::lib::coordinates::SourceOrientation::default(),
+        )
+        .unwrap();
+
+        // Should find one sequence
+        assert_eq!(sequences.len(), 1);
+        let sequence = &sequences[0];
+        assert_eq!(sequence.name, "particles");
+        assert_eq!(sequence.frame_count(), 3);
+
+        // Verify frame numbers are extracted correctly
+        assert_eq!(sequence.frames[0].frame_number, 1000);
+        assert_eq!(sequence.frames[1].frame_number, 1008);
+        assert_eq!(sequence.frames[2].frame_number, 1016);
     }
 }
