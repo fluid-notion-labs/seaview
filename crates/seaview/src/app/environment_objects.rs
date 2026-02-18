@@ -1,19 +1,21 @@
 //! Environment objects — Bevy integration
 //!
-//! All GLB/glTF **scene** loading lives in this one file.  The pure data model
-//! is in [`crate::lib::environment_objects`].  When `loadfu` gains multi-object
-//! scene support, only this module needs to change.
+//! Supports **GLB/glTF** (full scenes with materials) and **STL/OBJ/PLY**
+//! (single meshes loaded via loadfu).  The pure data model is in
+//! [`crate::lib::environment_objects`].
 //!
 //! # How it works
 //!
 //! 1. The UI (or file dialog) adds an [`EnvironmentObject`] to the
 //!    [`EnvironmentObjectStore`] resource.
 //! 2. [`spawn_new_objects`] detects the new entry (via generation counter),
-//!    loads the GLB as a `Handle<Gltf>` through Bevy's built-in `bevy_gltf`
-//!    loader, and spawns a [`SceneRoot`] entity tagged with
-//!    [`EnvironmentObjectMarker`].
-//! 3. [`discover_child_meshes`] runs once the scene is instantiated, walks the
-//!    child entity tree, and populates the store's [`MeshEntry`] list.
+//!    checks the file extension, and starts loading the appropriate asset:
+//!    - **GLB/glTF** → `Handle<Gltf>` via Bevy's built-in `bevy_gltf` loader
+//!    - **STL/OBJ/PLY** → `Handle<Mesh>` via loadfu's asset loaders
+//! 3. For GLB/glTF: [`poll_gltf_assets`] spawns a [`SceneRoot`] once the Gltf
+//!    asset is ready, then [`discover_child_meshes`] walks the entity tree.
+//!    For direct-mesh formats: [`poll_direct_mesh_assets`] spawns a child
+//!    entity with `Mesh3d` + default material once the mesh is loaded.
 //! 4. [`sync_visibility`] / [`sync_transforms`] / [`sync_mesh_visibility`]
 //!    keep the ECS world in sync with the authoritative store data each frame.
 //! 5. [`despawn_removed_objects`] cleans up entities when objects are removed
@@ -31,6 +33,12 @@ use std::path::PathBuf;
 use bevy::gltf::Gltf;
 use bevy::prelude::*;
 use bevy::scene::{SceneInstance, SceneRoot};
+
+/// File extensions that go through loadfu's direct-mesh pipeline.
+const DIRECT_MESH_EXTENSIONS: &[&str] = &["stl", "obj", "ply"];
+
+/// File extensions that go through Bevy's Gltf scene pipeline.
+const GLTF_EXTENSIONS: &[&str] = &["glb", "gltf"];
 
 use crate::lib::environment_objects::{
     EnvironmentObject, EnvironmentObjectId, EnvironmentObjectStore, MaterialOverride, MeshEntry,
@@ -65,6 +73,7 @@ impl Plugin for EnvironmentObjectPlugin {
                     handle_import_events,
                     spawn_new_objects,
                     poll_gltf_assets,
+                    poll_direct_mesh_assets,
                     discover_child_meshes,
                     despawn_removed_objects,
                 )
@@ -101,14 +110,24 @@ pub struct SpawnedEnvironmentObjects {
     last_generation: u64,
 }
 
+/// Tracks which kind of asset was loaded for an environment object.
+#[derive(Debug)]
+pub enum LoadedAsset {
+    /// GLB/glTF: full scene with materials, textures, hierarchy.
+    Gltf(Handle<Gltf>),
+    /// STL/OBJ/PLY: single mesh loaded directly via loadfu.
+    DirectMesh(Handle<Mesh>),
+}
+
 /// ECS state for one spawned environment object.
 #[derive(Debug)]
 pub struct SpawnedObject {
-    /// The root entity that holds the `SceneRoot`.
+    /// The root entity (parent of all mesh children).
     pub root_entity: Entity,
-    /// Handle to the loaded `Gltf` asset (kept alive so the asset isn't dropped).
-    pub gltf_handle: Handle<Gltf>,
-    /// Child entities that carry `Mesh3d` (populated by [`discover_child_meshes`]).
+    /// The loaded asset handle — kept alive so Bevy doesn't drop it.
+    pub loaded_asset: LoadedAsset,
+    /// Child entities that carry `Mesh3d` (populated by [`discover_child_meshes`]
+    /// or [`poll_direct_mesh_assets`]).
     pub mesh_entities: Vec<Entity>,
     /// Whether child-mesh discovery has completed.
     pub meshes_discovered: bool,
@@ -218,10 +237,38 @@ fn spawn_new_objects(
             .to_string_lossy();
         let asset_path = format!("env://{rel}");
 
-        info!("Loading Gltf asset for '{}': {}", obj.name, asset_path);
-        let gltf_handle: Handle<Gltf> = asset_server.load(&asset_path);
+        // Determine pipeline from file extension.
+        let ext = obj
+            .path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
 
-        // Spawn a root entity now (invisible until the scene is attached).
+        let loaded_asset = if DIRECT_MESH_EXTENSIONS.contains(&ext.as_str()) {
+            info!(
+                "Loading direct mesh ({ext}) for '{}': {asset_path}",
+                obj.name
+            );
+            let mesh_handle: Handle<Mesh> = asset_server.load(&asset_path);
+            LoadedAsset::DirectMesh(mesh_handle)
+        } else if GLTF_EXTENSIONS.contains(&ext.as_str()) {
+            info!(
+                "Loading Gltf scene ({ext}) for '{}': {asset_path}",
+                obj.name
+            );
+            let gltf_handle: Handle<Gltf> = asset_server.load(&asset_path);
+            LoadedAsset::Gltf(gltf_handle)
+        } else {
+            warn!(
+                "Unsupported file extension '.{ext}' for environment object '{}' — \
+                 supported: .glb, .gltf, .stl, .obj, .ply",
+                obj.name
+            );
+            continue;
+        };
+
+        // Spawn a root entity now (invisible until the mesh/scene is attached).
         let transform = bevy_transform_from(&obj.transform, &obj.swizzle);
         let root_entity = commands
             .spawn((
@@ -241,7 +288,7 @@ fn spawn_new_objects(
             obj.id,
             SpawnedObject {
                 root_entity,
-                gltf_handle: gltf_handle.clone(),
+                loaded_asset,
                 mesh_entities: Vec::new(),
                 meshes_discovered: false,
                 original_materials: Vec::new(),
@@ -255,6 +302,7 @@ fn spawn_new_objects(
 
 /// Polls pending `Gltf` assets and spawns `SceneRoot` once ready.
 ///
+/// Only processes objects loaded via the GLB/glTF pipeline ([`LoadedAsset::Gltf`]).
 /// We can't spawn the scene at the same time we start the asset load because
 /// we need the loaded `Gltf` to extract the default (or first) scene handle.
 fn poll_gltf_assets(
@@ -269,7 +317,13 @@ fn poll_gltf_assets(
             continue;
         }
 
-        let gltf = match gltf_assets.get(&state.gltf_handle) {
+        // Only handle Gltf assets here; direct meshes are handled by
+        // poll_direct_mesh_assets.
+        let LoadedAsset::Gltf(ref gltf_handle) = state.loaded_asset else {
+            continue;
+        };
+
+        let gltf = match gltf_assets.get(gltf_handle) {
             Some(g) => g,
             None => {
                 debug!("Gltf asset for env object {id} still loading...");
@@ -305,6 +359,88 @@ fn poll_gltf_assets(
             .insert(SceneRoot(scene_handle));
 
         pending.awaiting_scene.push(*id);
+    }
+}
+
+/// Polls pending direct-mesh assets (STL/OBJ/PLY) and spawns `Mesh3d` +
+/// default material once the mesh is loaded.
+///
+/// Unlike the GLB pipeline which goes through SceneRoot → child discovery,
+/// direct meshes are simple: one `Handle<Mesh>` → one child entity with
+/// `Mesh3d` + `MeshMaterial3d`.
+fn poll_direct_mesh_assets(
+    mut store: ResMut<EnvironmentObjectStoreRes>,
+    mut spawned: ResMut<SpawnedEnvironmentObjects>,
+    mesh_assets: Res<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut commands: Commands,
+) {
+    for (id, state) in spawned.map.iter_mut() {
+        if state.meshes_discovered {
+            continue;
+        }
+
+        let LoadedAsset::DirectMesh(ref mesh_handle) = state.loaded_asset else {
+            continue;
+        };
+
+        // Wait until the mesh asset is actually loaded.
+        if mesh_assets.get(mesh_handle).is_none() {
+            debug!("Direct mesh asset for env object {id} still loading...");
+            continue;
+        }
+
+        info!("Direct mesh loaded for env object {id}, spawning Mesh3d child");
+
+        // Create a default material (light grey, slightly rough).
+        let default_material = materials.add(StandardMaterial {
+            base_color: Color::LinearRgba(LinearRgba::new(0.7, 0.7, 0.7, 1.0)),
+            perceptual_roughness: 0.5,
+            metallic: 0.0,
+            ..default()
+        });
+
+        // Spawn a child entity with the mesh + material under the root.
+        let mesh_entity = commands
+            .spawn((
+                Mesh3d(mesh_handle.clone()),
+                MeshMaterial3d(default_material),
+                Transform::default(),
+                Visibility::Inherited,
+                Name::new(format!("EnvObjMesh:{id}")),
+            ))
+            .id();
+
+        commands.entity(state.root_entity).add_child(mesh_entity);
+
+        state.mesh_entities = vec![mesh_entity];
+        state.meshes_discovered = true;
+
+        // Build the display name from the object's filename.
+        let mesh_name = if let Some(obj) = store.get(*id) {
+            obj.path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("Mesh 0")
+                .to_string()
+        } else {
+            "Mesh 0".to_string()
+        };
+
+        // Populate the store's mesh entries (single mesh).
+        if let Some(obj) = store.get_mut(*id) {
+            if obj.meshes.is_empty() {
+                obj.meshes = vec![MeshEntry::new(mesh_name)];
+            }
+            // If meshes were already populated (e.g. from saved settings),
+            // keep them as-is — the visibility state is already correct.
+        }
+        store.bump_generation();
+
+        info!(
+            "  → Direct mesh child {:?} spawned for env object {id}",
+            mesh_entity
+        );
     }
 }
 

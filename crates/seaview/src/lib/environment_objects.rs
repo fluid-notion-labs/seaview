@@ -434,14 +434,14 @@ impl MeshEntry {
 // Environment object
 // ---------------------------------------------------------------------------
 
-/// A single imported environment object (one GLB/glTF file).
+/// A single imported environment object (GLB/glTF, STL, OBJ, or PLY file).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EnvironmentObject {
     /// Unique identifier.
     pub id: EnvironmentObjectId,
     /// Display name (defaults to filename stem, user-editable).
     pub name: String,
-    /// Path to the source GLB/glTF file on disk.
+    /// Path to the source mesh file on disk (GLB/glTF/STL/OBJ/PLY).
     pub path: PathBuf,
     /// Master visibility toggle.
     pub visible: bool,

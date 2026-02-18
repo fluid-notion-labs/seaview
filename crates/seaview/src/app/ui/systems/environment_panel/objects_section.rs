@@ -534,7 +534,11 @@ fn open_file_dialog(rx_slot: &mut Option<FileDialogReceiver>) {
     std::thread::spawn(move || {
         let result = rfd::FileDialog::new()
             .set_title("Import Environment Object")
+            .add_filter("3D Models", &["glb", "gltf", "stl", "obj", "ply"])
             .add_filter("glTF / GLB", &["glb", "gltf"])
+            .add_filter("STL", &["stl"])
+            .add_filter("OBJ", &["obj"])
+            .add_filter("PLY", &["ply"])
             .add_filter("All files", &["*"])
             .pick_file();
         // Ignore send errors (receiver dropped = UI moved on).
