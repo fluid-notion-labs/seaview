@@ -53,16 +53,17 @@ pub(super) fn handle_keyboard_playback(
     mut key_timer: Local<KeyHoldTimer>,
     mut save_events: MessageWriter<SaveViewEvent>,
 ) {
-    // Only process input if we have a sequence loaded
-    if timeline.total_frames == 0 {
-        return;
-    }
-
-    // Ctrl+S — save view
+    // Ctrl+S — save view (must run before the early return so saving works
+    // even when no sequence is loaded, e.g. env-object-only sessions).
     let ctrl = keyboard.pressed(KeyCode::ControlLeft) || keyboard.pressed(KeyCode::ControlRight);
     if ctrl && keyboard.just_pressed(KeyCode::KeyS) {
         save_events.write(SaveViewEvent);
         debug!("💾 Save view triggered via Ctrl+S");
+    }
+
+    // Only process playback input if we have a sequence loaded
+    if timeline.total_frames == 0 {
+        return;
     }
 
     // Space bar — toggle play/pause
