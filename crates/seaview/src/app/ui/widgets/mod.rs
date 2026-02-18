@@ -1,11 +1,4 @@
-//! UI widgets module
-//!
-//! This module will contain reusable UI widgets and components.
-//! Currently empty but will be populated as we build out the UI.
+//! Reusable UI widgets and components.
 
-// Future widget modules will be added here as the UI grows
-// Examples might include:
-// - mod inspector;
-// - mod toolbar;
-// - mod status_bar;
-// - mod property_editor;
+pub mod section_header;
+pub use section_header::{section_header, section_header_tracked};

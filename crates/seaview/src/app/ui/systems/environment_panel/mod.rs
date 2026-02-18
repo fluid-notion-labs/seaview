@@ -34,6 +34,7 @@ use crate::app::environment_objects::{EnvironmentObjectStoreRes, ImportEnvironme
 use crate::app::systems::bvh_gizmos::BvhGizmoConfig;
 use crate::app::systems::diagnostics::RenderingStats;
 use crate::app::ui::state::{MaterialConfig, RenderConfig, UiState};
+use crate::app::ui::widgets::{section_header, section_header_tracked};
 use crate::lib::coordinates::SourceOrientation;
 use crate::lib::lighting::{
     EnvironmentLightConfig, EnvironmentMapCatalog, EnvironmentMapConfig, LightingRig,
@@ -115,114 +116,119 @@ pub fn environment_panel_system(
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     // ── Environment Map (IBL + Skybox) ─────────────────
-                    egui::CollapsingHeader::new("Environment Map")
-                        .default_open(false)
-                        .show(ui, |ui| {
+                    section_header(ui, "Environment Map", "env_map", false, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.checkbox(&mut panel.env_map_config.enabled, "Enabled");
+                        });
+
+                        if !panel.env_map_config.enabled {
+                            ui.label(
+                                egui::RichText::new("IBL reflections and skybox are off")
+                                    .small()
+                                    .color(egui::Color32::from_gray(120)),
+                            );
+                        } else {
+                            // Map selector
+                            let selected_name = panel
+                                .env_map_config
+                                .selected
+                                .and_then(|i| panel.env_map_catalog.entries.get(i))
+                                .map(|e| e.name.as_str())
+                                .unwrap_or("None");
+
                             ui.horizontal(|ui| {
-                                ui.checkbox(&mut panel.env_map_config.enabled, "Enabled");
+                                ui.label("Map");
+                                egui::ComboBox::from_id_salt("env_map_select")
+                                    .width(ui.available_width() - 4.0)
+                                    .selected_text(selected_name)
+                                    .show_ui(ui, |ui| {
+                                        // "None" option
+                                        let is_none = panel.env_map_config.selected.is_none();
+                                        if ui.selectable_label(is_none, "None").clicked() {
+                                            panel.env_map_config.selected = None;
+                                        }
+                                        ui.separator();
+                                        for (idx, entry) in
+                                            panel.env_map_catalog.entries.iter().enumerate()
+                                        {
+                                            let selected =
+                                                panel.env_map_config.selected == Some(idx);
+                                            if ui.selectable_label(selected, &entry.name).clicked()
+                                                && !selected
+                                            {
+                                                panel.env_map_config.selected = Some(idx);
+                                            }
+                                        }
+                                    });
                             });
 
-                            if !panel.env_map_config.enabled {
-                                ui.label(
-                                    egui::RichText::new("IBL reflections and skybox are off")
-                                        .small()
-                                        .color(egui::Color32::from_gray(120)),
-                                );
-                            } else {
-                                // Map selector
-                                let selected_name = panel
-                                    .env_map_config
-                                    .selected
-                                    .and_then(|i| panel.env_map_catalog.entries.get(i))
-                                    .map(|e| e.name.as_str())
-                                    .unwrap_or("None");
+                            ui.add_space(3.0);
 
-                                ui.horizontal(|ui| {
-                                    ui.label("Map");
-                                    egui::ComboBox::from_id_salt("env_map_select")
-                                        .width(ui.available_width() - 4.0)
-                                        .selected_text(selected_name)
-                                        .show_ui(ui, |ui| {
-                                            // "None" option
-                                            let is_none = panel.env_map_config.selected.is_none();
-                                            if ui.selectable_label(is_none, "None").clicked() {
-                                                panel.env_map_config.selected = None;
-                                            }
-                                            ui.separator();
-                                            for (idx, entry) in
-                                                panel.env_map_catalog.entries.iter().enumerate()
-                                            {
-                                                let selected =
-                                                    panel.env_map_config.selected == Some(idx);
-                                                if ui
-                                                    .selectable_label(selected, &entry.name)
-                                                    .clicked()
-                                                    && !selected
-                                                {
-                                                    panel.env_map_config.selected = Some(idx);
-                                                }
-                                            }
-                                        });
-                                });
+                            // Intensity slider
+                            ui.add(
+                                egui::Slider::new(
+                                    &mut panel.env_map_config.intensity,
+                                    0.0..=5000.0,
+                                )
+                                .text("IBL intensity")
+                                .logarithmic(true),
+                            );
 
-                                ui.add_space(3.0);
-
-                                // Intensity slider
-                                ui.add(
-                                    egui::Slider::new(
-                                        &mut panel.env_map_config.intensity,
-                                        0.0..=5000.0,
-                                    )
-                                    .text("IBL intensity")
-                                    .logarithmic(true),
-                                );
-
-                                // Skybox brightness slider
-                                ui.add(
-                                    egui::Slider::new(
-                                        &mut panel.env_map_config.skybox_brightness,
-                                        0.0..=5000.0,
-                                    )
-                                    .text("Sky brightness")
-                                    .logarithmic(true),
-                                );
-                            }
-                        });
+                            // Skybox brightness slider
+                            ui.add(
+                                egui::Slider::new(
+                                    &mut panel.env_map_config.skybox_brightness,
+                                    0.0..=5000.0,
+                                )
+                                .text("Sky brightness")
+                                .logarithmic(true),
+                            );
+                        }
+                    });
 
                     ui.add_space(5.0);
 
                     // ── Environment Light ──────────────────────────────
-                    egui::CollapsingHeader::new("Environment Light")
-                        .default_open(ui_state.collapsible.environment_light_open)
-                        .show(ui, |ui| {
-                            ui_state.collapsible.environment_light_open = true;
+                    section_header_tracked(
+                        ui,
+                        "Environment Light",
+                        "env_light",
+                        &mut ui_state.collapsible.environment_light_open,
+                        |ui| {
                             render_environment_light_controls(ui, &mut panel.env_light_config);
-                        });
+                        },
+                    );
 
                     ui.add_space(5.0);
 
                     // ── Lighting Rig (v2) ─────────────────────────────
-                    egui::CollapsingHeader::new("Lights")
-                        .default_open(ui_state.collapsible.lighting_rig_open)
-                        .show(ui, |ui| {
-                            ui_state.collapsible.lighting_rig_open = true;
+                    section_header_tracked(
+                        ui,
+                        "Lights",
+                        "lights",
+                        &mut ui_state.collapsible.lighting_rig_open,
+                        |ui| {
                             render_lighting_controls(
                                 ui,
                                 &mut panel.lighting_rig,
                                 &panel.mesh_dims,
                                 &mut panel.gen_state,
                             );
-                        });
+                        },
+                    );
 
                     ui.add_space(5.0);
 
                     // ── Material ───────────────────────────────────────
-                    egui::CollapsingHeader::new("Material")
-                        .default_open(ui_state.collapsible.material_open)
-                        .show(ui, |ui| {
-                            ui_state.collapsible.material_open = true;
+                    section_header_tracked(
+                        ui,
+                        "Material",
+                        "material",
+                        &mut ui_state.collapsible.material_open,
+                        |ui| {
                             render_material_controls(ui, &mut panel.material_config);
-                        });
+                        },
+                    );
 
                     ui.add_space(5.0);
 
@@ -237,42 +243,39 @@ pub fn environment_panel_system(
                     ui.add_space(5.0);
 
                     // ── Source Coordinates ──────────────────────────────
-                    egui::CollapsingHeader::new("Source Coordinates")
-                        .default_open(false)
-                        .show(ui, |ui| {
-                            ui.label(
-                                egui::RichText::new(
-                                    "Coordinate system for mesh sequences. \
+                    section_header(ui, "Source Coordinates", "source_coords", false, |ui| {
+                        ui.label(
+                            egui::RichText::new(
+                                "Coordinate system for mesh sequences. \
                                      Changes apply on next load.",
-                                )
-                                .small()
-                                .color(egui::Color32::from_gray(120)),
-                            );
-                            ui.add_space(2.0);
+                            )
+                            .small()
+                            .color(egui::Color32::from_gray(120)),
+                        );
+                        ui.add_space(2.0);
 
-                            let current = *panel.source_orientation;
-                            let current_label = current.description();
+                        let current = *panel.source_orientation;
+                        let current_label = current.description();
 
-                            egui::ComboBox::from_id_salt("source_orientation")
-                                .width(ui.available_width() - 4.0)
-                                .selected_text(current_label)
-                                .show_ui(ui, |ui| {
-                                    for (value, label) in [
-                                        (SourceOrientation::YUp, "Y-up (Bevy default)"),
-                                        (SourceOrientation::ZUp, "Z-up (CAD / GIS)"),
-                                        (SourceOrientation::FluidX3D, "FluidX3D"),
-                                    ] {
-                                        let is_selected = current == value;
-                                        if ui.selectable_label(is_selected, label).clicked()
-                                            && !is_selected
-                                        {
-                                            *panel.source_orientation = value;
-                                            panel.loader_config.coord_transform =
-                                                value.to_transform();
-                                        }
+                        egui::ComboBox::from_id_salt("source_orientation")
+                            .width(ui.available_width() - 4.0)
+                            .selected_text(current_label)
+                            .show_ui(ui, |ui| {
+                                for (value, label) in [
+                                    (SourceOrientation::YUp, "Y-up (Bevy default)"),
+                                    (SourceOrientation::ZUp, "Z-up (CAD / GIS)"),
+                                    (SourceOrientation::FluidX3D, "FluidX3D"),
+                                ] {
+                                    let is_selected = current == value;
+                                    if ui.selectable_label(is_selected, label).clicked()
+                                        && !is_selected
+                                    {
+                                        *panel.source_orientation = value;
+                                        panel.loader_config.coord_transform = value.to_transform();
                                     }
-                                });
-                        });
+                                }
+                            });
+                    });
 
                     ui.add_space(5.0);
 

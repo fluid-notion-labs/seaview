@@ -230,13 +230,13 @@ pub struct CollapsibleState {
 impl Default for CollapsibleState {
     fn default() -> Self {
         Self {
-            sessions_open: true,
-            network_status_open: true,
-            environment_light_open: true,
-            lighting_rig_open: true,
-            material_open: true,
-            perf_open: true,
-            rendering_open: true,
+            sessions_open: false,
+            network_status_open: false,
+            environment_light_open: false,
+            lighting_rig_open: false,
+            material_open: false,
+            perf_open: false,
+            rendering_open: false,
             spatial_open: false,
             environment_objects_open: false,
         }

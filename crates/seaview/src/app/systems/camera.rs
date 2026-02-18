@@ -9,7 +9,7 @@
 //! - Scroll wheel (while moving): Adjust base movement speed
 //! - Shift: 5× movement speed
 //! - Alt: 25× movement speed
-//! - Ctrl: 125× movement speed
+//! - Ctrl+key: reserved for shortcuts (no movement)
 //! - Ctrl+C: Center camera on mesh
 
 use bevy::input::mouse::{MouseMotion, MouseWheel};
@@ -162,6 +162,14 @@ pub fn camera_controller(
     // Handle movement
     let mut movement = Vec3::ZERO;
 
+    // When Ctrl is held, all letter keys are shortcuts (Ctrl+S = save,
+    // Ctrl+C = center, etc.) — skip camera movement entirely.
+    let ctrl = input.pressed(KeyCode::ControlLeft) || input.pressed(KeyCode::ControlRight);
+    if ctrl {
+        scroll_events.clear();
+        return;
+    }
+
     // Check if any movement key is held
     let moving = input.pressed(KeyCode::KeyW)
         || input.pressed(KeyCode::KeyS)
@@ -190,14 +198,12 @@ pub fn camera_controller(
     let base_speed = fps_camera.speed;
 
     // Apply speed modifiers (stack on top of base speed)
-    // Ctrl: 125× | Alt: 25× | Shift: 5× | None: 1×
-    let ctrl = input.pressed(KeyCode::ControlLeft) || input.pressed(KeyCode::ControlRight);
+    // Alt: 25× | Shift: 5× | None: 1×
+    // (Ctrl is reserved for shortcuts and bails out above.)
     let alt = input.pressed(KeyCode::AltLeft) || input.pressed(KeyCode::AltRight);
     let shift = input.pressed(KeyCode::ShiftLeft) || input.pressed(KeyCode::ShiftRight);
 
-    let speed_modifier = if ctrl {
-        125.0
-    } else if alt {
+    let speed_modifier = if alt {
         25.0
     } else if shift {
         5.0

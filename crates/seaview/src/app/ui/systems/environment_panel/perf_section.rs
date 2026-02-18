@@ -10,6 +10,7 @@ use bevy_egui::egui;
 
 use crate::app::systems::diagnostics::RenderingStats;
 use crate::app::ui::state::UiState;
+use crate::app::ui::widgets::section_header_tracked;
 
 /// Renders the performance section inside an existing egui `Ui` context.
 ///
@@ -25,11 +26,12 @@ pub fn render_perf_section(
         return;
     }
 
-    egui::CollapsingHeader::new("⏱ Performance")
-        .default_open(ui_state.collapsible.perf_open)
-        .show(ui, |ui| {
-            ui_state.collapsible.perf_open = true;
-
+    section_header_tracked(
+        ui,
+        "⏱ Performance",
+        "perf",
+        &mut ui_state.collapsible.perf_open,
+        |ui| {
             // ── FPS & Frame Time ───────────────────────────────────
             ui.heading("Frame Rate");
             ui.add_space(2.0);
@@ -146,7 +148,8 @@ pub fn render_perf_section(
                     ui.colored_label(egui::Color32::from_rgb(255, 200, 80), issue);
                 }
             }
-        });
+        },
+    );
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -206,8 +209,10 @@ fn render_frame_time_sparkline(ui: &mut egui::Ui, stats: &RenderingStats) {
     let desired_width = ui.available_width().min(280.0);
     let desired_height: f32 = 40.0;
 
-    let (rect, _response) =
-        ui.allocate_exact_size(egui::vec2(desired_width, desired_height), egui::Sense::hover());
+    let (rect, _response) = ui.allocate_exact_size(
+        egui::vec2(desired_width, desired_height),
+        egui::Sense::hover(),
+    );
 
     if !ui.is_rect_visible(rect) {
         return;
@@ -219,11 +224,7 @@ fn render_frame_time_sparkline(ui: &mut egui::Ui, stats: &RenderingStats) {
     painter.rect_filled(rect, 2.0, egui::Color32::from_gray(30));
 
     // Determine y-axis range: 0 .. max(33.33, actual_max)
-    let max_val = samples
-        .iter()
-        .cloned()
-        .fold(33.33_f32, f32::max)
-        .max(1.0);
+    let max_val = samples.iter().cloned().fold(33.33_f32, f32::max).max(1.0);
 
     let n = samples.len();
     let bar_width = rect.width() / n as f32;
@@ -259,7 +260,10 @@ fn render_frame_time_sparkline(ui: &mut egui::Ui, stats: &RenderingStats) {
             egui::pos2(rect.left(), y_60),
             egui::pos2(rect.right(), y_60),
         ],
-        egui::Stroke::new(1.0, egui::Color32::from_rgba_premultiplied(100, 255, 100, 100)),
+        egui::Stroke::new(
+            1.0,
+            egui::Color32::from_rgba_premultiplied(100, 255, 100, 100),
+        ),
     );
 
     // 30 fps reference line (33.33 ms)
@@ -270,7 +274,10 @@ fn render_frame_time_sparkline(ui: &mut egui::Ui, stats: &RenderingStats) {
                 egui::pos2(rect.left(), y_30),
                 egui::pos2(rect.right(), y_30),
             ],
-            egui::Stroke::new(1.0, egui::Color32::from_rgba_premultiplied(255, 100, 100, 100)),
+            egui::Stroke::new(
+                1.0,
+                egui::Color32::from_rgba_premultiplied(255, 100, 100, 100),
+            ),
         );
     }
 }

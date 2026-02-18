@@ -20,6 +20,7 @@ use std::sync::mpsc;
 use bevy_egui::egui;
 
 use crate::app::environment_objects::EnvironmentObjectStoreRes;
+use crate::app::ui::widgets::section_header_tracked;
 use crate::lib::coordinates::WindingOrder;
 use crate::lib::environment_objects::{
     AxisSign, CoordinatePreset, CustomMaterial, EnvironmentObjectId, MaterialOverride,
@@ -61,11 +62,12 @@ pub fn render_objects_section(
     // Poll any in-flight file dialog.
     poll_file_dialog(file_dialog_rx, pending_imports);
 
-    egui::CollapsingHeader::new("\u{1f4e6} Environment Objects")
-        .default_open(*objects_open)
-        .show(ui, |ui| {
-            *objects_open = true;
-
+    section_header_tracked(
+        ui,
+        "\u{1f4e6} Environment Objects",
+        "env_objects",
+        objects_open,
+        |ui| {
             // ── Add Object button ──────────────────────────────────
             ui.horizontal(|ui| {
                 let dialog_in_flight = file_dialog_rx.is_some();
@@ -78,7 +80,7 @@ pub fn render_objects_section(
 
                 if ui
                     .add_enabled(!dialog_in_flight, egui::Button::new(button_text))
-                    .on_hover_text("Import a .glb / .gltf file as a static scene prop")
+                    .on_hover_text("Import a 3D model (.glb, .gltf, .stl, .obj, .ply)")
                     .clicked()
                 {
                     open_file_dialog(file_dialog_rx);
@@ -344,7 +346,8 @@ pub fn render_objects_section(
             } else if mutated {
                 store.bump_generation();
             }
-        });
+        },
+    );
 }
 
 // ---------------------------------------------------------------------------

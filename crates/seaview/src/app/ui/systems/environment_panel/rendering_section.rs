@@ -6,6 +6,7 @@
 use bevy_egui::egui;
 
 use crate::app::ui::state::{RenderConfig, UiState};
+use crate::app::ui::widgets::section_header_tracked;
 use crate::lib::sequence::FrameStore;
 
 /// Renders the rendering section inside an existing egui `Ui` context.
@@ -18,11 +19,12 @@ pub fn render_rendering_section(
     render_config: &mut RenderConfig,
     frame_store: &FrameStore,
 ) {
-    egui::CollapsingHeader::new("\u{1f5a5} Rendering")
-        .default_open(ui_state.collapsible.rendering_open)
-        .show(ui, |ui| {
-            ui_state.collapsible.rendering_open = true;
-
+    section_header_tracked(
+        ui,
+        "\u{1f5a5} Rendering",
+        "rendering",
+        &mut ui_state.collapsible.rendering_open,
+        |ui| {
             // Wireframe overlay toggle
             ui.heading("Wireframe");
             ui.add_space(2.0);
@@ -85,5 +87,6 @@ pub fn render_rendering_section(
                         ui.end_row();
                     }
                 });
-        });
+        },
+    );
 }

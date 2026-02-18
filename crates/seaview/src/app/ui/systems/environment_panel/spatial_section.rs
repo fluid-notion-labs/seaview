@@ -8,6 +8,7 @@ use bevy_egui::egui;
 
 use crate::app::systems::bvh_gizmos::BvhGizmoConfig;
 use crate::app::ui::state::UiState;
+use crate::app::ui::widgets::section_header_tracked;
 use crate::lib::sequence::loader::SpatialIndex;
 use crate::lib::sequence::FrameStore;
 
@@ -23,11 +24,12 @@ pub fn render_spatial_section(
     spatial_index: &SpatialIndex,
     bvh_config: &mut BvhGizmoConfig,
 ) {
-    egui::CollapsingHeader::new("\u{1f4d0} Spatial")
-        .default_open(ui_state.collapsible.spatial_open)
-        .show(ui, |ui| {
-            ui_state.collapsible.spatial_open = true;
-
+    section_header_tracked(
+        ui,
+        "\u{1f4d0} Spatial",
+        "spatial",
+        &mut ui_state.collapsible.spatial_open,
+        |ui| {
             // ── Availability indicator ─────────────────────────────
             let built = spatial_index.built_count();
             let total = spatial_index.total_slots();
@@ -267,7 +269,8 @@ pub fn render_spatial_section(
                     }
                 }
             }
-        });
+        },
+    );
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
