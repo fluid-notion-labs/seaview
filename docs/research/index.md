@@ -7,6 +7,9 @@ Research and planning documents for the Seaview mesh sequence viewer.
 ### [Camera, Lighting & Animation](./camera_lighting_animation.md)
 Camera rigs (orbit, turntable, dolly, FPS switching), camera animation with dual-spline paths, lighting animation with keyframed properties, 3D gizmos, Bezier curves, and a 5-phase implementation plan.
 
+### [Coordinate Systems](./coordinate_systems.md)
+Analysis of the terrain-forge → FluidX3D → Seaview coordinate pipeline. Identifies two bugs: X-mirror in `convert_to_yup` and scale/position mismatch between terrain and fluid meshes. Proposes fix and bridge script.
+
 ### [Architectural Review](./architectural_review.md)
 Full codebase audit rating every file 🟢/🟡/🟠/🔴. Eight priority actions identified — top issues: settings.rs monolith, main.rs god function, system code in lib/, bin/ duplication.
 
