@@ -1,0 +1,3 @@
+[alias]
+w = "watch -x check"
+wr = "watch -x 'build --release'"
