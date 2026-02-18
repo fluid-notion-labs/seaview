@@ -1,128 +1,57 @@
 # Seaview Research Documentation
 
-This directory contains research and planning documents for the Seaview mesh sequence viewer project.
+Research and planning documents for the Seaview mesh sequence viewer.
 
-## Documents
+## Active Research
 
-### [Reimplementation Plan](./reimplimentation.md)
-A comprehensive phased approach to reimplementing mesh-ripper functionality using modern Rust and Bevy (0.14+). This is the main project roadmap outlining:
+### [Camera, Lighting & Animation](./camera_lighting_animation.md)
+Camera rigs (orbit, turntable, dolly, FPS switching), camera animation with dual-spline paths, lighting animation with keyframed properties, 3D gizmos, Bezier curves, and a 5-phase implementation plan.
 
-- 9 development phases from foundation to testing
-- Technical architecture decisions
-- Risk mitigation strategies
-- Success metrics and timelines
-- **Status**: Active development guide
+### [Architectural Review](./architectural_review.md)
+Full codebase audit rating every file 🟢/🟡/🟠/🔴. Eight priority actions identified — top issues: settings.rs monolith, main.rs god function, system code in lib/, bin/ duplication.
 
-### [Camera Plugins Research](./cameras.md)
-Research and evaluation of available Bevy camera controller plugins for implementing FPS-style controls with recording/playback capabilities. Covers:
+### [Mesh Loading Ecosystem](./mesh_loading_ecosystem.md)
+Bevy mesh loading ecosystem analysis, community loader landscape, loader-agnostic `MeshSource` trait design, and capability querying (`MeshCapabilities`). Informs loadfu architecture.
 
-- Analysis of 6+ camera plugins
-- Version compatibility and feature comparison
-- Recommendations for Seaview implementation
-- Custom implementation strategy
-- **Status**: Research complete, implementation pending
+### [mmap Loader Architecture](./mmap_loader_architecture.md)
+Full data-flow analysis from disk through parse crates to GPU. Custom `svmesh` format design (memory-mappable, pre-triangulated). Peak RSS analysis. Informs seaview-joh (zero-copy mmap format).
 
-### [Mesh File Loading Research](./mesh-loading.md)
-Research on implementing multi-format mesh file loading in Bevy, with immediate focus on STL support. Covers:
+### [Mesh Loading Bypass](./mesh-loading-bypass.md)
+Strategies for bypassing Bevy's asset system for direct mesh loading when needed.
 
-- Native Bevy asset system architecture
-- Third-party format support (STL, PLY, OBJ)
-- Implementation strategies and code examples
-- Performance considerations
-- **Status**: Research complete, ready for implementation
+### [Settings Save System](./settings_save_system.md)
+Research on persisting application settings and UI state. Informs seaview-z6m (panel layout persistence) and seaview-nqv (persistent UI state).
 
-### [Bevy Asset Loading Research](./bevy_asset_loading.md)
-Comprehensive research on idiomatic mesh loading using Bevy's native asset system for well-behaved, indexed files. Covers:
+## Reference
 
-- Bevy's async, parallel asset loading architecture
-- Loading from arbitrary directories (not just `assets/`)
-- Proper indexed mesh handling (fixes exploded mesh bug)
-- Loading strategies for mesh sequences (preload, streaming, predictive)
-- Reference counting and memory management
-- Migration path from custom loaders to Bevy-native approach
-- **Status**: Research complete, recommended as primary approach
-- **Quick Reference**: See [summary version](./bevy_asset_loading_summary.md) for code snippets
+### [Bevy Asset Loading](./bevy_asset_loading.md)
+Idiomatic mesh loading using Bevy's native asset system — async parallel loading, arbitrary directories, indexed mesh handling, sequence loading strategies. See also: [Quick Reference](./bevy_asset_loading_summary.md).
 
-### [Bevy Asset Loading - Quick Reference](./bevy_asset_loading_summary.md)
-Quick reference guide with code patterns for loading glTF/GLB files from arbitrary directories. Includes:
+### [Lighting Units](./lighting_units.md)
+Physical lighting unit reference for Bevy's PBR renderer — lumens, lux, candelas, and practical values for scene lighting.
 
-- Working code for proper indexed mesh loading
-- Async loading patterns with `AsyncComputeTaskPool`
-- Sequence loading examples
-- Migration checklist from current implementation
-- **Status**: Ready to implement
+### [Overlays](./overlays.md)
+HUD overlay research — rendering stats, debug info, viewport annotations. Informs seaview-nvh.
 
-### [Mesh Loading Ecosystem — Research & Strategy](./mesh_loading_ecosystem.md)
-Analysis of the Bevy mesh loading ecosystem, asset system capabilities, and Seaview's loader-agnostic architecture strategy. Covers:
+### [Bobbing Figure](./bobbing_figure.md)
+Animated test object for verifying playback, timing, and mesh swap correctness.
 
-- Bevy's built-in asset system: what it solves, what it doesn't
-- Community loader landscape (STL, OBJ, FBX, PLY, voxel, point cloud)
-- Missing ecosystem pieces (PLY mesh, VTK, point clouds)
-- Quads/n-gons and GPU reality (why TriangleList normalization is correct)
-- Loader-agnostic `MeshSource` trait design
-- Capability querying (`MeshCapabilities`) for format-aware UI/logic
-- TriMesh normalization performance analysis
-- **Status**: Research complete, informs seaview-bdz.4 (MeshSource trait)
+## External
 
-### [mmap Loader Architecture — Research & Data Flow](./mmap_loader_architecture.md)
-Analysis of the full data flow from disk through parse crates to GPU, with Mermaid graphs showing where mmap can intervene. Covers:
+### [loadfu Design Doc](../../vendor/loadfu/docs/loadfu.md)
+Design doc for `loadfu`, the format-agnostic 3D asset loader crate in `vendor/loadfu/`. Orthogonal to svmesh (format vs loader).
 
-- Current pipeline copy audit (STL, OBJ, GLB — every byte gets copied 4–5 times)
-- Full dependency matrix: format × layer (disk I/O, parse crate, triangulation, Mesh build)
-- Four mmap intervention levels (read buffer → zero-copy parse → direct Mesh → GPU DMA)
-- Custom `svmesh` format design (memory-mappable, pre-triangulated, pre-indexed) — note: svmesh is a *format*, orthogonal to loadfu (the *loader*)
-- Integration points: which files change, which don't
-- Peak RSS analysis: ~500 MB → ~140 MB per 5M-vertex frame
-- Risks: page faults, Bevy Mesh ownership (owned Vec only), NFS
-- **Status**: Research complete, informs seaview-joh (zero-copy mmap format)
+## Retired (this session)
 
-### [loadfu — 3D Asset Loader for Bevy](../../vendor/loadfu/docs/loadfu.md)
-Design doc for `loadfu`, a format-agnostic Bevy ecosystem crate for 3D asset loading (single assets and sequences). Covers:
+The following were removed as superseded (210+ days stale):
 
-- Crate architecture: single crate, Bevy behind feature flag, core parsers standalone
-- Extraction plan from seaview's `lib/asset_loaders/` and `MeshFileFormat`
-- Key types: `MeshData`, `MeshFormat`, `MeshCapabilities`
-- Upstream path to Bevy proper
-- Agentic refactoring skill with step-by-step extraction checklist
-- **Status**: Design, pre-implementation
-- **Relation to svmesh**: Orthogonal. svmesh is a format; loadfu is the loader.
-- **Prior research**: [mesh_loading_ecosystem.md](./mesh_loading_ecosystem.md), [mmap_loader_architecture.md](./mmap_loader_architecture.md), [mesh-loading-bypass.md](./mesh-loading-bypass.md)
-- **Location**: Lives in `vendor/loadfu/` — loadfu is its own crate
-
-### [Baby Shark Mesh Conversion Research](./baby_shark_mesh_conversion.md)
-Research on using the baby_shark library for converting polygon soup mesh data to indexed format. Covers:
-
-- Analysis of baby_shark's mesh format types (PolygonSoup vs CornerTable)
-- The merge_points algorithm for vertex deduplication
-- Integration strategy for fixing mesh rendering issues
-- Performance benefits and implementation considerations
-- **Status**: Research complete, implementation in progress
-
-## Project Status
-
-Currently in **Phase 1: Foundation and Core Infrastructure**
-
-### Completed:
-- [x] Project workspace setup
-- [x] Bevy 0.14 integration
-- [x] Basic 3D scene rendering
-- [x] Research documentation
-
-### Next Steps:
-- [ ] Simple mesh loading (Phase 1.2)
-- [ ] Camera system implementation (Phase 4)
-- [ ] File system utilities (Phase 1.3)
-
-## Contributing
-
-When adding new research documents:
-1. Create the document in this directory
-2. Add a link and description to this index
-3. Follow the existing format for consistency
-4. Include status information (research/planning/implementation/complete)
-
-## Related Files
-
-- [`../README.md`](../README.md) - Project overview and build instructions
-- [`../Cargo.toml`](../Cargo.toml) - Workspace configuration
-- [`../vendor/mesh-ripper/`](../vendor/mesh-ripper/) - Original implementation for reference
+- `cameras.md` → superseded by [camera_lighting_animation.md](./camera_lighting_animation.md)
+- `mesh-loading.md`, `mesh_formats_comparison.md` → superseded by [mesh_loading_ecosystem.md](./mesh_loading_ecosystem.md) and loadfu
+- `async_implementation_summary.md`, `parallel_stl_loading.md` → superseded by loadfu
+- `baby_shark_mesh_conversion.md` → completed, no longer relevant
+- `../performance/` (profiling_guide, tracing_setup) → superseded by [../profiling-guide.md](../profiling-guide.md)
+- `../BRP_EXTRAS.md`, `../brp_mcp_integration.md` → stale BRP integration docs
+- `../async_loader_integration.md`, `../mesh_cache_migration_summary.md` → old loader pipeline
+- `../mesh-conversion-tools.md`, `../mesh-format-summary.md` → superseded by loadfu
+- `../REMOVAL_PLAN.md` → completed (old loader removal done)
+- `../roadmaps/01_network_sequencing.md`, `04_config.md`, `05_crate-reorg.md`, `center-camera-feature.md` → completed or superseded

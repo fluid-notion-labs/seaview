@@ -47,7 +47,8 @@ bevy = { version = "0.18.0", default-features = false, features = [
     "zstd_rust",
     "reflect_auto_register",
 ] }
-bevy_egui = { git = "https://github.com/vladbat00/bevy_egui.git", rev = "fc54b193441e74e0317c5c8a158f73669670cf8f" }
+# bevy_egui = { git = "https://github.com/vladbat00/bevy_egui.git", rev = "fc54b193441e74e0317c5c8a158f73669670cf8f" }
+bevy_egui = { path = "vendor/bevy_egui" }
 
 [profile.dev]
 opt-level = 1

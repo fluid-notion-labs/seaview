@@ -30,7 +30,9 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use bevy::asset::RenderAssetUsages;
 use bevy::gltf::Gltf;
+use bevy::mesh::VertexAttributeValues;
 use bevy::prelude::*;
 use bevy::scene::{SceneInstance, SceneRoot};
 
@@ -371,7 +373,7 @@ fn poll_gltf_assets(
 fn poll_direct_mesh_assets(
     mut store: ResMut<EnvironmentObjectStoreRes>,
     mut spawned: ResMut<SpawnedEnvironmentObjects>,
-    mesh_assets: Res<Assets<Mesh>>,
+    mut mesh_assets: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut commands: Commands,
 ) {
@@ -385,12 +387,45 @@ fn poll_direct_mesh_assets(
         };
 
         // Wait until the mesh asset is actually loaded.
-        if mesh_assets.get(mesh_handle).is_none() {
+        let Some(mesh) = mesh_assets.get(mesh_handle) else {
             debug!("Direct mesh asset for env object {id} still loading...");
             continue;
+        };
+
+        // ── Diagnostic: mesh stats ────────────────────────────────
+        let vertex_count = mesh.count_vertices();
+        let index_count = mesh.indices().map(|i| i.len()).unwrap_or(0);
+        // Compute a rough AABB from positions if available.
+        let bounds_info = mesh
+            .attribute(Mesh::ATTRIBUTE_POSITION)
+            .and_then(|attr| {
+                if let VertexAttributeValues::Float32x3(positions) = attr {
+                    let (mut mn, mut mx) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+                    for p in positions {
+                        let v = Vec3::from(*p);
+                        mn = mn.min(v);
+                        mx = mx.max(v);
+                    }
+                    Some(format!("min={mn:?}, max={mx:?}, size={:?}", mx - mn))
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| "no positions".to_string());
+        info!(
+            "Direct mesh loaded for env object {id}: \
+             {vertex_count} vertices, {index_count} indices, \
+             bounds=[{bounds_info}]"
+        );
+        if vertex_count == 0 {
+            warn!("  ⚠ Mesh has 0 vertices — nothing to render!");
         }
 
-        info!("Direct mesh loaded for env object {id}, spawning Mesh3d child");
+        // Loadfu loads meshes with MAIN_WORLD only (CPU-resident).
+        // Promote to GPU so the render pipeline can actually draw it.
+        if let Some(mesh) = mesh_assets.get_mut(mesh_handle) {
+            mesh.asset_usage = RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD;
+        }
 
         // Create a default material (light grey, slightly rough).
         let default_material = materials.add(StandardMaterial {
@@ -412,6 +447,19 @@ fn poll_direct_mesh_assets(
             .id();
 
         commands.entity(state.root_entity).add_child(mesh_entity);
+
+        // ── Diagnostic: root entity state ─────────────────────────
+        if let Some(obj) = store.get(*id) {
+            let transform = bevy_transform_from(&obj.transform, &obj.swizzle);
+            info!(
+                "  Root entity {:?}: visible={}, transform={:?}, \
+                 swizzle_identity={}",
+                state.root_entity,
+                obj.visible,
+                transform,
+                obj.swizzle.is_identity(),
+            );
+        }
 
         state.mesh_entities = vec![mesh_entity];
         state.meshes_discovered = true;
