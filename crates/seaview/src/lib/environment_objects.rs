@@ -4,6 +4,10 @@
 //! This module is **pure logic**: no Bevy systems, no ECS queries, no asset
 //! loading.  The Bevy integration lives in `app/environment_objects.rs`.
 //!
+//! [`MaterialOverride`] controls per-object material appearance.  `Default`
+//! keeps the GLB's own materials; presets and `Custom` replace them with a
+//! flat `StandardMaterial` built from the stored colour / roughness / metallic.
+//!
 //! # Design
 //!
 //! [`EnvironmentObjectStore`] is the single authoritative resource for
@@ -221,6 +225,131 @@ impl AxisSwizzle {
 }
 
 // ---------------------------------------------------------------------------
+// Material override
+// ---------------------------------------------------------------------------
+
+/// RGBA colour stored as `[r, g, b, a]` in linear sRGB, each 0.0–1.0.
+pub type LinearRgba = [f32; 4];
+
+/// Predefined material presets for environment objects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum MaterialPreset {
+    /// Earthy green/brown, moderate roughness.
+    Terrain,
+    /// Warm beige, high roughness.
+    Sand,
+    /// Grey, high roughness.
+    Rock,
+    /// Blue, low roughness, moderate metallic.
+    Water,
+    /// Dark grey, very high roughness.
+    Asphalt,
+    /// White, low roughness.
+    Snow,
+}
+
+impl MaterialPreset {
+    /// All available presets in display order.
+    pub const ALL: &'static [MaterialPreset] = &[
+        Self::Terrain,
+        Self::Sand,
+        Self::Rock,
+        Self::Water,
+        Self::Asphalt,
+        Self::Snow,
+    ];
+
+    /// Human-readable name for UI display.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Terrain => "Terrain",
+            Self::Sand => "Sand",
+            Self::Rock => "Rock",
+            Self::Water => "Water",
+            Self::Asphalt => "Asphalt",
+            Self::Snow => "Snow",
+        }
+    }
+
+    /// Returns `(base_color_linear_rgba, roughness, metallic)`.
+    pub fn values(self) -> (LinearRgba, f32, f32) {
+        match self {
+            Self::Terrain => ([0.13, 0.18, 0.08, 1.0], 0.85, 0.0),
+            Self::Sand => ([0.76, 0.70, 0.50, 1.0], 0.95, 0.0),
+            Self::Rock => ([0.35, 0.33, 0.30, 1.0], 0.90, 0.0),
+            Self::Water => ([0.10, 0.25, 0.50, 0.85], 0.05, 0.3),
+            Self::Asphalt => ([0.15, 0.15, 0.15, 1.0], 0.95, 0.0),
+            Self::Snow => ([0.90, 0.90, 0.92, 1.0], 0.30, 0.0),
+        }
+    }
+}
+
+impl std::fmt::Display for MaterialPreset {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.label())
+    }
+}
+
+/// User-specified material properties (colour + PBR knobs).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CustomMaterial {
+    /// Base colour in linear sRGB `[r, g, b, a]`.
+    pub base_color: LinearRgba,
+    /// Perceptual roughness 0.0 (mirror) – 1.0 (fully rough).
+    pub roughness: f32,
+    /// Metallic factor 0.0 (dielectric) – 1.0 (metal).
+    pub metallic: f32,
+}
+
+impl Default for CustomMaterial {
+    fn default() -> Self {
+        Self {
+            base_color: [0.5, 0.5, 0.5, 1.0],
+            roughness: 0.5,
+            metallic: 0.0,
+        }
+    }
+}
+
+/// Per-object material override.
+///
+/// `Default` keeps whatever materials the GLB shipped with.  Any other
+/// variant replaces **all** mesh materials on the object with a flat
+/// `StandardMaterial` built from the stored values.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum MaterialOverride {
+    /// Use the GLB's own PBR materials (no override).
+    Default,
+    /// Apply a named preset.
+    Preset(MaterialPreset),
+    /// Fully user-specified colour + roughness + metallic.
+    Custom(CustomMaterial),
+}
+
+impl MaterialOverride {
+    /// Returns `true` when no override is active.
+    pub fn is_default(&self) -> bool {
+        matches!(self, Self::Default)
+    }
+
+    /// Resolve to concrete `(base_color, roughness, metallic)`.
+    /// Returns `None` for `Default` (keep original materials).
+    pub fn resolve(&self) -> Option<(LinearRgba, f32, f32)> {
+        match self {
+            Self::Default => None,
+            Self::Preset(p) => Some(p.values()),
+            Self::Custom(c) => Some((c.base_color, c.roughness, c.metallic)),
+        }
+    }
+}
+
+impl std::default::Default for MaterialOverride {
+    fn default() -> Self {
+        Self::Default
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Mesh entry (discovered after scene loads)
 // ---------------------------------------------------------------------------
 
@@ -261,6 +390,8 @@ pub struct EnvironmentObject {
     pub visible: bool,
     /// Whether PBR textures/materials are applied (false → flat fallback).
     pub textures_enabled: bool,
+    /// Material override (Default = keep GLB materials, Preset or Custom).
+    pub material_override: MaterialOverride,
     /// Object transform (position / rotation / scale).
     pub transform: Transform3D,
     /// Axis remapping applied *before* position/rotation/scale.
@@ -288,6 +419,7 @@ impl EnvironmentObject {
             path,
             visible: true,
             textures_enabled: true,
+            material_override: MaterialOverride::default(),
             transform: Transform3D::default(),
             swizzle: AxisSwizzle::default(),
             meshes: Vec::new(),
@@ -434,6 +566,7 @@ mod tests {
         assert_eq!(obj.name, "cool_fountain");
         assert!(obj.visible);
         assert!(obj.textures_enabled);
+        assert!(obj.material_override.is_default());
         assert!(obj.meshes.is_empty());
         assert!(obj.swizzle.is_identity());
     }
@@ -555,6 +688,36 @@ mod tests {
         let entry = MeshEntry::new("test");
         assert!(entry.visible);
         assert_eq!(entry.name, "test");
+    }
+
+    #[test]
+    fn material_override_default_resolves_none() {
+        let m = MaterialOverride::Default;
+        assert!(m.is_default());
+        assert!(m.resolve().is_none());
+    }
+
+    #[test]
+    fn material_preset_resolves_values() {
+        let m = MaterialOverride::Preset(MaterialPreset::Rock);
+        assert!(!m.is_default());
+        let (color, roughness, metallic) = m.resolve().unwrap();
+        assert_eq!(color, [0.35, 0.33, 0.30, 1.0]);
+        assert!(roughness > 0.8);
+        assert_eq!(metallic, 0.0);
+    }
+
+    #[test]
+    fn material_custom_resolves_values() {
+        let m = MaterialOverride::Custom(CustomMaterial {
+            base_color: [1.0, 0.0, 0.0, 1.0],
+            roughness: 0.2,
+            metallic: 0.9,
+        });
+        let (color, roughness, metallic) = m.resolve().unwrap();
+        assert_eq!(color, [1.0, 0.0, 0.0, 1.0]);
+        assert_eq!(roughness, 0.2);
+        assert_eq!(metallic, 0.9);
     }
 
     #[test]

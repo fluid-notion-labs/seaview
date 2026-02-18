@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 
 use crate::app::ui::state::MaterialConfig;
 use crate::lib::environment_objects::{
-    AxisMapping, AxisSign, AxisSwizzle, EnvironmentObject, EnvironmentObjectStore, MeshEntry,
-    SourceAxis, Transform3D,
+    AxisMapping, AxisSign, AxisSwizzle, CustomMaterial, EnvironmentObject, EnvironmentObjectStore,
+    MaterialOverride, MaterialPreset, MeshEntry, SourceAxis, Transform3D,
 };
 use crate::lib::lighting::{Light, LightGroup, LightingRig};
 use crate::lib::sequence::LoadSection;
@@ -604,6 +604,31 @@ pub struct EnvironmentObjectSettings {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mesh_visibility: Vec<MeshVisibilitySettings>,
 
+    /// Material override mode: "default", "preset:<name>", or "custom".
+    #[serde(
+        default = "default_material_mode",
+        skip_serializing_if = "is_default_material_mode"
+    )]
+    pub material_mode: String,
+
+    /// Custom material base color [r, g, b, a] in linear sRGB.
+    #[serde(
+        default = "default_material_color",
+        skip_serializing_if = "is_default_material_color"
+    )]
+    pub material_color: [f32; 4],
+
+    /// Custom material roughness 0.0–1.0.
+    #[serde(
+        default = "default_material_roughness",
+        skip_serializing_if = "is_default_material_roughness"
+    )]
+    pub material_roughness: f32,
+
+    /// Custom material metallic 0.0–1.0.
+    #[serde(default, skip_serializing_if = "is_zero_f32")]
+    pub material_metallic: f32,
+
     /// Axis swizzle: output X reads from this source axis.
     #[serde(
         default = "default_swizzle_x",
@@ -626,6 +651,86 @@ pub struct EnvironmentObjectSettings {
 
 fn is_zero_vec3(v: &[f32; 3]) -> bool {
     v[0] == 0.0 && v[1] == 0.0 && v[2] == 0.0
+}
+
+fn is_zero_f32(v: &f32) -> bool {
+    *v == 0.0
+}
+
+fn default_material_mode() -> String {
+    "default".to_string()
+}
+fn is_default_material_mode(s: &str) -> bool {
+    s == "default"
+}
+fn default_material_color() -> [f32; 4] {
+    [0.5, 0.5, 0.5, 1.0]
+}
+fn is_default_material_color(c: &[f32; 4]) -> bool {
+    c == &[0.5, 0.5, 0.5, 1.0]
+}
+fn default_material_roughness() -> f32 {
+    0.5
+}
+fn is_default_material_roughness(v: &f32) -> bool {
+    *v == 0.5
+}
+
+/// Parse a material_mode string into a [`MaterialOverride`].
+fn parse_material_override(
+    mode: &str,
+    color: [f32; 4],
+    roughness: f32,
+    metallic: f32,
+) -> MaterialOverride {
+    match mode {
+        "default" => MaterialOverride::Default,
+        "custom" => MaterialOverride::Custom(CustomMaterial {
+            base_color: color,
+            roughness,
+            metallic,
+        }),
+        s if s.starts_with("preset:") => {
+            let name = &s["preset:".len()..];
+            match name.to_lowercase().as_str() {
+                "terrain" => MaterialOverride::Preset(MaterialPreset::Terrain),
+                "sand" => MaterialOverride::Preset(MaterialPreset::Sand),
+                "rock" => MaterialOverride::Preset(MaterialPreset::Rock),
+                "water" => MaterialOverride::Preset(MaterialPreset::Water),
+                "asphalt" => MaterialOverride::Preset(MaterialPreset::Asphalt),
+                "snow" => MaterialOverride::Preset(MaterialPreset::Snow),
+                _ => {
+                    log::warn!(
+                        "Unknown material preset '{}', falling back to default",
+                        name
+                    );
+                    MaterialOverride::Default
+                }
+            }
+        }
+        _ => {
+            log::warn!("Unknown material_mode '{}', falling back to default", mode);
+            MaterialOverride::Default
+        }
+    }
+}
+
+/// Format a [`MaterialOverride`] as a material_mode string.
+fn format_material_mode(m: &MaterialOverride) -> String {
+    match m {
+        MaterialOverride::Default => "default".to_string(),
+        MaterialOverride::Preset(p) => format!("preset:{}", p.label().to_lowercase()),
+        MaterialOverride::Custom(_) => "custom".to_string(),
+    }
+}
+
+/// Extract color/roughness/metallic for serialisation.
+fn material_override_values(m: &MaterialOverride) -> ([f32; 4], f32, f32) {
+    match m {
+        MaterialOverride::Default => (default_material_color(), default_material_roughness(), 0.0),
+        MaterialOverride::Preset(p) => p.values(),
+        MaterialOverride::Custom(c) => (c.base_color, c.roughness, c.metallic),
+    }
 }
 
 fn default_one_vec3() -> [f32; 3] {
@@ -684,6 +789,8 @@ fn format_axis_mapping(m: &AxisMapping) -> String {
 
 impl From<&EnvironmentObject> for EnvironmentObjectSettings {
     fn from(obj: &EnvironmentObject) -> Self {
+        let (mat_color, mat_roughness, mat_metallic) =
+            material_override_values(&obj.material_override);
         Self {
             path: obj.path.to_string_lossy().to_string(),
             name: Some(obj.name.clone()),
@@ -700,6 +807,10 @@ impl From<&EnvironmentObject> for EnvironmentObjectSettings {
                     visible: m.visible,
                 })
                 .collect(),
+            material_mode: format_material_mode(&obj.material_override),
+            material_color: mat_color,
+            material_roughness: mat_roughness,
+            material_metallic: mat_metallic,
             swizzle_x: format_axis_mapping(&obj.swizzle.x),
             swizzle_y: format_axis_mapping(&obj.swizzle.y),
             swizzle_z: format_axis_mapping(&obj.swizzle.z),
@@ -722,6 +833,12 @@ impl From<&EnvironmentObjectSettings> for EnvironmentObject {
             path,
             visible: s.visible,
             textures_enabled: s.textures_enabled,
+            material_override: parse_material_override(
+                &s.material_mode,
+                s.material_color,
+                s.material_roughness,
+                s.material_metallic,
+            ),
             transform: Transform3D {
                 position: s.position,
                 rotation_degrees: s.rotation_degrees,
@@ -2294,6 +2411,10 @@ rotation = [0.0, 0.0, 0.0]
                 name: "Roof".to_string(),
                 visible: false,
             }],
+            material_mode: default_material_mode(),
+            material_color: default_material_color(),
+            material_roughness: default_material_roughness(),
+            material_metallic: 0.0,
             swizzle_x: default_swizzle_x(),
             swizzle_y: default_swizzle_y(),
             swizzle_z: default_swizzle_z(),
@@ -2417,6 +2538,10 @@ rotation = [0.0, 0.0, 0.0]
             rotation_degrees: [0.0; 3],
             scale: [1.0, 1.0, 1.0],
             mesh_visibility: vec![],
+            material_mode: default_material_mode(),
+            material_color: default_material_color(),
+            material_roughness: default_material_roughness(),
+            material_metallic: 0.0,
             swizzle_x: default_swizzle_x(),
             swizzle_y: default_swizzle_y(),
             swizzle_z: default_swizzle_z(),

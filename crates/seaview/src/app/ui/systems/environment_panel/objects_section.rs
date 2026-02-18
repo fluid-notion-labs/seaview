@@ -20,7 +20,9 @@ use std::sync::mpsc;
 use bevy_egui::egui;
 
 use crate::app::environment_objects::EnvironmentObjectStoreRes;
-use crate::lib::environment_objects::{AxisSign, EnvironmentObjectId};
+use crate::lib::environment_objects::{
+    AxisSign, CustomMaterial, EnvironmentObjectId, MaterialOverride, MaterialPreset,
+};
 
 // ---------------------------------------------------------------------------
 // Async file-dialog receiver (lives across frames)
@@ -216,6 +218,18 @@ pub fn render_objects_section(
                             }
                         });
 
+                        // ── Material Override ──────────────────────
+                        egui::CollapsingHeader::new("Material")
+                            .id_salt(header_id.with("material"))
+                            .default_open(false)
+                            .show(ui, |ui| {
+                                mutated |= render_material_controls(
+                                    ui,
+                                    &mut obj.material_override,
+                                    header_id,
+                                );
+                            });
+
                         // ── Per-mesh visibility ────────────────────
                         if !obj.meshes.is_empty() {
                             ui.add_space(2.0);
@@ -262,6 +276,135 @@ pub fn render_objects_section(
                 store.bump_generation();
             }
         });
+}
+
+// ---------------------------------------------------------------------------
+// Material override controls
+// ---------------------------------------------------------------------------
+
+/// Renders material override UI: mode selector + color picker + PBR sliders.
+/// Returns `true` if any value changed.
+fn render_material_controls(
+    ui: &mut egui::Ui,
+    material: &mut MaterialOverride,
+    header_id: egui::Id,
+) -> bool {
+    let mut changed = false;
+
+    // Current mode label for the dropdown
+    let mode_label = match material {
+        MaterialOverride::Default => "Default (GLB)",
+        MaterialOverride::Preset(p) => p.label(),
+        MaterialOverride::Custom(_) => "Custom",
+    };
+
+    // Mode selector dropdown
+    egui::ComboBox::from_id_salt(header_id.with("mat_mode"))
+        .width(ui.available_width() - 4.0)
+        .selected_text(mode_label)
+        .show_ui(ui, |ui| {
+            // Default option
+            if ui
+                .selectable_label(material.is_default(), "Default (GLB)")
+                .clicked()
+                && !material.is_default()
+            {
+                *material = MaterialOverride::Default;
+                changed = true;
+            }
+
+            ui.separator();
+
+            // Presets
+            for preset in MaterialPreset::ALL {
+                let is_selected = matches!(material, MaterialOverride::Preset(p) if p == preset);
+                if ui.selectable_label(is_selected, preset.label()).clicked() && !is_selected {
+                    *material = MaterialOverride::Preset(*preset);
+                    changed = true;
+                }
+            }
+
+            ui.separator();
+
+            // Custom option
+            let is_custom = matches!(material, MaterialOverride::Custom(_));
+            if ui.selectable_label(is_custom, "Custom").clicked() && !is_custom {
+                // Seed custom from current resolved values or defaults
+                let custom = if let Some((color, roughness, metallic)) = material.resolve() {
+                    CustomMaterial {
+                        base_color: color,
+                        roughness,
+                        metallic,
+                    }
+                } else {
+                    CustomMaterial::default()
+                };
+                *material = MaterialOverride::Custom(custom);
+                changed = true;
+            }
+        });
+
+    // Show color picker + sliders for Custom mode
+    if let MaterialOverride::Custom(ref mut custom) = material {
+        ui.add_space(4.0);
+
+        // Color picker — egui wants [f32; 3] or Color32
+        let mut color3 = [
+            custom.base_color[0],
+            custom.base_color[1],
+            custom.base_color[2],
+        ];
+        ui.horizontal(|ui| {
+            ui.label("Color");
+            if ui.color_edit_button_rgb(&mut color3).changed() {
+                custom.base_color[0] = color3[0];
+                custom.base_color[1] = color3[1];
+                custom.base_color[2] = color3[2];
+                changed = true;
+            }
+        });
+
+        // Opacity slider
+        changed |= ui
+            .add(egui::Slider::new(&mut custom.base_color[3], 0.0..=1.0).text("Opacity"))
+            .changed();
+
+        // Roughness slider
+        changed |= ui
+            .add(egui::Slider::new(&mut custom.roughness, 0.0..=1.0).text("Roughness"))
+            .changed();
+
+        // Metallic slider
+        changed |= ui
+            .add(egui::Slider::new(&mut custom.metallic, 0.0..=1.0).text("Metallic"))
+            .changed();
+    }
+
+    // Show a preview swatch for presets
+    if let MaterialOverride::Preset(preset) = material {
+        let (color, roughness, metallic) = preset.values();
+        ui.add_space(2.0);
+        ui.horizontal(|ui| {
+            let swatch_color = egui::Color32::from_rgb(
+                (color[0] * 255.0) as u8,
+                (color[1] * 255.0) as u8,
+                (color[2] * 255.0) as u8,
+            );
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
+            ui.painter().rect_filled(rect, 2.0, swatch_color);
+            ui.label(
+                egui::RichText::new(format!(
+                    "R:{:.0}% M:{:.0}%",
+                    roughness * 100.0,
+                    metallic * 100.0
+                ))
+                .small()
+                .color(egui::Color32::from_gray(140)),
+            );
+        });
+    }
+
+    changed
 }
 
 // ---------------------------------------------------------------------------

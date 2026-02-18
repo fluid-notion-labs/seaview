@@ -33,7 +33,7 @@ use bevy::prelude::*;
 use bevy::scene::{SceneInstance, SceneRoot};
 
 use crate::lib::environment_objects::{
-    EnvironmentObject, EnvironmentObjectId, EnvironmentObjectStore, MeshEntry,
+    EnvironmentObject, EnvironmentObjectId, EnvironmentObjectStore, MaterialOverride, MeshEntry,
 };
 
 // ---------------------------------------------------------------------------
@@ -72,7 +72,12 @@ impl Plugin for EnvironmentObjectPlugin {
             )
             .add_systems(
                 Update,
-                (sync_visibility, sync_transforms, sync_mesh_visibility),
+                (
+                    sync_visibility,
+                    sync_transforms,
+                    sync_mesh_visibility,
+                    sync_materials,
+                ),
             );
     }
 }
@@ -107,6 +112,12 @@ pub struct SpawnedObject {
     pub mesh_entities: Vec<Entity>,
     /// Whether child-mesh discovery has completed.
     pub meshes_discovered: bool,
+    /// Original material handles per mesh entity (saved on first discovery
+    /// so we can restore them when switching back to `MaterialOverride::Default`).
+    pub original_materials: Vec<Option<Handle<StandardMaterial>>>,
+    /// The last applied `MaterialOverride` — used to detect changes and avoid
+    /// re-creating material assets every frame.
+    pub last_applied_override: Option<MaterialOverride>,
 }
 
 /// Objects whose `Gltf` asset has loaded but whose scene hasn't been spawned yet.
@@ -229,6 +240,8 @@ fn spawn_new_objects(
                 gltf_handle: gltf_handle.clone(),
                 mesh_entities: Vec::new(),
                 meshes_discovered: false,
+                original_materials: Vec::new(),
+                last_applied_override: None,
             },
         );
     }
@@ -494,6 +507,77 @@ fn sync_mesh_visibility(
                 }
             }
         }
+    }
+}
+
+/// Sync material overrides from the store to mesh child entities.
+///
+/// When `MaterialOverride::Default`, restores the original GLB materials.
+/// For `Preset` or `Custom`, replaces all mesh materials with a flat
+/// `StandardMaterial` built from the resolved values.
+fn sync_materials(
+    store: Res<EnvironmentObjectStoreRes>,
+    mut spawned: ResMut<SpawnedEnvironmentObjects>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    material_query: Query<&MeshMaterial3d<StandardMaterial>>,
+    mut commands: Commands,
+) {
+    for obj in store.iter() {
+        let Some(state) = spawned.map.get_mut(&obj.id) else {
+            continue;
+        };
+        if !state.meshes_discovered || state.mesh_entities.is_empty() {
+            continue;
+        }
+
+        // Snapshot original materials on first encounter.
+        if state.original_materials.is_empty() {
+            state.original_materials = state
+                .mesh_entities
+                .iter()
+                .map(|e| material_query.get(*e).ok().map(|mat| mat.0.clone()))
+                .collect();
+        }
+
+        // Skip if nothing changed.
+        if state.last_applied_override.as_ref() == Some(&obj.material_override) {
+            continue;
+        }
+
+        match obj.material_override.resolve() {
+            None => {
+                // Restore original materials.
+                for (i, entity) in state.mesh_entities.iter().enumerate() {
+                    if let Some(Some(original)) = state.original_materials.get(i) {
+                        commands
+                            .entity(*entity)
+                            .insert(MeshMaterial3d(original.clone()));
+                    }
+                }
+            }
+            Some((color, roughness, metallic)) => {
+                let override_material = materials.add(StandardMaterial {
+                    base_color: Color::LinearRgba(LinearRgba::new(
+                        color[0], color[1], color[2], color[3],
+                    )),
+                    perceptual_roughness: roughness,
+                    metallic,
+                    alpha_mode: if color[3] < 1.0 {
+                        AlphaMode::Blend
+                    } else {
+                        AlphaMode::Opaque
+                    },
+                    ..default()
+                });
+                for entity in &state.mesh_entities {
+                    commands
+                        .entity(*entity)
+                        .insert(MeshMaterial3d(override_material.clone()));
+                }
+            }
+        }
+
+        state.last_applied_override = Some(obj.material_override.clone());
     }
 }
 
