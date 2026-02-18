@@ -1,3 +1,4 @@
 [alias]
 w = "watch -x check"
 wr = "watch -x 'build --release'"
+wc = ["watch", "-x", "check", "-x", "build --release"]

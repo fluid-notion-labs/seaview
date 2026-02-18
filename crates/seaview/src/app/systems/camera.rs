@@ -6,11 +6,13 @@
 //! - Mouse: Look around (when cursor is grabbed)
 //! - Left Click: Grab cursor for mouse look
 //! - Escape: Release cursor
-//! - Shift: 10x movement speed boost
-//! - Alt: 0.1x movement speed (precision mode)
+//! - Scroll wheel (while moving): Adjust base movement speed
+//! - Shift: 5× movement speed
+//! - Alt: 25× movement speed
+//! - Ctrl: 125× movement speed
 //! - Ctrl+C: Center camera on mesh
 
-use bevy::input::mouse::MouseMotion;
+use bevy::input::mouse::{MouseMotion, MouseWheel};
 use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 use bevy_egui::EguiContexts;
@@ -98,14 +100,22 @@ pub fn keyboard_center_on_mesh(
     }
 }
 
+/// Factor by which base speed changes per scroll tick.
+const SCROLL_SPEED_FACTOR: f32 = 1.2;
+/// Minimum base movement speed.
+const MIN_BASE_SPEED: f32 = 0.1;
+/// Maximum base movement speed.
+const MAX_BASE_SPEED: f32 = 10000.0;
+
 /// System that provides fps-style camera controls
 pub fn camera_controller(
     time: Res<Time>,
     mut mouse_events: MessageReader<MouseMotion>,
+    mut scroll_events: MessageReader<MouseWheel>,
     input: Res<ButtonInput<KeyCode>>,
-    mut query: Query<(&mut Transform, &FpsCamera), With<Camera>>,
+    mut query: Query<(&mut Transform, &mut FpsCamera), With<Camera>>,
 ) {
-    let Ok((mut transform, fps_camera)) = query.single_mut() else {
+    let Ok((mut transform, mut fps_camera)) = query.single_mut() else {
         return;
     };
 
@@ -151,16 +161,46 @@ pub fn camera_controller(
 
     // Handle movement
     let mut movement = Vec3::ZERO;
+
+    // Check if any movement key is held
+    let moving = input.pressed(KeyCode::KeyW)
+        || input.pressed(KeyCode::KeyS)
+        || input.pressed(KeyCode::KeyA)
+        || input.pressed(KeyCode::KeyD)
+        || input.pressed(KeyCode::KeyE)
+        || input.pressed(KeyCode::KeyQ);
+
+    // Scroll wheel adjusts base speed while moving
+    if moving {
+        for scroll in scroll_events.read() {
+            let ticks = scroll.y;
+            if ticks > 0.0 {
+                fps_camera.speed =
+                    (fps_camera.speed * SCROLL_SPEED_FACTOR.powf(ticks)).min(MAX_BASE_SPEED);
+            } else if ticks < 0.0 {
+                fps_camera.speed =
+                    (fps_camera.speed * SCROLL_SPEED_FACTOR.powf(ticks)).max(MIN_BASE_SPEED);
+            }
+            debug!("🎚️ Base movement speed: {:.1}", fps_camera.speed);
+        }
+    } else {
+        scroll_events.clear();
+    }
+
     let base_speed = fps_camera.speed;
 
-    // Apply speed modifiers
-    // Shift: 10x speed for fast movement
-    // Alt: 0.1x speed for precision movement
-    let speed_modifier = if input.pressed(KeyCode::ShiftLeft) || input.pressed(KeyCode::ShiftRight)
-    {
-        10.0 // Shift for 10x speed
-    } else if input.pressed(KeyCode::AltLeft) || input.pressed(KeyCode::AltRight) {
-        0.1 // Alt for slow movement (all directions)
+    // Apply speed modifiers (stack on top of base speed)
+    // Ctrl: 125× | Alt: 25× | Shift: 5× | None: 1×
+    let ctrl = input.pressed(KeyCode::ControlLeft) || input.pressed(KeyCode::ControlRight);
+    let alt = input.pressed(KeyCode::AltLeft) || input.pressed(KeyCode::AltRight);
+    let shift = input.pressed(KeyCode::ShiftLeft) || input.pressed(KeyCode::ShiftRight);
+
+    let speed_modifier = if ctrl {
+        125.0
+    } else if alt {
+        25.0
+    } else if shift {
+        5.0
     } else {
         1.0
     };
