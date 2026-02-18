@@ -65,6 +65,21 @@ bd close <id>         # Complete work
 bd sync               # Sync with git
 ```
 
+## Test Watch
+
+A `cargo watch` test runner logs results to `tmp/tests.log` (overwritten each run). Start it in a spare terminal:
+
+```bash
+./scripts/test-watch.sh
+```
+
+Before committing or when diagnosing failures, check the latest results:
+
+```bash
+cat tmp/tests.log        # full output
+tail -20 tmp/tests.log   # summary
+```
+
 ## Landing the Plane (Session Completion)
 
 **When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.
@@ -72,8 +87,9 @@ bd sync               # Sync with git
 **MANDATORY WORKFLOW:**
 
 1. **File issues for remaining work** - Create issues for anything that needs follow-up
-2. **Update issue status** - Close finished work, update in-progress items
-3. **PUSH TO REMOTE** - This is MANDATORY:
+2. **Check test watch** - `tail -20 tmp/tests.log` — confirm no failures
+3. **Update issue status** - Close finished work, update in-progress items
+4. **PUSH TO REMOTE** - This is MANDATORY:
    ```bash
    git pull --rebase
    bd sync
