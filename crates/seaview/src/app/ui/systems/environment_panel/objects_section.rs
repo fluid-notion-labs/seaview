@@ -20,7 +20,9 @@ use std::sync::mpsc;
 use bevy_egui::egui;
 
 use crate::app::environment_objects::EnvironmentObjectStoreRes;
-use crate::lib::environment_objects::EnvironmentObjectId;
+use crate::lib::environment_objects::{
+    AxisMapping, AxisSign, AxisSwizzle, EnvironmentObjectId, SourceAxis,
+};
 
 // ---------------------------------------------------------------------------
 // Async file-dialog receiver (lives across frames)
@@ -184,6 +186,14 @@ pub fn render_objects_section(
                                 mutated |= render_transform_controls(ui, &mut obj.transform);
                             });
 
+                        // ── Axis Remap ─────────────────────────────
+                        egui::CollapsingHeader::new("Axis Remap")
+                            .id_salt(header_id.with("swizzle"))
+                            .default_open(false)
+                            .show(ui, |ui| {
+                                mutated |= render_swizzle_controls(ui, &mut obj.swizzle);
+                            });
+
                         // ── Per-mesh visibility ────────────────────
                         if !obj.meshes.is_empty() {
                             ui.add_space(2.0);
@@ -230,6 +240,66 @@ pub fn render_objects_section(
                 store.bump_generation();
             }
         });
+}
+
+// ---------------------------------------------------------------------------
+// Transform controls
+// ---------------------------------------------------------------------------
+
+/// Renders the 3×6 axis remap button grid.  Returns `true` if any mapping
+/// changed.
+///
+/// ```text
+/// X →  [-x] [+x] [-y] [+y] [-z] [+z]
+/// Y →  [-x] [+x] [-y] [+y] [-z] [+z]
+/// Z →  [-x] [+x] [-y] [+y] [-z] [+z]
+/// ```
+fn render_swizzle_controls(ui: &mut egui::Ui, swizzle: &mut AxisSwizzle) -> bool {
+    let mut changed = false;
+
+    const OPTIONS: [(AxisSign, SourceAxis); 6] = [
+        (AxisSign::Negative, SourceAxis::X),
+        (AxisSign::Positive, SourceAxis::X),
+        (AxisSign::Negative, SourceAxis::Y),
+        (AxisSign::Positive, SourceAxis::Y),
+        (AxisSign::Negative, SourceAxis::Z),
+        (AxisSign::Positive, SourceAxis::Z),
+    ];
+
+    let rows: [(&str, &mut AxisMapping); 3] = [
+        ("X →", &mut swizzle.x),
+        ("Y →", &mut swizzle.y),
+        ("Z →", &mut swizzle.z),
+    ];
+
+    for (label, mapping) in rows {
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new(label).monospace().strong());
+            for (sign, source) in &OPTIONS {
+                let is_selected = mapping.sign == *sign && mapping.source == *source;
+                let btn_label = format!("{}{}", sign, source);
+                if ui
+                    .selectable_label(is_selected, egui::RichText::new(btn_label).monospace())
+                    .clicked()
+                    && !is_selected
+                {
+                    mapping.sign = *sign;
+                    mapping.source = *source;
+                    changed = true;
+                }
+            }
+        });
+    }
+
+    if !swizzle.is_identity() {
+        ui.add_space(2.0);
+        if ui.small_button("Reset to identity").clicked() {
+            *swizzle = AxisSwizzle::default();
+            changed = true;
+        }
+    }
+
+    changed
 }
 
 // ---------------------------------------------------------------------------

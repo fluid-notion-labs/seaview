@@ -96,6 +96,131 @@ impl Transform3D {
 }
 
 // ---------------------------------------------------------------------------
+// Axis swizzle (coordinate remapping)
+// ---------------------------------------------------------------------------
+
+/// Which source axis to read from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SourceAxis {
+    X,
+    Y,
+    Z,
+}
+
+impl std::fmt::Display for SourceAxis {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::X => write!(f, "x"),
+            Self::Y => write!(f, "y"),
+            Self::Z => write!(f, "z"),
+        }
+    }
+}
+
+/// Sign applied to the source axis value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum AxisSign {
+    Positive,
+    Negative,
+}
+
+impl AxisSign {
+    /// Returns the multiplier: `+1.0` or `-1.0`.
+    pub fn multiplier(self) -> f32 {
+        match self {
+            Self::Positive => 1.0,
+            Self::Negative => -1.0,
+        }
+    }
+}
+
+impl std::fmt::Display for AxisSign {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Positive => write!(f, "+"),
+            Self::Negative => write!(f, "-"),
+        }
+    }
+}
+
+/// One axis mapping: which source axis (with sign) feeds this output axis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AxisMapping {
+    pub sign: AxisSign,
+    pub source: SourceAxis,
+}
+
+impl AxisMapping {
+    pub fn new(sign: AxisSign, source: SourceAxis) -> Self {
+        Self { sign, source }
+    }
+
+    /// Shorthand for a positive mapping.
+    pub fn pos(source: SourceAxis) -> Self {
+        Self::new(AxisSign::Positive, source)
+    }
+
+    /// Shorthand for a negative mapping.
+    pub fn neg(source: SourceAxis) -> Self {
+        Self::new(AxisSign::Negative, source)
+    }
+}
+
+impl std::fmt::Display for AxisMapping {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}{}", self.sign, self.source)
+    }
+}
+
+/// Per-object axis swizzle: remaps source XYZ to output XYZ.
+///
+/// Default is the identity mapping: X→+x, Y→+y, Z→+z.
+/// The app layer converts this to a 3×3 matrix composed with the object's
+/// Transform3D before applying to the Bevy `Transform`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AxisSwizzle {
+    /// What feeds output X.
+    pub x: AxisMapping,
+    /// What feeds output Y.
+    pub y: AxisMapping,
+    /// What feeds output Z.
+    pub z: AxisMapping,
+}
+
+impl Default for AxisSwizzle {
+    fn default() -> Self {
+        Self {
+            x: AxisMapping::pos(SourceAxis::X),
+            y: AxisMapping::pos(SourceAxis::Y),
+            z: AxisMapping::pos(SourceAxis::Z),
+        }
+    }
+}
+
+impl AxisSwizzle {
+    /// Returns `true` if this is the identity mapping (no remapping).
+    pub fn is_identity(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Build the 3×3 swizzle matrix as column-major `[[f32; 3]; 3]`.
+    ///
+    /// Each output axis picks one source axis with a sign, so each column
+    /// of the matrix has exactly one non-zero entry.
+    pub fn to_matrix(&self) -> [[f32; 3]; 3] {
+        fn column(mapping: &AxisMapping) -> [f32; 3] {
+            let m = mapping.sign.multiplier();
+            match mapping.source {
+                SourceAxis::X => [m, 0.0, 0.0],
+                SourceAxis::Y => [0.0, m, 0.0],
+                SourceAxis::Z => [0.0, 0.0, m],
+            }
+        }
+        [column(&self.x), column(&self.y), column(&self.z)]
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Mesh entry (discovered after scene loads)
 // ---------------------------------------------------------------------------
 
@@ -138,6 +263,8 @@ pub struct EnvironmentObject {
     pub textures_enabled: bool,
     /// Object transform (position / rotation / scale).
     pub transform: Transform3D,
+    /// Axis remapping applied *before* position/rotation/scale.
+    pub swizzle: AxisSwizzle,
     /// Individual mesh primitives discovered after the scene loads.
     /// Empty until the app layer enumerates child entities.
     pub meshes: Vec<MeshEntry>,
@@ -162,6 +289,7 @@ impl EnvironmentObject {
             visible: true,
             textures_enabled: true,
             transform: Transform3D::default(),
+            swizzle: AxisSwizzle::default(),
             meshes: Vec::new(),
         }
     }
@@ -307,6 +435,7 @@ mod tests {
         assert!(obj.visible);
         assert!(obj.textures_enabled);
         assert!(obj.meshes.is_empty());
+        assert!(obj.swizzle.is_identity());
     }
 
     #[test]
@@ -426,6 +555,43 @@ mod tests {
         let entry = MeshEntry::new("test");
         assert!(entry.visible);
         assert_eq!(entry.name, "test");
+    }
+
+    #[test]
+    fn swizzle_identity_matrix() {
+        let s = AxisSwizzle::default();
+        assert!(s.is_identity());
+        let m = s.to_matrix();
+        assert_eq!(m, [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]);
+    }
+
+    #[test]
+    fn swizzle_flip_y() {
+        let s = AxisSwizzle {
+            x: AxisMapping::pos(SourceAxis::X),
+            y: AxisMapping::neg(SourceAxis::Y),
+            z: AxisMapping::pos(SourceAxis::Z),
+        };
+        assert!(!s.is_identity());
+        let m = s.to_matrix();
+        assert_eq!(m, [[1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, 1.0]]);
+    }
+
+    #[test]
+    fn swizzle_y_up_to_z_up() {
+        // Y-up → Z-up: X→+x, Y→+z, Z→-y
+        let s = AxisSwizzle {
+            x: AxisMapping::pos(SourceAxis::X),
+            y: AxisMapping::pos(SourceAxis::Z),
+            z: AxisMapping::neg(SourceAxis::Y),
+        };
+        let m = s.to_matrix();
+        // col 0 (output X): +x → [1,0,0]
+        assert_eq!(m[0], [1.0, 0.0, 0.0]);
+        // col 1 (output Y): +z → [0,0,1]
+        assert_eq!(m[1], [0.0, 0.0, 1.0]);
+        // col 2 (output Z): -y → [0,-1,0]
+        assert_eq!(m[2], [0.0, -1.0, 0.0]);
     }
 
     #[test]

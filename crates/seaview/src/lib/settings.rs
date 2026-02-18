@@ -11,7 +11,8 @@ use std::path::{Path, PathBuf};
 
 use crate::app::ui::state::MaterialConfig;
 use crate::lib::environment_objects::{
-    EnvironmentObject, EnvironmentObjectStore, MeshEntry, Transform3D,
+    AxisMapping, AxisSign, AxisSwizzle, EnvironmentObject, EnvironmentObjectStore, MeshEntry,
+    SourceAxis, Transform3D,
 };
 use crate::lib::lighting::{Light, LightGroup, LightingRig};
 use crate::lib::sequence::LoadSection;
@@ -602,6 +603,25 @@ pub struct EnvironmentObjectSettings {
     /// Per-mesh visibility overrides (matched by name after scene loads).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mesh_visibility: Vec<MeshVisibilitySettings>,
+
+    /// Axis swizzle: output X reads from this source axis.
+    #[serde(
+        default = "default_swizzle_x",
+        skip_serializing_if = "is_default_swizzle_x"
+    )]
+    pub swizzle_x: String,
+    /// Axis swizzle: output Y reads from this source axis.
+    #[serde(
+        default = "default_swizzle_y",
+        skip_serializing_if = "is_default_swizzle_y"
+    )]
+    pub swizzle_y: String,
+    /// Axis swizzle: output Z reads from this source axis.
+    #[serde(
+        default = "default_swizzle_z",
+        skip_serializing_if = "is_default_swizzle_z"
+    )]
+    pub swizzle_z: String,
 }
 
 fn is_zero_vec3(v: &[f32; 3]) -> bool {
@@ -614,6 +634,52 @@ fn default_one_vec3() -> [f32; 3] {
 
 fn is_one_vec3(v: &[f32; 3]) -> bool {
     v[0] == 1.0 && v[1] == 1.0 && v[2] == 1.0
+}
+
+fn default_swizzle_x() -> String {
+    "+x".to_string()
+}
+fn default_swizzle_y() -> String {
+    "+y".to_string()
+}
+fn default_swizzle_z() -> String {
+    "+z".to_string()
+}
+fn is_default_swizzle_x(s: &str) -> bool {
+    s == "+x"
+}
+fn is_default_swizzle_y(s: &str) -> bool {
+    s == "+y"
+}
+fn is_default_swizzle_z(s: &str) -> bool {
+    s == "+z"
+}
+
+/// Parse a swizzle string like "+x", "-z" into an [`AxisMapping`].
+fn parse_axis_mapping(s: &str) -> AxisMapping {
+    let s = s.trim();
+    let (sign, axis_char) = if s.starts_with('-') {
+        (AxisSign::Negative, &s[1..])
+    } else if s.starts_with('+') {
+        (AxisSign::Positive, &s[1..])
+    } else {
+        (AxisSign::Positive, s)
+    };
+    let source = match axis_char {
+        "x" | "X" => SourceAxis::X,
+        "y" | "Y" => SourceAxis::Y,
+        "z" | "Z" => SourceAxis::Z,
+        _ => {
+            log::warn!("Unknown swizzle axis '{}', defaulting to +x", s);
+            return AxisMapping::pos(SourceAxis::X);
+        }
+    };
+    AxisMapping::new(sign, source)
+}
+
+/// Format an [`AxisMapping`] as a string like "+x", "-z".
+fn format_axis_mapping(m: &AxisMapping) -> String {
+    format!("{}{}", m.sign, m.source)
 }
 
 impl From<&EnvironmentObject> for EnvironmentObjectSettings {
@@ -634,6 +700,9 @@ impl From<&EnvironmentObject> for EnvironmentObjectSettings {
                     visible: m.visible,
                 })
                 .collect(),
+            swizzle_x: format_axis_mapping(&obj.swizzle.x),
+            swizzle_y: format_axis_mapping(&obj.swizzle.y),
+            swizzle_z: format_axis_mapping(&obj.swizzle.z),
         }
     }
 }
@@ -657,6 +726,11 @@ impl From<&EnvironmentObjectSettings> for EnvironmentObject {
                 position: s.position,
                 rotation_degrees: s.rotation_degrees,
                 scale: s.scale,
+            },
+            swizzle: AxisSwizzle {
+                x: parse_axis_mapping(&s.swizzle_x),
+                y: parse_axis_mapping(&s.swizzle_y),
+                z: parse_axis_mapping(&s.swizzle_z),
             },
             meshes: s
                 .mesh_visibility
@@ -2220,6 +2294,9 @@ rotation = [0.0, 0.0, 0.0]
                 name: "Roof".to_string(),
                 visible: false,
             }],
+            swizzle_x: default_swizzle_x(),
+            swizzle_y: default_swizzle_y(),
+            swizzle_z: default_swizzle_z(),
         };
 
         let mut env_settings = EnvironmentSettings::default();
@@ -2340,6 +2417,9 @@ rotation = [0.0, 0.0, 0.0]
             rotation_degrees: [0.0; 3],
             scale: [1.0, 1.0, 1.0],
             mesh_visibility: vec![],
+            swizzle_x: default_swizzle_x(),
+            swizzle_y: default_swizzle_y(),
+            swizzle_z: default_swizzle_z(),
         };
 
         let obj = EnvironmentObject::from(&settings);

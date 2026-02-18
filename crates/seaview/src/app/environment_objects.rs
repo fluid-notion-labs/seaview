@@ -207,7 +207,7 @@ fn spawn_new_objects(
         let gltf_handle: Handle<Gltf> = asset_server.load(&asset_path);
 
         // Spawn a root entity now (invisible until the scene is attached).
-        let transform = bevy_transform_from(&obj.transform);
+        let transform = bevy_transform_from(&obj.transform, &obj.swizzle);
         let root_entity = commands
             .spawn((
                 EnvironmentObjectMarker { id: obj.id },
@@ -458,7 +458,7 @@ fn sync_transforms(
             continue;
         };
         if let Ok(mut transform) = transform_query.get_mut(state.root_entity) {
-            let desired = bevy_transform_from(&obj.transform);
+            let desired = bevy_transform_from(&obj.transform, &obj.swizzle);
             if *transform != desired {
                 *transform = desired;
             }
@@ -501,9 +501,16 @@ fn sync_mesh_visibility(
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Convert a lib-side [`Transform3D`] to a Bevy [`Transform`].
-fn bevy_transform_from(t: &crate::lib::environment_objects::Transform3D) -> Transform {
-    Transform {
+/// Convert a lib-side [`Transform3D`] + [`AxisSwizzle`] to a Bevy [`Transform`].
+///
+/// The swizzle is applied *first* (as a basis change), then position/rotation/scale
+/// are composed on top.  This lets users fix axis conventions and then fine-tune
+/// placement with the normal transform controls.
+fn bevy_transform_from(
+    t: &crate::lib::environment_objects::Transform3D,
+    swizzle: &crate::lib::environment_objects::AxisSwizzle,
+) -> Transform {
+    let user_transform = Transform {
         translation: Vec3::new(t.position[0], t.position[1], t.position[2]),
         rotation: Quat::from_euler(
             EulerRot::XYZ,
@@ -512,5 +519,38 @@ fn bevy_transform_from(t: &crate::lib::environment_objects::Transform3D) -> Tran
             t.rotation_degrees[2].to_radians(),
         ),
         scale: Vec3::new(t.scale[0], t.scale[1], t.scale[2]),
+    };
+
+    if swizzle.is_identity() {
+        return user_transform;
+    }
+
+    // Build the swizzle as a 3×3 signed permutation matrix (det = ±1).
+    let m = swizzle.to_matrix();
+    let swizzle_mat = Mat3::from_cols(
+        Vec3::new(m[0][0], m[0][1], m[0][2]),
+        Vec3::new(m[1][0], m[1][1], m[1][2]),
+        Vec3::new(m[2][0], m[2][1], m[2][2]),
+    );
+
+    // Decompose into rotation (quaternion) + scale.
+    // det = +1 → proper rotation, Quat::from_mat3 works directly.
+    // det = -1 → improper rotation (reflection); absorb one axis flip into
+    //            scale so the remaining matrix is a proper rotation.
+    let det = swizzle_mat.determinant();
+    let (rot_mat, swizzle_scale) = if det < 0.0 {
+        let flipped = Mat3::from_cols(swizzle_mat.col(0), swizzle_mat.col(1), -swizzle_mat.col(2));
+        (flipped, Vec3::new(1.0, 1.0, -1.0))
+    } else {
+        (swizzle_mat, Vec3::ONE)
+    };
+    let swizzle_rot = Quat::from_mat3(&rot_mat);
+
+    // Compose: user_transform * swizzle_transform
+    // Swizzle is applied to the mesh first, then user transform on top.
+    Transform {
+        translation: user_transform.translation,
+        rotation: user_transform.rotation * swizzle_rot,
+        scale: user_transform.scale * swizzle_scale,
     }
 }
