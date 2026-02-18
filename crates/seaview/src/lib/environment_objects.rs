@@ -23,6 +23,8 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::lib::coordinates::WindingOrder;
+
 // ---------------------------------------------------------------------------
 // Identifiers
 // ---------------------------------------------------------------------------
@@ -96,6 +98,61 @@ impl Transform3D {
     pub fn with_uniform_scale(mut self, s: f32) -> Self {
         self.scale = [s, s, s];
         self
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Coordinate preset
+// ---------------------------------------------------------------------------
+
+/// Predefined coordinate system conventions for environment objects.
+///
+/// Selecting a preset auto-configures the [`AxisSwizzle`] to match the
+/// convention.  Users can still manually override individual axis flips
+/// on top.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+pub enum CoordinatePreset {
+    /// Y-up, right-handed (glTF default, Bevy native). Identity swizzle.
+    #[default]
+    YUp,
+    /// Z-up, right-handed (common in CAD, GIS, simulation tools).
+    /// Swaps Y↔Z.
+    ZUp,
+    /// Custom — axis flips are set manually, preset doesn't override them.
+    Custom,
+}
+
+impl CoordinatePreset {
+    /// All presets in display order.
+    pub const ALL: &'static [CoordinatePreset] = &[Self::YUp, Self::ZUp, Self::Custom];
+
+    /// Human-readable label for UI.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::YUp => "Y-up (glTF default)",
+            Self::ZUp => "Z-up (CAD / sim)",
+            Self::Custom => "Custom",
+        }
+    }
+
+    /// Returns the [`AxisSwizzle`] that this preset implies.
+    /// Returns `None` for `Custom` (user controls the swizzle directly).
+    pub fn to_swizzle(self) -> Option<AxisSwizzle> {
+        match self {
+            Self::YUp => Some(AxisSwizzle::default()),
+            Self::ZUp => Some(AxisSwizzle {
+                x: AxisMapping::pos(SourceAxis::X),
+                y: AxisMapping::pos(SourceAxis::Z),
+                z: AxisMapping::neg(SourceAxis::Y),
+            }),
+            Self::Custom => None,
+        }
+    }
+}
+
+impl std::fmt::Display for CoordinatePreset {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.label())
     }
 }
 
@@ -396,6 +453,10 @@ pub struct EnvironmentObject {
     pub flip_normals: bool,
     /// Render both sides of faces (disables backface culling).
     pub double_sided: bool,
+    /// Source coordinate system preset (auto-configures swizzle).
+    pub coordinate_preset: CoordinatePreset,
+    /// Source winding order (CW meshes need normal flipping).
+    pub winding_order: WindingOrder,
     /// Object transform (position / rotation / scale).
     pub transform: Transform3D,
     /// Axis remapping applied *before* position/rotation/scale.
@@ -426,6 +487,8 @@ impl EnvironmentObject {
             material_override: MaterialOverride::default(),
             flip_normals: false,
             double_sided: false,
+            coordinate_preset: CoordinatePreset::default(),
+            winding_order: WindingOrder::default(),
             transform: Transform3D::default(),
             swizzle: AxisSwizzle::default(),
             meshes: Vec::new(),
@@ -575,6 +638,8 @@ mod tests {
         assert!(obj.material_override.is_default());
         assert!(!obj.flip_normals);
         assert!(!obj.double_sided);
+        assert_eq!(obj.coordinate_preset, CoordinatePreset::YUp);
+        assert_eq!(obj.winding_order, WindingOrder::CCW);
         assert!(obj.meshes.is_empty());
         assert!(obj.swizzle.is_identity());
     }
@@ -713,6 +778,28 @@ mod tests {
         assert_eq!(color, [0.35, 0.33, 0.30, 1.0]);
         assert!(roughness > 0.8);
         assert_eq!(metallic, 0.0);
+    }
+
+    #[test]
+    fn coordinate_preset_yup_is_identity_swizzle() {
+        let s = CoordinatePreset::YUp.to_swizzle().unwrap();
+        assert!(s.is_identity());
+    }
+
+    #[test]
+    fn coordinate_preset_zup_swaps_yz() {
+        let s = CoordinatePreset::ZUp.to_swizzle().unwrap();
+        assert!(!s.is_identity());
+        // Output Y reads from +Z, output Z reads from -Y
+        assert_eq!(s.y.source, SourceAxis::Z);
+        assert_eq!(s.y.sign, AxisSign::Positive);
+        assert_eq!(s.z.source, SourceAxis::Y);
+        assert_eq!(s.z.sign, AxisSign::Negative);
+    }
+
+    #[test]
+    fn coordinate_preset_custom_returns_none() {
+        assert!(CoordinatePreset::Custom.to_swizzle().is_none());
     }
 
     #[test]

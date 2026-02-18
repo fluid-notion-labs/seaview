@@ -10,9 +10,10 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::app::ui::state::MaterialConfig;
+use crate::lib::coordinates::WindingOrder;
 use crate::lib::environment_objects::{
-    AxisMapping, AxisSign, AxisSwizzle, CustomMaterial, EnvironmentObject, EnvironmentObjectStore,
-    MaterialOverride, MaterialPreset, MeshEntry, SourceAxis, Transform3D,
+    AxisMapping, AxisSign, AxisSwizzle, CoordinatePreset, CustomMaterial, EnvironmentObject,
+    EnvironmentObjectStore, MaterialOverride, MaterialPreset, MeshEntry, SourceAxis, Transform3D,
 };
 use crate::lib::lighting::{Light, LightGroup, LightingRig};
 use crate::lib::sequence::LoadSection;
@@ -596,6 +597,20 @@ pub struct EnvironmentObjectSettings {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub double_sided: bool,
 
+    /// Source coordinate system preset: "yup", "zup", or "custom".
+    #[serde(
+        default = "default_coordinate_preset",
+        skip_serializing_if = "is_default_coordinate_preset"
+    )]
+    pub coordinate_preset: String,
+
+    /// Source winding order: "ccw" or "cw".
+    #[serde(
+        default = "default_winding_order",
+        skip_serializing_if = "is_default_winding_order"
+    )]
+    pub winding_order: String,
+
     /// World-space position `[x, y, z]`.
     #[serde(default, skip_serializing_if = "is_zero_vec3")]
     pub position: [f32; 3],
@@ -663,6 +678,57 @@ fn is_zero_vec3(v: &[f32; 3]) -> bool {
 
 fn is_zero_f32(v: &f32) -> bool {
     *v == 0.0
+}
+
+fn default_coordinate_preset() -> String {
+    "yup".to_string()
+}
+fn is_default_coordinate_preset(s: &str) -> bool {
+    s == "yup"
+}
+fn default_winding_order() -> String {
+    "ccw".to_string()
+}
+fn is_default_winding_order(s: &str) -> bool {
+    s == "ccw"
+}
+
+fn parse_coordinate_preset(s: &str) -> CoordinatePreset {
+    match s.to_lowercase().as_str() {
+        "yup" | "y-up" | "y_up" => CoordinatePreset::YUp,
+        "zup" | "z-up" | "z_up" => CoordinatePreset::ZUp,
+        "custom" => CoordinatePreset::Custom,
+        _ => {
+            log::warn!("Unknown coordinate preset '{}', defaulting to Y-up", s);
+            CoordinatePreset::YUp
+        }
+    }
+}
+
+fn format_coordinate_preset(p: &CoordinatePreset) -> String {
+    match p {
+        CoordinatePreset::YUp => "yup".to_string(),
+        CoordinatePreset::ZUp => "zup".to_string(),
+        CoordinatePreset::Custom => "custom".to_string(),
+    }
+}
+
+fn parse_winding_order(s: &str) -> WindingOrder {
+    match s.to_lowercase().as_str() {
+        "ccw" => WindingOrder::CCW,
+        "cw" => WindingOrder::CW,
+        _ => {
+            log::warn!("Unknown winding order '{}', defaulting to CCW", s);
+            WindingOrder::CCW
+        }
+    }
+}
+
+fn format_winding_order(w: &WindingOrder) -> String {
+    match w {
+        WindingOrder::CCW => "ccw".to_string(),
+        WindingOrder::CW => "cw".to_string(),
+    }
 }
 
 fn default_material_mode() -> String {
@@ -806,6 +872,8 @@ impl From<&EnvironmentObject> for EnvironmentObjectSettings {
             textures_enabled: obj.textures_enabled,
             flip_normals: obj.flip_normals,
             double_sided: obj.double_sided,
+            coordinate_preset: format_coordinate_preset(&obj.coordinate_preset),
+            winding_order: format_winding_order(&obj.winding_order),
             position: obj.transform.position,
             rotation_degrees: obj.transform.rotation_degrees,
             scale: obj.transform.scale,
@@ -845,6 +913,8 @@ impl From<&EnvironmentObjectSettings> for EnvironmentObject {
             textures_enabled: s.textures_enabled,
             flip_normals: s.flip_normals,
             double_sided: s.double_sided,
+            coordinate_preset: parse_coordinate_preset(&s.coordinate_preset),
+            winding_order: parse_winding_order(&s.winding_order),
             material_override: parse_material_override(
                 &s.material_mode,
                 s.material_color,
@@ -2425,6 +2495,8 @@ rotation = [0.0, 0.0, 0.0]
             }],
             flip_normals: false,
             double_sided: false,
+            coordinate_preset: default_coordinate_preset(),
+            winding_order: default_winding_order(),
             material_mode: default_material_mode(),
             material_color: default_material_color(),
             material_roughness: default_material_roughness(),
@@ -2554,6 +2626,8 @@ rotation = [0.0, 0.0, 0.0]
             mesh_visibility: vec![],
             flip_normals: false,
             double_sided: false,
+            coordinate_preset: default_coordinate_preset(),
+            winding_order: default_winding_order(),
             material_mode: default_material_mode(),
             material_color: default_material_color(),
             material_roughness: default_material_roughness(),

@@ -1,7 +1,45 @@
 //! Coordinate system handling for different source orientations
 
 use bevy::prelude::*;
+use serde::{Deserialize, Serialize};
 use std::fmt;
+
+// ---------------------------------------------------------------------------
+// Winding order
+// ---------------------------------------------------------------------------
+
+/// Face winding order convention.
+///
+/// glTF mandates CCW.  Some exporters produce CW-wound meshes, which appear
+/// inside-out without correction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+pub enum WindingOrder {
+    /// Counter-clockwise (glTF default, Bevy default).
+    #[default]
+    CCW,
+    /// Clockwise — normals need flipping to render correctly.
+    CW,
+}
+
+impl WindingOrder {
+    /// Returns `true` when normals should be flipped to match Bevy's CCW expectation.
+    pub fn needs_flip(self) -> bool {
+        matches!(self, Self::CW)
+    }
+}
+
+impl fmt::Display for WindingOrder {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::CCW => write!(f, "CCW"),
+            Self::CW => write!(f, "CW"),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Source orientation
+// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Resource)]
 pub enum SourceOrientation {
@@ -80,6 +118,13 @@ impl fmt::Display for SourceOrientation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_winding_order_defaults_to_ccw() {
+        assert_eq!(WindingOrder::default(), WindingOrder::CCW);
+        assert!(!WindingOrder::CCW.needs_flip());
+        assert!(WindingOrder::CW.needs_flip());
+    }
 
     #[test]
     fn test_parse_orientation() {

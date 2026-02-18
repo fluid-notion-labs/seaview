@@ -34,11 +34,13 @@ use crate::app::environment_objects::{EnvironmentObjectStoreRes, ImportEnvironme
 use crate::app::systems::bvh_gizmos::BvhGizmoConfig;
 use crate::app::systems::diagnostics::RenderingStats;
 use crate::app::ui::state::{MaterialConfig, RenderConfig, UiState};
+use crate::lib::coordinates::SourceOrientation;
 use crate::lib::lighting::{
     EnvironmentLightConfig, EnvironmentMapCatalog, EnvironmentMapConfig, LightingRig,
 };
 use crate::lib::mesh_info::MeshDimensions;
 use crate::lib::sequence::loader::spatial_index::SpatialIndex;
+use crate::lib::sequence::loader::LoaderConfig;
 use crate::lib::sequence::FrameStore;
 
 // ---------------------------------------------------------------------------
@@ -61,6 +63,8 @@ pub struct EnvironmentPanelParams<'w, 's> {
     bvh_config: Option<ResMut<'w, BvhGizmoConfig>>,
     diagnostics: Res<'w, DiagnosticsStore>,
     rendering_stats: Res<'w, RenderingStats>,
+    source_orientation: ResMut<'w, SourceOrientation>,
+    loader_config: ResMut<'w, LoaderConfig>,
 }
 
 /// Environment-objects resources (file dialog, store, import events).
@@ -229,6 +233,46 @@ pub fn environment_panel_system(
                         &mut panel.render_config,
                         &panel.frame_store,
                     );
+
+                    ui.add_space(5.0);
+
+                    // ── Source Coordinates ──────────────────────────────
+                    egui::CollapsingHeader::new("Source Coordinates")
+                        .default_open(false)
+                        .show(ui, |ui| {
+                            ui.label(
+                                egui::RichText::new(
+                                    "Coordinate system for mesh sequences. \
+                                     Changes apply on next load.",
+                                )
+                                .small()
+                                .color(egui::Color32::from_gray(120)),
+                            );
+                            ui.add_space(2.0);
+
+                            let current = *panel.source_orientation;
+                            let current_label = current.description();
+
+                            egui::ComboBox::from_id_salt("source_orientation")
+                                .width(ui.available_width() - 4.0)
+                                .selected_text(current_label)
+                                .show_ui(ui, |ui| {
+                                    for (value, label) in [
+                                        (SourceOrientation::YUp, "Y-up (Bevy default)"),
+                                        (SourceOrientation::ZUp, "Z-up (CAD / GIS)"),
+                                        (SourceOrientation::FluidX3D, "FluidX3D"),
+                                    ] {
+                                        let is_selected = current == value;
+                                        if ui.selectable_label(is_selected, label).clicked()
+                                            && !is_selected
+                                        {
+                                            *panel.source_orientation = value;
+                                            panel.loader_config.coord_transform =
+                                                value.to_transform();
+                                        }
+                                    }
+                                });
+                        });
 
                     ui.add_space(5.0);
 

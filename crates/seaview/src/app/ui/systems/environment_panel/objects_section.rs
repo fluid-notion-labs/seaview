@@ -20,8 +20,10 @@ use std::sync::mpsc;
 use bevy_egui::egui;
 
 use crate::app::environment_objects::EnvironmentObjectStoreRes;
+use crate::lib::coordinates::WindingOrder;
 use crate::lib::environment_objects::{
-    AxisSign, CustomMaterial, EnvironmentObjectId, MaterialOverride, MaterialPreset,
+    AxisSign, CoordinatePreset, CustomMaterial, EnvironmentObjectId, MaterialOverride,
+    MaterialPreset,
 };
 
 // ---------------------------------------------------------------------------
@@ -205,6 +207,53 @@ pub fn render_objects_section(
                             .show(ui, |ui| {
                                 mutated |= render_transform_controls(ui, &mut obj.transform);
                             });
+
+                        // ── Coordinate Preset + Winding Order ──────
+                        ui.horizontal(|ui| {
+                            ui.label("Coords");
+                            egui::ComboBox::from_id_salt(header_id.with("coord_preset"))
+                                .width(140.0)
+                                .selected_text(obj.coordinate_preset.label())
+                                .show_ui(ui, |ui| {
+                                    for preset in CoordinatePreset::ALL {
+                                        let is_selected = obj.coordinate_preset == *preset;
+                                        if ui
+                                            .selectable_label(is_selected, preset.label())
+                                            .clicked()
+                                            && !is_selected
+                                        {
+                                            obj.coordinate_preset = *preset;
+                                            // Auto-set swizzle when a non-Custom preset is chosen.
+                                            if let Some(swizzle) = preset.to_swizzle() {
+                                                obj.swizzle = swizzle;
+                                            }
+                                            mutated = true;
+                                        }
+                                    }
+                                });
+                        });
+
+                        ui.horizontal(|ui| {
+                            ui.label("Winding");
+                            let mut is_cw = obj.winding_order == WindingOrder::CW;
+                            if ui
+                                .checkbox(&mut is_cw, "Clockwise (CW)")
+                                .on_hover_text(
+                                    "Check if mesh faces appear inside-out. \
+                                     glTF default is CCW.",
+                                )
+                                .changed()
+                            {
+                                obj.winding_order = if is_cw {
+                                    WindingOrder::CW
+                                } else {
+                                    WindingOrder::CCW
+                                };
+                                // Auto-flip normals to match winding.
+                                obj.flip_normals = obj.winding_order.needs_flip();
+                                mutated = true;
+                            }
+                        });
 
                         // ── Flip Axes ──────────────────────────────
                         ui.horizontal(|ui| {
