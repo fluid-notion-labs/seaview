@@ -6,6 +6,7 @@
 pub mod lib {
     pub mod coordinates;
     pub mod environment_objects;
+    pub mod fade;
     pub mod global_settings;
     pub mod lighting;
     pub mod memory_budget;
@@ -47,6 +48,7 @@ pub use lib::sequence::{
 pub use lib::environment_objects::{
     EnvironmentObject, EnvironmentObjectId, EnvironmentObjectStore, MeshEntry, Transform3D,
 };
+pub use lib::fade::{format_relative_time, FadeEffect};
 pub use lib::session::{self, Session, SessionManager, SessionPlugin};
 pub use lib::spatial::{BvhNodeAabb, PointProjection, RayHit, SpatialMesh, SpatialMeshError};
 pub use lib::toast::{Toast, ToastLevel, ToastQueue};

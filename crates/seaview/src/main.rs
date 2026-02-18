@@ -17,7 +17,8 @@ use seaview::app::systems::camera::{
     CenterOnMeshEvent, FpsCamera,
 };
 use seaview::app::systems::diagnostics::RenderingDiagnosticsPlugin;
-use seaview::app::ui::state::MaterialConfig;
+use seaview::app::ui::state::{MaterialConfig, UiState};
+use seaview::lib::fade::FadeEffect;
 
 use seaview::lib::coordinates::SourceOrientation;
 use seaview::lib::global_settings::GlobalSettings;
@@ -506,6 +507,8 @@ fn handle_save_view(
     watch_config: Res<WatchConfig>,
     timeline: Res<Timeline>,
     env_obj_store: Res<EnvironmentObjectStoreRes>,
+    mut ui_state: ResMut<UiState>,
+    time: Res<Time>,
 ) {
     for _event in save_events.read() {
         if let Ok(transform) = camera_query.single() {
@@ -538,6 +541,13 @@ fn handle_save_view(
 
             match settings_res.save() {
                 Ok(()) => {
+                    let now = time.elapsed_secs_f64();
+                    ui_state.last_saved_at = Some(now);
+                    // Fire a 10-second fade animation (or restart if already active)
+                    match ui_state.save_fade.as_mut() {
+                        Some(fade) => fade.restart(now),
+                        None => ui_state.save_fade = Some(FadeEffect::new(now, 10.0)),
+                    }
                     debug!(
                         "💾 View saved to seaview.toml (camera='{}', environment included)",
                         settings_res.settings.active_camera_name()

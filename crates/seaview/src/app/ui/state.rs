@@ -6,6 +6,7 @@
 use bevy::prelude::*;
 use uuid::Uuid;
 
+use crate::lib::fade::FadeEffect;
 use crate::lib::sequence::FrameStore;
 use crate::lib::toast::ToastQueue;
 
@@ -76,6 +77,14 @@ pub struct UiState {
     /// Monotonic clock for toast timestamps (seconds since app start).
     /// Updated each frame by a system with `Time` access.
     pub toast_clock: f64,
+
+    /// Timestamp (elapsed seconds since app start) of the last successful save.
+    /// `None` if no save has occurred yet this session.
+    pub last_saved_at: Option<f64>,
+
+    /// Fire-and-fade animation for the save indicator in the status bar.
+    /// Set on each successful save; expires after its duration.
+    pub save_fade: Option<FadeEffect>,
 }
 
 /// Which edge of the load section the user is dragging in the timeline UI
