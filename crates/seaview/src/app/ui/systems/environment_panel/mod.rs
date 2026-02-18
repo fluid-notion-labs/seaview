@@ -1,16 +1,11 @@
 //! Environment Panel — the primary left sidebar for Seaview
 //!
 //! This module implements the left side panel containing collapsible accordion
-//! sections for environment lighting, spot lights, material, rendering, and
-//! performance controls.
+//! sections for environment lighting, spot lights, material, rendering,
+//! performance controls, and environment objects.
 //!
 //! Each section is implemented in its own submodule and rendered as a plain
 //! function taking `&mut egui::Ui` plus the resources it needs.
-//!
-//! The **Environment Objects** section is rendered by a separate Bevy system
-//! (`environment_objects_panel_system`) to stay within Bevy's 16-parameter
-//! limit.  It writes into a shared `egui::SidePanel` using the same panel ID,
-//! which egui merges into a single visual panel.
 
 mod environment_light_section;
 mod lighting_section;
@@ -31,6 +26,7 @@ pub use spatial_section::render_spatial_section;
 use std::path::PathBuf;
 
 use bevy::diagnostic::DiagnosticsStore;
+use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 
@@ -46,32 +42,52 @@ use crate::lib::sequence::loader::spatial_index::SpatialIndex;
 use crate::lib::sequence::FrameStore;
 
 // ---------------------------------------------------------------------------
-// Panel system (everything except environment objects)
+// Bundled system params (keeps us under Bevy's 16-parameter limit)
 // ---------------------------------------------------------------------------
 
-/// System that renders the environment panel (left sidebar).
+/// Lighting, material, rendering, and performance resources.
+#[derive(SystemParam)]
+pub struct EnvironmentPanelParams<'w, 's> {
+    env_light_config: ResMut<'w, EnvironmentLightConfig>,
+    lighting_rig: ResMut<'w, LightingRig>,
+    gen_state: Local<'s, GenerateGroupState>,
+    material_config: ResMut<'w, MaterialConfig>,
+    render_config: ResMut<'w, RenderConfig>,
+    env_map_config: ResMut<'w, EnvironmentMapConfig>,
+    env_map_catalog: Res<'w, EnvironmentMapCatalog>,
+    mesh_dims: Res<'w, MeshDimensions>,
+    frame_store: Res<'w, FrameStore>,
+    spatial_index: Option<Res<'w, SpatialIndex>>,
+    bvh_config: Option<ResMut<'w, BvhGizmoConfig>>,
+    diagnostics: Res<'w, DiagnosticsStore>,
+    rendering_stats: Res<'w, RenderingStats>,
+}
+
+/// Environment-objects resources (file dialog, store, import events).
+#[derive(SystemParam)]
+pub struct EnvObjectParams<'w, 's> {
+    env_obj_store: ResMut<'w, EnvironmentObjectStoreRes>,
+    import_events: MessageWriter<'w, ImportEnvironmentObjectEvent>,
+    file_dialog_rx: Local<'s, Option<FileDialogReceiver>>,
+    objects_open: Local<'s, Option<bool>>,
+}
+
+// ---------------------------------------------------------------------------
+// Single unified panel system
+// ---------------------------------------------------------------------------
+
+/// System that renders the entire environment panel (left sidebar) in a single
+/// `SidePanel` + `ScrollArea`, including environment objects.
 ///
-/// Contains collapsible sections for Environment Light, Spot Lights, Material,
-/// Rendering, and Performance.
-///
-/// **Environment Objects** are rendered by [`environment_objects_panel_system`]
-/// which runs after this system and appends into the same egui panel.
+/// Previous versions split environment objects into a second system that
+/// re-entered the same panel ID.  That caused overlapping interaction rects
+/// and stolen mouse input.  Now everything lives in one system, with
+/// [`SystemParam`] bundles to stay within Bevy's tuple-size limits.
 pub fn environment_panel_system(
     mut contexts: EguiContexts,
     mut ui_state: ResMut<UiState>,
-    mut env_light_config: ResMut<EnvironmentLightConfig>,
-    mut lighting_rig: ResMut<LightingRig>,
-    mut gen_state: Local<GenerateGroupState>,
-    mut material_config: ResMut<MaterialConfig>,
-    mut render_config: ResMut<RenderConfig>,
-    mut env_map_config: ResMut<EnvironmentMapConfig>,
-    env_map_catalog: Res<EnvironmentMapCatalog>,
-    mesh_dims: Res<MeshDimensions>,
-    frame_store: Res<FrameStore>,
-    spatial_index: Option<Res<SpatialIndex>>,
-    mut bvh_config: Option<ResMut<BvhGizmoConfig>>,
-    diagnostics: Res<DiagnosticsStore>,
-    rendering_stats: Res<RenderingStats>,
+    mut panel: EnvironmentPanelParams,
+    mut env_objs: EnvObjectParams,
 ) {
     if !ui_state.show_environment_panel {
         return;
@@ -99,10 +115,10 @@ pub fn environment_panel_system(
                         .default_open(false)
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
-                                ui.checkbox(&mut env_map_config.enabled, "Enabled");
+                                ui.checkbox(&mut panel.env_map_config.enabled, "Enabled");
                             });
 
-                            if !env_map_config.enabled {
+                            if !panel.env_map_config.enabled {
                                 ui.label(
                                     egui::RichText::new("IBL reflections and skybox are off")
                                         .small()
@@ -110,9 +126,10 @@ pub fn environment_panel_system(
                                 );
                             } else {
                                 // Map selector
-                                let selected_name = env_map_config
+                                let selected_name = panel
+                                    .env_map_config
                                     .selected
-                                    .and_then(|i| env_map_catalog.entries.get(i))
+                                    .and_then(|i| panel.env_map_catalog.entries.get(i))
                                     .map(|e| e.name.as_str())
                                     .unwrap_or("None");
 
@@ -123,21 +140,22 @@ pub fn environment_panel_system(
                                         .selected_text(selected_name)
                                         .show_ui(ui, |ui| {
                                             // "None" option
-                                            let is_none = env_map_config.selected.is_none();
+                                            let is_none = panel.env_map_config.selected.is_none();
                                             if ui.selectable_label(is_none, "None").clicked() {
-                                                env_map_config.selected = None;
+                                                panel.env_map_config.selected = None;
                                             }
                                             ui.separator();
                                             for (idx, entry) in
-                                                env_map_catalog.entries.iter().enumerate()
+                                                panel.env_map_catalog.entries.iter().enumerate()
                                             {
-                                                let selected = env_map_config.selected == Some(idx);
+                                                let selected =
+                                                    panel.env_map_config.selected == Some(idx);
                                                 if ui
                                                     .selectable_label(selected, &entry.name)
                                                     .clicked()
                                                     && !selected
                                                 {
-                                                    env_map_config.selected = Some(idx);
+                                                    panel.env_map_config.selected = Some(idx);
                                                 }
                                             }
                                         });
@@ -147,15 +165,18 @@ pub fn environment_panel_system(
 
                                 // Intensity slider
                                 ui.add(
-                                    egui::Slider::new(&mut env_map_config.intensity, 0.0..=5000.0)
-                                        .text("IBL intensity")
-                                        .logarithmic(true),
+                                    egui::Slider::new(
+                                        &mut panel.env_map_config.intensity,
+                                        0.0..=5000.0,
+                                    )
+                                    .text("IBL intensity")
+                                    .logarithmic(true),
                                 );
 
                                 // Skybox brightness slider
                                 ui.add(
                                     egui::Slider::new(
-                                        &mut env_map_config.skybox_brightness,
+                                        &mut panel.env_map_config.skybox_brightness,
                                         0.0..=5000.0,
                                     )
                                     .text("Sky brightness")
@@ -171,7 +192,7 @@ pub fn environment_panel_system(
                         .default_open(ui_state.collapsible.environment_light_open)
                         .show(ui, |ui| {
                             ui_state.collapsible.environment_light_open = true;
-                            render_environment_light_controls(ui, &mut env_light_config);
+                            render_environment_light_controls(ui, &mut panel.env_light_config);
                         });
 
                     ui.add_space(5.0);
@@ -183,9 +204,9 @@ pub fn environment_panel_system(
                             ui_state.collapsible.lighting_rig_open = true;
                             render_lighting_controls(
                                 ui,
-                                &mut lighting_rig,
-                                &mesh_dims,
-                                &mut gen_state,
+                                &mut panel.lighting_rig,
+                                &panel.mesh_dims,
+                                &mut panel.gen_state,
                             );
                         });
 
@@ -196,90 +217,94 @@ pub fn environment_panel_system(
                         .default_open(ui_state.collapsible.material_open)
                         .show(ui, |ui| {
                             ui_state.collapsible.material_open = true;
-                            render_material_controls(ui, &mut material_config);
+                            render_material_controls(ui, &mut panel.material_config);
                         });
 
                     ui.add_space(5.0);
 
                     // ── Rendering ──────────────────────────────────────
-                    render_rendering_section(ui, &mut ui_state, &mut render_config, &frame_store);
+                    render_rendering_section(
+                        ui,
+                        &mut ui_state,
+                        &mut panel.render_config,
+                        &panel.frame_store,
+                    );
 
                     ui.add_space(5.0);
 
                     // ── Spatial (only when SpatialAcceleratorPlugin is loaded) ──
-                    if let (Some(si), Some(mut bvh)) = (spatial_index.as_ref(), bvh_config.as_mut())
+                    if let (Some(si), Some(mut bvh)) =
+                        (panel.spatial_index.as_ref(), panel.bvh_config.as_mut())
                     {
-                        render_spatial_section(ui, &mut ui_state, &frame_store, &si, &mut bvh);
+                        render_spatial_section(
+                            ui,
+                            &mut ui_state,
+                            &panel.frame_store,
+                            &si,
+                            &mut bvh,
+                        );
                     }
 
                     ui.add_space(5.0);
 
                     // ── Performance ────────────────────────────────────
-                    render_perf_section(ui, &mut ui_state, &diagnostics, &rendering_stats);
+                    render_perf_section(
+                        ui,
+                        &mut ui_state,
+                        &panel.diagnostics,
+                        &panel.rendering_stats,
+                    );
+
+                    ui.add_space(5.0);
+
+                    // ── Environment Objects ────────────────────────────
+                    {
+                        // Initialise the local open state from the collapsible
+                        // state on first run.
+                        if env_objs.objects_open.is_none() {
+                            *env_objs.objects_open =
+                                Some(ui_state.collapsible.environment_objects_open);
+                        }
+                        let open = env_objs.objects_open.as_mut().unwrap();
+
+                        let mut pending_imports: Vec<PathBuf> = Vec::new();
+
+                        render_objects_section(
+                            ui,
+                            &mut env_objs.env_obj_store,
+                            open,
+                            &mut pending_imports,
+                            &mut env_objs.file_dialog_rx,
+                        );
+
+                        // Fire import messages for any paths the file dialog
+                        // returned.
+                        for path in pending_imports {
+                            env_objs
+                                .import_events
+                                .write(ImportEnvironmentObjectEvent { path });
+                        }
+                    }
                 });
         });
 }
 
 // ---------------------------------------------------------------------------
-// Environment objects panel system (separate to stay under param limit)
+// Kept for backward compatibility — registered as a no-op system
 // ---------------------------------------------------------------------------
 
-/// System that renders the Environment Objects section inside the environment
-/// panel.
-///
-/// Runs alongside [`environment_panel_system`].  We re-enter the same
-/// `SidePanel` ID; egui appends our content to the existing panel area.
-///
-/// Pending file-dialog paths are converted to [`ImportEnvironmentObjectEvent`]
-/// messages so the app-layer plugin can handle the actual spawning.
+/// Stub — previously rendered env objects in a separate panel call.
+/// Now a no-op since everything is in [`environment_panel_system`].
 pub fn environment_objects_panel_system(
-    mut contexts: EguiContexts,
-    ui_state: Res<UiState>,
-    mut env_obj_store: ResMut<EnvironmentObjectStoreRes>,
-    mut import_events: MessageWriter<ImportEnvironmentObjectEvent>,
-    mut file_dialog_rx: Local<Option<FileDialogReceiver>>,
-    mut objects_open: Local<Option<bool>>,
+    _contexts: EguiContexts,
+    _ui_state: Res<UiState>,
+    _env_obj_store: ResMut<EnvironmentObjectStoreRes>,
+    _import_events: MessageWriter<ImportEnvironmentObjectEvent>,
+    _file_dialog_rx: Local<Option<FileDialogReceiver>>,
+    _objects_open: Local<Option<bool>>,
 ) {
-    if !ui_state.show_environment_panel {
-        return;
-    }
-
-    // Initialise the local open state from the collapsible state on first run.
-    if objects_open.is_none() {
-        *objects_open = Some(ui_state.collapsible.environment_objects_open);
-    }
-    let open = objects_open.as_mut().unwrap();
-
-    let ctx = contexts.ctx_mut().unwrap();
-
-    // Re-enter the same side panel.  egui merges content into the panel that
-    // was already created by `environment_panel_system`.
-    egui::SidePanel::left("environment_panel")
-        .resizable(true)
-        .show(ctx, |ui| {
-            egui::ScrollArea::vertical()
-                .id_salt("env_panel_scroll")
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    ui.add_space(5.0);
-
-                    // ── Environment Objects ────────────────────────────
-                    let mut pending_imports: Vec<PathBuf> = Vec::new();
-
-                    render_objects_section(
-                        ui,
-                        &mut env_obj_store,
-                        open,
-                        &mut pending_imports,
-                        &mut file_dialog_rx,
-                    );
-
-                    // Fire import messages for any paths the file dialog returned.
-                    for path in pending_imports {
-                        import_events.write(ImportEnvironmentObjectEvent { path });
-                    }
-                });
-        });
+    // No-op: environment objects are now rendered inside
+    // environment_panel_system via the unified scroll area.
 }
 
 /// Stub — session deletion is no longer exposed in the UI.
