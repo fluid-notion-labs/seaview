@@ -6,7 +6,7 @@ use std::path::PathBuf;
 #[command(name = "seaview")]
 #[command(about = "A 3D mesh viewer for STL, OBJ, GLB, and glTF files", long_about = None)]
 pub struct Args {
-    /// Path to a mesh file or directory containing a sequence
+    /// Path to load (heuristic: directory = simulation sequence, file = environment object)
     pub path: Option<PathBuf>,
 
     /// Enable verbose output
@@ -24,6 +24,14 @@ pub struct Args {
     /// Watch directory for new frames and auto-load them
     #[arg(short = 'w', long)]
     pub watch: bool,
+
+    /// Load a directory as a simulation sequence (overrides heuristic)
+    #[arg(long, value_name = "DIR")]
+    pub load_sim: Option<PathBuf>,
+
+    /// Load a file as a landscape/environment object (overrides heuristic)
+    #[arg(long, value_name = "FILE")]
+    pub load_landscape: Option<PathBuf>,
 }
 
 impl Args {

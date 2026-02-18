@@ -22,8 +22,8 @@ use seaview::app::ui::state::MaterialConfig;
 use seaview::lib::coordinates::SourceOrientation;
 use seaview::lib::global_settings::GlobalSettings;
 use seaview::lib::sequence::{
-    discovery::DiscoverSequenceRequest, LoadSection, LoadSequenceRequest, LoadingPhase,
-    LoadingPhaseState, SequencePlugin, Timeline, WatchConfig,
+    discovery::DiscoverSequenceRequest, LoadSection, LoadingPhase, LoadingPhaseState,
+    SequencePlugin, Timeline, WatchConfig,
 };
 use seaview::lib::settings::{resolve_settings_dir, SaveViewEvent, Settings, SettingsResource};
 
@@ -124,44 +124,27 @@ fn main() {
 
     let mut app = App::new();
 
-    // Register asset source for the sequence directory if provided
-    if let Some(ref path) = args.path {
-        // Canonicalize to get absolute path
-        let canonical_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-
-        if canonical_path.is_dir() {
-            let path_str = canonical_path.to_string_lossy().to_string();
-            debug!(
-                "Registering asset source 'seq' for sequence directory: {:?}",
-                canonical_path
-            );
-            debug!("Asset source path: {}", path_str);
-            app.register_asset_source("seq", AssetSourceBuilder::platform_default(&path_str, None));
-            debug!("Asset source 'seq' registered successfully");
-        } else if canonical_path.is_file() {
-            // Register parent directory for single file loads
-            if let Some(parent) = canonical_path.parent() {
-                let parent_str = parent.to_string_lossy().to_string();
-                debug!(
-                    "Registering asset source 'seq' for file directory: {:?}",
-                    parent
-                );
-                debug!("Asset source path: {}", parent_str);
-                app.register_asset_source(
-                    "seq",
-                    AssetSourceBuilder::platform_default(&parent_str, None),
-                );
-                debug!("Asset source 'seq' registered successfully");
-            } else {
-                error!(
-                    "Could not get parent directory for file: {:?}",
-                    canonical_path
-                );
-            }
+    // Determine the sequence directory for the 'seq' asset source.
+    // Priority: --load-sim > positional path (if directory) > none
+    let seq_dir = args.load_sim.as_ref().or(args.path.as_ref()).and_then(|p| {
+        let canonical = p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+        if canonical.is_dir() {
+            Some(canonical)
+        } else {
+            None
         }
+    });
+
+    if let Some(ref dir) = seq_dir {
+        let path_str = dir.to_string_lossy().to_string();
+        debug!(
+            "Registering asset source 'seq' for sequence directory: {:?}",
+            dir
+        );
+        app.register_asset_source("seq", AssetSourceBuilder::platform_default(&path_str, None));
+        debug!("Asset source 'seq' registered successfully");
     } else {
-        warn!("No path provided - asset source 'seq' not registered");
-        warn!("Provide a path via CLI to load meshes");
+        debug!("No sequence directory — asset source 'seq' not registered");
     }
 
     // Register "env" asset source pointing to filesystem root so environment
@@ -570,66 +553,77 @@ fn handle_save_view(
     }
 }
 
-/// System that handles the input path and decides whether to load a single file or discover a sequence
+/// System that handles input paths and decides how to load them.
+///
+/// Heuristics (when no explicit flag is used):
+///   - **Directory** → simulation sequence (discover numbered mesh files)
+///   - **File** → environment object (static landscape / prop)
+///
+/// Explicit flags override heuristics:
+///   - `--load-sim <dir>` → always load as simulation sequence
+///   - `--load-landscape <file>` → always load as environment object
 fn handle_input_path(
     mut commands: Commands,
     args: Res<Args>,
     source_orientation: Res<SourceOrientation>,
-    mut load_events: MessageWriter<LoadSequenceRequest>,
-    mut sequence_manager: ResMut<seaview::sequence::SequenceManager>,
+    mut import_events: MessageWriter<
+        seaview::app::environment_objects::ImportEnvironmentObjectEvent,
+    >,
 ) {
-    if let Some(path) = &args.path {
-        if path.is_dir() {
-            // It's a directory - trigger sequence discovery
-            debug!("Discovering sequences in directory: {:?}", path);
+    // --load-sim: explicit simulation sequence
+    if let Some(ref sim_dir) = args.load_sim {
+        if sim_dir.is_dir() {
+            info!("Loading simulation sequence from: {:?}", sim_dir);
             commands.spawn(DiscoverSequenceRequest {
-                directory: path.clone(),
+                directory: sim_dir.clone(),
                 recursive: false,
                 source_orientation: *source_orientation,
             });
+        } else {
+            error!("--load-sim path is not a directory: {:?}", sim_dir);
+        }
+    }
+
+    // --load-landscape: explicit environment object
+    if let Some(ref landscape_file) = args.load_landscape {
+        if landscape_file.is_file() {
+            info!(
+                "Loading landscape as environment object: {:?}",
+                landscape_file
+            );
+            let canonical = landscape_file
+                .canonicalize()
+                .unwrap_or_else(|_| landscape_file.to_path_buf());
+            import_events.write(
+                seaview::app::environment_objects::ImportEnvironmentObjectEvent { path: canonical },
+            );
+        } else {
+            error!("--load-landscape path is not a file: {:?}", landscape_file);
+        }
+    }
+
+    // Positional path: heuristic — directory = sim, file = env object
+    if let Some(ref path) = args.path {
+        if path.is_dir() {
+            // Skip if --load-sim already provided the same or different dir
+            if args.load_sim.is_none() {
+                info!("Discovering sequences in directory: {:?}", path);
+                commands.spawn(DiscoverSequenceRequest {
+                    directory: path.clone(),
+                    recursive: false,
+                    source_orientation: *source_orientation,
+                });
+            }
         } else if path.is_file() {
-            // It's a single file - load it directly using the sequence loader
-            let ext = path
-                .extension()
-                .and_then(|e| e.to_str())
-                .map(|s| s.to_lowercase())
-                .unwrap_or_default();
-
-            match ext.as_str() {
-                "glb" | "gltf" | "stl" => {
-                    debug!("Loading single mesh file: {:?}", path);
-
-                    // Create a minimal sequence so coordinate transform is applied
-                    let filename = path
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("mesh")
-                        .to_string();
-                    let base_dir = path.parent().unwrap_or(path.as_path()).to_path_buf();
-
-                    let mut sequence = seaview::sequence::Sequence::new(
-                        filename.clone(),
-                        base_dir,
-                        "single_file".to_string(),
-                        *source_orientation,
-                    );
-                    sequence.add_frame(seaview::sequence::FrameInfo::new(path.clone(), 0));
-
-                    debug!(
-                        "Using coordinate system: {}",
-                        source_orientation.description()
-                    );
-                    sequence_manager.load_sequence(sequence);
-
-                    // Load as a single-frame "sequence"
-                    // Use the seq:// asset source that was registered at startup
-                    load_events.write(LoadSequenceRequest {
-                        frame_paths: vec![path.clone()],
-                    });
-                }
-                _ => {
-                    warn!("Unsupported file type '{}': {:?}", ext, path);
-                }
+            // Skip if --load-landscape already provided
+            if args.load_landscape.is_none() {
+                info!("Loading file as environment object: {:?}", path);
+                let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+                import_events.write(
+                    seaview::app::environment_objects::ImportEnvironmentObjectEvent {
+                        path: canonical,
+                    },
+                );
             }
         } else {
             error!("Path does not exist: {:?}", path);
