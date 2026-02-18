@@ -1,39 +1,32 @@
 //! Menu bar system for Seaview
 //!
 //! This module implements the top menu bar with File, View, and Help menus.
-//! Also handles global keyboard shortcuts (Ctrl+S, Ctrl+Shift+W) at the egui
-//! level so they work even when an egui widget has focus.
+//!
+//! Global keyboard shortcuts (Ctrl+S, Ctrl+Shift+W, etc.) are handled by the
+//! action system (`app/input.rs`) — not here.
 
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 
+use crate::app::input::ActionStateRes;
 use crate::app::ui::state::{RenderConfig, UiState};
-use crate::lib::settings::SaveViewEvent;
+use crate::lib::actions::Action;
 
 /// System that renders the top menu bar
 pub fn menu_bar_system(
     mut contexts: EguiContexts,
     mut ui_state: ResMut<UiState>,
     mut exit: MessageWriter<AppExit>,
-    mut save_view_events: MessageWriter<SaveViewEvent>,
+    actions: Res<ActionStateRes>,
     mut render_config: ResMut<RenderConfig>,
 ) {
     let ctx = contexts.ctx_mut().unwrap();
 
-    // Global keyboard shortcut: Ctrl+S to save view.
-    // Checked at the egui level so it works even when an egui widget has
-    // focus (sliders, text fields, etc.) — Bevy's ButtonInput<KeyCode>
-    // doesn't see key events that egui absorbs.
-    if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::S)) {
-        save_view_events.write(SaveViewEvent);
-        debug!("💾 Save view triggered via Ctrl+S (egui)");
-    }
-
-    // Global keyboard shortcut: Ctrl+Shift+W to toggle wireframe overlay.
-    if ctx.input(|i| i.modifiers.ctrl && i.modifiers.shift && i.key_pressed(egui::Key::W)) {
+    // Wireframe toggle — action system fires ToggleWireframe (Ctrl+Shift+W)
+    if actions.0.just_activated(Action::ToggleWireframe) {
         render_config.wireframe_enabled = !render_config.wireframe_enabled;
         debug!(
-            "🔲 Wireframe overlay {} via Ctrl+Shift+W (egui)",
+            "🔲 Wireframe overlay {}",
             if render_config.wireframe_enabled {
                 "enabled"
             } else {

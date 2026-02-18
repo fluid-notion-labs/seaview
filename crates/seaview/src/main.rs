@@ -7,17 +7,19 @@ use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 use seaview::app::environment_objects::{EnvironmentObjectPlugin, EnvironmentObjectStoreRes};
 use seaview::lib::lighting::{EnvironmentLightConfig, GlobalLight};
 use seaview::{
-    MemoryBudgetPlugin, MeshDimensions, MeshInfoPlugin, NightLightingPlugin, SeaviewUiPlugin,
-    SessionPlugin,
+    InputActionPlugin, MemoryBudgetPlugin, MeshDimensions, MeshInfoPlugin, NightLightingPlugin,
+    SeaviewUiPlugin, SessionPlugin,
 };
 
 use seaview::app::cli::Args;
+use seaview::app::input::ActionStateRes;
 use seaview::app::systems::camera::{
     camera_controller, cursor_grab_system, handle_center_on_mesh, keyboard_center_on_mesh,
     CenterOnMeshEvent, FpsCamera,
 };
 use seaview::app::systems::diagnostics::RenderingDiagnosticsPlugin;
 use seaview::app::ui::state::{MaterialConfig, UiState};
+use seaview::lib::actions::Action;
 use seaview::lib::fade::FadeEffect;
 
 use seaview::lib::coordinates::SourceOrientation;
@@ -167,7 +169,8 @@ fn main() {
         .add_plugins(NightLightingPlugin)
         .add_plugins(MeshInfoPlugin)
         .add_plugins(EnvironmentObjectPlugin)
-        .add_plugins(seaview::app::systems::AppSystemsPlugin);
+        .add_plugins(seaview::app::systems::AppSystemsPlugin)
+        .add_plugins(InputActionPlugin);
     #[cfg(feature = "spatial")]
     app.add_plugins(seaview::app::spatial_accelerator::SpatialAcceleratorPlugin);
 
@@ -189,8 +192,12 @@ fn main() {
                 cursor_grab_system,
                 handle_center_on_mesh,
                 keyboard_center_on_mesh,
-                handle_save_view,
+                action_save_bridge,
             ),
+        )
+        .add_systems(
+            PostUpdate,
+            handle_save_view.after(bevy_egui::EguiPostUpdateSet::EndPass),
         )
         .run();
 }
@@ -494,7 +501,26 @@ fn restore_saved_sections(
 /// System that handles save view requests.
 ///
 /// Persists camera (under the active name), playback, coordinates,
+/// Bridge: when the action system fires [`Action::SaveView`], emit a
+/// [`SaveViewEvent`] so the save handler picks it up.
+///
+/// Runs in `Update` (same schedule as the action system's `PreUpdate` output).
+/// The UI save button also writes `SaveViewEvent` directly (in PostUpdate /
+/// EguiPrimaryContextPass). Both are consumed by [`handle_save_view`] which
+/// now runs in `PostUpdate` after the egui pass.
+fn action_save_bridge(actions: Res<ActionStateRes>, mut save_events: MessageWriter<SaveViewEvent>) {
+    if actions.0.just_activated(Action::SaveView) {
+        save_events.write(SaveViewEvent);
+        debug!("💾 Save view triggered via action system (Ctrl+S)");
+    }
+}
+
+/// Saves the current camera, playback, lighting, material, load-section,
 /// and environment (lighting + materials) to `seaview.toml`.
+///
+/// Runs in **`PostUpdate`** (after `EguiPostUpdateSet::EndPass`) so it sees
+/// `SaveViewEvent` messages from both the action system bridge (written in
+/// `Update`) *and* the UI save button (written during `EguiPrimaryContextPass`).
 fn handle_save_view(
     mut save_events: MessageReader<SaveViewEvent>,
     mut settings_res: ResMut<SettingsResource>,

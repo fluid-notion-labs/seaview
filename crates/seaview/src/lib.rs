@@ -4,6 +4,7 @@
 //! including network communication for real-time mesh streaming.
 
 pub mod lib {
+    pub mod actions;
     pub mod coordinates;
     pub mod environment_objects;
     pub mod fade;
@@ -22,6 +23,7 @@ pub mod lib {
 pub mod app {
     pub mod cli;
     pub mod environment_objects;
+    pub mod input;
     #[cfg(feature = "spatial")]
     pub mod spatial_accelerator;
     pub mod systems;
@@ -45,6 +47,8 @@ pub use lib::sequence::{
     distribute_sections, FrameInfo, LoadSection, Sequence, SpatialIndex, Timeline,
 };
 // Re-export loadfu's MeshFormat so bins and downstream crates can use it
+pub use app::input::{ActionStateRes, InputActionPlugin, InputMap};
+pub use lib::actions::{Action, ActionState};
 pub use lib::environment_objects::{
     EnvironmentObject, EnvironmentObjectId, EnvironmentObjectStore, MeshEntry, Transform3D,
 };

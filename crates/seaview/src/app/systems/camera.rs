@@ -9,7 +9,6 @@
 //! - Scroll wheel (while moving): Adjust base movement speed
 //! - Shift: 5× movement speed
 //! - Alt: 25× movement speed
-//! - Ctrl+key: reserved for shortcuts (no movement)
 //! - Ctrl+C: Center camera on mesh
 
 use bevy::input::mouse::{MouseMotion, MouseWheel};
@@ -17,6 +16,8 @@ use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 use bevy_egui::EguiContexts;
 
+use crate::app::input::ActionStateRes;
+use crate::lib::actions::Action;
 use crate::lib::mesh_info::MeshDimensions;
 use crate::lib::sequence::loader::LoaderConfig;
 
@@ -88,13 +89,12 @@ pub fn handle_center_on_mesh(
     }
 }
 
-/// System that fires [`CenterOnMeshEvent`] on Ctrl+C.
+/// System that fires [`CenterOnMeshEvent`] via the action system (Ctrl+C).
 pub fn keyboard_center_on_mesh(
-    keyboard: Res<ButtonInput<KeyCode>>,
+    actions: Res<ActionStateRes>,
     mut center_events: MessageWriter<CenterOnMeshEvent>,
 ) {
-    let ctrl = keyboard.pressed(KeyCode::ControlLeft) || keyboard.pressed(KeyCode::ControlRight);
-    if ctrl && keyboard.just_pressed(KeyCode::KeyC) {
+    if actions.0.just_activated(Action::CenterOnMesh) {
         center_events.write(CenterOnMeshEvent);
         debug!("🎯 Center camera triggered via Ctrl+C");
     }
@@ -107,12 +107,16 @@ const MIN_BASE_SPEED: f32 = 0.1;
 /// Maximum base movement speed.
 const MAX_BASE_SPEED: f32 = 10000.0;
 
-/// System that provides fps-style camera controls
+/// System that provides fps-style camera controls.
+///
+/// Reads [`ActionStateRes`] for movement and speed modifiers instead of raw
+/// `ButtonInput<KeyCode>`. Mouse look still reads `MouseMotion` directly
+/// (the action system doesn't abstract mouse deltas).
 pub fn camera_controller(
     time: Res<Time>,
     mut mouse_events: MessageReader<MouseMotion>,
     mut scroll_events: MessageReader<MouseWheel>,
-    input: Res<ButtonInput<KeyCode>>,
+    actions: Res<ActionStateRes>,
     mut query: Query<(&mut Transform, &mut FpsCamera), With<Camera>>,
 ) {
     let Ok((mut transform, mut fps_camera)) = query.single_mut() else {
@@ -159,24 +163,15 @@ pub fn camera_controller(
         }
     }
 
-    // Handle movement
-    let mut movement = Vec3::ZERO;
+    // ── Movement via ActionState ────────────────────────────────────
 
-    // When Ctrl is held, all letter keys are shortcuts (Ctrl+S = save,
-    // Ctrl+C = center, etc.) — skip camera movement entirely.
-    let ctrl = input.pressed(KeyCode::ControlLeft) || input.pressed(KeyCode::ControlRight);
-    if ctrl {
+    let (right, up, forward) = actions.0.movement_vector();
+    let moving = actions.0.is_moving();
+
+    // When not moving, no further processing needed
+    if !moving {
         scroll_events.clear();
-        return;
     }
-
-    // Check if any movement key is held
-    let moving = input.pressed(KeyCode::KeyW)
-        || input.pressed(KeyCode::KeyS)
-        || input.pressed(KeyCode::KeyA)
-        || input.pressed(KeyCode::KeyD)
-        || input.pressed(KeyCode::KeyE)
-        || input.pressed(KeyCode::KeyQ);
 
     // Scroll wheel adjusts base speed while moving
     if moving {
@@ -191,48 +186,15 @@ pub fn camera_controller(
             }
             debug!("🎚️ Base movement speed: {:.1}", fps_camera.speed);
         }
-    } else {
-        scroll_events.clear();
     }
 
-    let base_speed = fps_camera.speed;
+    let speed = fps_camera.speed * actions.0.speed_multiplier();
 
-    // Apply speed modifiers (stack on top of base speed)
-    // Alt: 25× | Shift: 5× | None: 1×
-    // (Ctrl is reserved for shortcuts and bails out above.)
-    let alt = input.pressed(KeyCode::AltLeft) || input.pressed(KeyCode::AltRight);
-    let shift = input.pressed(KeyCode::ShiftLeft) || input.pressed(KeyCode::ShiftRight);
-
-    let speed_modifier = if alt {
-        25.0
-    } else if shift {
-        5.0
-    } else {
-        1.0
-    };
-
-    let speed = base_speed * speed_modifier;
-
-    if input.pressed(KeyCode::KeyW) {
-        movement += *transform.forward();
-    }
-    if input.pressed(KeyCode::KeyS) {
-        movement -= *transform.forward();
-    }
-    if input.pressed(KeyCode::KeyA) {
-        movement -= *transform.right();
-    }
-    if input.pressed(KeyCode::KeyD) {
-        movement += *transform.right();
-    }
-
-    // Handle vertical movement
-    if input.pressed(KeyCode::KeyE) {
-        movement += Vec3::Y;
-    }
-    if input.pressed(KeyCode::KeyQ) {
-        movement -= Vec3::Y;
-    }
+    // Build world-space movement vector from the action system's abstract axes
+    let mut movement = Vec3::ZERO;
+    movement += *transform.forward() * forward;
+    movement += *transform.right() * right;
+    movement += Vec3::Y * up;
 
     // Apply movement
     if movement != Vec3::ZERO {
@@ -241,10 +203,13 @@ pub fn camera_controller(
     }
 }
 
+/// Reads [`ActionStateRes`] for cursor grab / release instead of raw keys.
+///
+/// When egui wants pointer or keyboard input we skip cursor grabbing so the
+/// UI remains usable.
 pub fn cursor_grab_system(
     mut cursor_query: Query<&mut CursorOptions, With<PrimaryWindow>>,
-    input: Res<ButtonInput<MouseButton>>,
-    key_input: Res<ButtonInput<KeyCode>>,
+    actions: Res<ActionStateRes>,
     mut camera_query: Query<&mut FpsCamera, With<Camera>>,
     mut egui_contexts: EguiContexts,
 ) {
@@ -263,14 +228,14 @@ pub fn cursor_grab_system(
         }
     }
 
-    if input.just_pressed(MouseButton::Left) {
+    if actions.0.just_activated(Action::GrabCursor) {
         // Grab cursor when left mouse button is pressed
         cursor.visible = false;
         cursor.grab_mode = CursorGrabMode::Locked;
         fps_camera.escape_mode = false;
     }
 
-    if key_input.just_pressed(KeyCode::Escape) {
+    if actions.0.just_activated(Action::ReleaseCursor) {
         // Release cursor when Escape is pressed
         cursor.visible = true;
         cursor.grab_mode = CursorGrabMode::None;

@@ -1,14 +1,15 @@
 //! Sequence playback keyboard controls
 //!
-//! Rebuilt as part of playback rebuild (commit 2).
-//! Single system: `handle_keyboard_playback` — keyboard input writes directly
-//! to `Timeline` for frame movement and `SequenceManager` for playback state.
-//! No events, no indirection.
+//! Rebuilt as part of playback rebuild (commit 2), migrated to action system
+//! (seaview-ihx). Single system: `handle_keyboard_playback` — reads
+//! [`ActionStateRes`] for most bindings, with digit-key percentage jumps
+//! still on raw `ButtonInput<KeyCode>` (not worth abstracting).
 
 use super::{SequenceManager, Timeline};
 use bevy::prelude::*;
 
-use crate::lib::settings::SaveViewEvent;
+use crate::app::input::ActionStateRes;
+use crate::lib::actions::Action;
 
 /// Plugin for sequence playback controls
 pub struct SequencePlaybackPlugin;
@@ -34,40 +35,29 @@ const REPEAT_DELAY: f32 = 0.5;
 /// Interval between repeated frame changes when holding (seconds)
 const REPEAT_INTERVAL: f32 = 0.05;
 
-/// Keyboard input → `Timeline` + `SequenceManager`. Frame movement goes
-/// through `Timeline`; play/pause and speed go through `SequenceManager`.
+/// Action state + raw digits → `Timeline` + `SequenceManager`.
 ///
-/// Key bindings:
-/// - **Space** — toggle play/pause
-/// - **← / →** — step backward/forward (hold to repeat)
-/// - **Home** — jump to first frame
-/// - **End** — jump to last frame
-/// - **+ / -** — increase/decrease playback speed
-/// - **1–0** — jump to 0%–90% of sequence
-/// - **Ctrl+S** — save view to seaview.toml
+/// Frame movement goes through `Timeline`; play/pause and speed go through
+/// `SequenceManager`. Most bindings come from [`ActionStateRes`]; digit keys
+/// (1–0 = jump to percentage) still read raw `ButtonInput<KeyCode>`.
+///
+/// **Ctrl+S (SaveView)** is handled by the action system → event bridge in
+/// `main.rs`, not here.
 pub(super) fn handle_keyboard_playback(
+    actions: Res<ActionStateRes>,
     keyboard: Res<ButtonInput<KeyCode>>,
     mut sm: ResMut<SequenceManager>,
     mut timeline: ResMut<Timeline>,
     time: Res<Time>,
     mut key_timer: Local<KeyHoldTimer>,
-    mut save_events: MessageWriter<SaveViewEvent>,
 ) {
-    // Ctrl+S — save view (must run before the early return so saving works
-    // even when no sequence is loaded, e.g. env-object-only sessions).
-    let ctrl = keyboard.pressed(KeyCode::ControlLeft) || keyboard.pressed(KeyCode::ControlRight);
-    if ctrl && keyboard.just_pressed(KeyCode::KeyS) {
-        save_events.write(SaveViewEvent);
-        debug!("💾 Save view triggered via Ctrl+S");
-    }
-
     // Only process playback input if we have a sequence loaded
     if timeline.total_frames == 0 {
         return;
     }
 
     // Space bar — toggle play/pause
-    if keyboard.just_pressed(KeyCode::Space) {
+    if actions.0.just_activated(Action::PlayPause) {
         sm.toggle_playback();
         debug!(
             "Playback {}",
@@ -75,35 +65,40 @@ pub(super) fn handle_keyboard_playback(
         );
     }
 
-    // Ctrl+Arrow — jump to start/end of timeline
-    if ctrl && keyboard.just_pressed(KeyCode::ArrowLeft) {
+    // Jump to start / end of timeline
+    if actions.0.just_activated(Action::JumpToStart) {
         sm.is_playing = false;
         timeline.jump_to_frame(0);
-        debug!("⏮ Jump to start via Ctrl+←");
+        debug!("⏮ Jump to start");
     }
-    if ctrl && keyboard.just_pressed(KeyCode::ArrowRight) {
+    if actions.0.just_activated(Action::JumpToEnd) {
         sm.is_playing = false;
         let last = timeline.total_frames.saturating_sub(1);
         timeline.jump_to_frame(last);
-        debug!("⏭ Jump to end via Ctrl+→");
+        debug!("⏭ Jump to end");
     }
 
-    // Arrow keys — step forward/backward with hold-to-repeat
-    let right = !ctrl && keyboard.pressed(KeyCode::ArrowRight);
-    let left = !ctrl && keyboard.pressed(KeyCode::ArrowLeft);
+    // Arrow keys — step forward/backward with hold-to-repeat.
+    // The action system provides `NextFrame` / `PrevFrame` as held actions
+    // (mapped from `pressed`, not `just_pressed`), so we implement the
+    // repeat-delay logic here using ActionState::active + just_activated.
+    let stepping = actions.0.active(Action::NextFrame) || actions.0.active(Action::PrevFrame);
 
-    if right || left {
+    if stepping {
         // Stop auto-playback when manually stepping
         if sm.is_playing {
             sm.is_playing = false;
         }
 
-        if keyboard.just_pressed(KeyCode::ArrowRight) || keyboard.just_pressed(KeyCode::ArrowLeft) {
+        let just_started = actions.0.just_activated(Action::NextFrame)
+            || actions.0.just_activated(Action::PrevFrame);
+
+        if just_started {
             // Reset timer and do immediate step
             key_timer.hold_time = 0.0;
             key_timer.last_repeat = 0.0;
 
-            if right {
+            if actions.0.active(Action::NextFrame) {
                 timeline.next_frame();
             } else {
                 timeline.previous_frame();
@@ -116,7 +111,7 @@ pub(super) fn handle_keyboard_playback(
                 let elapsed_since_repeat = key_timer.hold_time - key_timer.last_repeat;
                 if elapsed_since_repeat >= REPEAT_INTERVAL {
                     key_timer.last_repeat = key_timer.hold_time;
-                    if right {
+                    if actions.0.active(Action::NextFrame) {
                         timeline.next_frame();
                     } else {
                         timeline.previous_frame();
@@ -129,32 +124,21 @@ pub(super) fn handle_keyboard_playback(
         key_timer.last_repeat = 0.0;
     }
 
-    // Home — jump to first frame
-    if keyboard.just_pressed(KeyCode::Home) {
-        sm.is_playing = false;
-        timeline.jump_to_frame(0);
-    }
-
-    // End — jump to last frame
-    if keyboard.just_pressed(KeyCode::End) {
-        sm.is_playing = false;
-        let last = timeline.total_frames.saturating_sub(1);
-        timeline.jump_to_frame(last);
-    }
-
     // Plus / Minus — adjust speed
-    if keyboard.just_pressed(KeyCode::Equal) || keyboard.just_pressed(KeyCode::NumpadAdd) {
+    if actions.0.just_activated(Action::SpeedUp) {
         let new_speed = (sm.speed * 1.5).min(5.0);
         sm.set_speed(new_speed);
         debug!("Playback speed: {:.1}x", sm.speed);
     }
-    if keyboard.just_pressed(KeyCode::Minus) || keyboard.just_pressed(KeyCode::NumpadSubtract) {
+    if actions.0.just_activated(Action::SlowDown) {
         let new_speed = (sm.speed / 1.5).max(0.1);
         sm.set_speed(new_speed);
         debug!("Playback speed: {:.1}x", sm.speed);
     }
 
-    // Number keys — jump to percentage of sequence
+    // Number keys — jump to percentage of sequence.
+    // These stay on raw ButtonInput because adding 10 Action variants for
+    // digit-percentage jumps isn't worth the abstraction cost.
     let digit_keys: [(KeyCode, f32); 10] = [
         (KeyCode::Digit1, 0.0),
         (KeyCode::Digit2, 0.1),

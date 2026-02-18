@@ -418,16 +418,17 @@ fn try_match_patterns(
     None
 }
 
-/// System that handles Ctrl+W to toggle watch mode
+/// System that handles Ctrl+W to toggle watch mode (via action system).
 fn handle_keyboard_watch_toggle(
-    input: Res<ButtonInput<KeyCode>>,
+    actions: Res<crate::app::input::ActionStateRes>,
     mut watch_config: ResMut<WatchConfig>,
     mut loading_phase: ResMut<LoadingPhase>,
     watch_state: Res<WatchState>,
 ) {
-    let ctrl = input.pressed(KeyCode::ControlLeft) || input.pressed(KeyCode::ControlRight);
-
-    if ctrl && input.just_pressed(KeyCode::KeyW) {
+    if actions
+        .0
+        .just_activated(crate::lib::actions::Action::ToggleWatch)
+    {
         watch_config.enabled = !watch_config.enabled;
 
         if watch_config.enabled {
