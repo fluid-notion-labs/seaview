@@ -118,6 +118,10 @@ pub struct SpawnedObject {
     /// The last applied `MaterialOverride` — used to detect changes and avoid
     /// re-creating material assets every frame.
     pub last_applied_override: Option<MaterialOverride>,
+    /// Last applied flip_normals state.
+    pub last_flip_normals: Option<bool>,
+    /// Last applied double_sided state.
+    pub last_double_sided: Option<bool>,
 }
 
 /// Objects whose `Gltf` asset has loaded but whose scene hasn't been spawned yet.
@@ -242,6 +246,8 @@ fn spawn_new_objects(
                 meshes_discovered: false,
                 original_materials: Vec::new(),
                 last_applied_override: None,
+                last_flip_normals: None,
+                last_double_sided: None,
             },
         );
     }
@@ -510,9 +516,11 @@ fn sync_mesh_visibility(
     }
 }
 
-/// Sync material overrides from the store to mesh child entities.
+/// Sync material overrides, flip_normals, and double_sided from the store
+/// to mesh child entities.
 ///
-/// When `MaterialOverride::Default`, restores the original GLB materials.
+/// When `MaterialOverride::Default`, restores the original GLB materials
+/// (but still applies flip_normals / double_sided on top).
 /// For `Preset` or `Custom`, replaces all mesh materials with a flat
 /// `StandardMaterial` built from the resolved values.
 fn sync_materials(
@@ -539,19 +547,41 @@ fn sync_materials(
                 .collect();
         }
 
-        // Skip if nothing changed.
-        if state.last_applied_override.as_ref() == Some(&obj.material_override) {
+        let override_changed = state.last_applied_override.as_ref() != Some(&obj.material_override);
+        let normals_changed = state.last_flip_normals != Some(obj.flip_normals);
+        let sided_changed = state.last_double_sided != Some(obj.double_sided);
+
+        if !override_changed && !normals_changed && !sided_changed {
             continue;
         }
 
+        // Determine cull mode from flip_normals and double_sided.
+        let cull_mode = if obj.double_sided || obj.flip_normals {
+            None // Disable backface culling
+        } else {
+            Some(bevy::render::render_resource::Face::Back)
+        };
+
         match obj.material_override.resolve() {
             None => {
-                // Restore original materials.
+                // Restore original materials, but apply normals/sided overrides.
                 for (i, entity) in state.mesh_entities.iter().enumerate() {
                     if let Some(Some(original)) = state.original_materials.get(i) {
-                        commands
-                            .entity(*entity)
-                            .insert(MeshMaterial3d(original.clone()));
+                        if normals_changed || sided_changed {
+                            // Clone the original material and patch cull_mode +
+                            // double_sided.
+                            if let Some(orig_mat) = materials.get(original) {
+                                let mut patched = orig_mat.clone();
+                                patched.cull_mode = cull_mode;
+                                patched.double_sided = obj.flip_normals || obj.double_sided;
+                                let handle = materials.add(patched);
+                                commands.entity(*entity).insert(MeshMaterial3d(handle));
+                            }
+                        } else {
+                            commands
+                                .entity(*entity)
+                                .insert(MeshMaterial3d(original.clone()));
+                        }
                     }
                 }
             }
@@ -567,6 +597,8 @@ fn sync_materials(
                     } else {
                         AlphaMode::Opaque
                     },
+                    cull_mode,
+                    double_sided: obj.flip_normals || obj.double_sided,
                     ..default()
                 });
                 for entity in &state.mesh_entities {
@@ -578,6 +610,8 @@ fn sync_materials(
         }
 
         state.last_applied_override = Some(obj.material_override.clone());
+        state.last_flip_normals = Some(obj.flip_normals);
+        state.last_double_sided = Some(obj.double_sided);
     }
 }
 

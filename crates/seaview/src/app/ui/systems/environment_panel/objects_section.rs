@@ -165,6 +165,26 @@ pub fn render_objects_section(
                             );
                         });
 
+                        // ── Normals + Double Sided ─────────────────
+                        ui.horizontal(|ui| {
+                            if ui
+                                .checkbox(&mut obj.flip_normals, "Flip Normals")
+                                .on_hover_text("Invert face normals (fixes inside-out meshes)")
+                                .changed()
+                            {
+                                mutated = true;
+                            }
+                            if ui
+                                .checkbox(&mut obj.double_sided, "Double Sided")
+                                .on_hover_text(
+                                    "Render both sides of faces (disables backface culling)",
+                                )
+                                .changed()
+                            {
+                                mutated = true;
+                            }
+                        });
+
                         ui.add_space(2.0);
 
                         // ── Path (read-only) ───────────────────────

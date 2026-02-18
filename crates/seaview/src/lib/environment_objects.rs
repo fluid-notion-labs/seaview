@@ -392,6 +392,10 @@ pub struct EnvironmentObject {
     pub textures_enabled: bool,
     /// Material override (Default = keep GLB materials, Preset or Custom).
     pub material_override: MaterialOverride,
+    /// Flip face normals (fixes inside-out meshes).
+    pub flip_normals: bool,
+    /// Render both sides of faces (disables backface culling).
+    pub double_sided: bool,
     /// Object transform (position / rotation / scale).
     pub transform: Transform3D,
     /// Axis remapping applied *before* position/rotation/scale.
@@ -420,6 +424,8 @@ impl EnvironmentObject {
             visible: true,
             textures_enabled: true,
             material_override: MaterialOverride::default(),
+            flip_normals: false,
+            double_sided: false,
             transform: Transform3D::default(),
             swizzle: AxisSwizzle::default(),
             meshes: Vec::new(),
@@ -567,6 +573,8 @@ mod tests {
         assert!(obj.visible);
         assert!(obj.textures_enabled);
         assert!(obj.material_override.is_default());
+        assert!(!obj.flip_normals);
+        assert!(!obj.double_sided);
         assert!(obj.meshes.is_empty());
         assert!(obj.swizzle.is_identity());
     }

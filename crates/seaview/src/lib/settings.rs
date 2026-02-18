@@ -588,6 +588,14 @@ pub struct EnvironmentObjectSettings {
     #[serde(default = "default_true")]
     pub textures_enabled: bool,
 
+    /// Flip face normals (fixes inside-out meshes).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub flip_normals: bool,
+
+    /// Render both sides of faces (disables backface culling).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub double_sided: bool,
+
     /// World-space position `[x, y, z]`.
     #[serde(default, skip_serializing_if = "is_zero_vec3")]
     pub position: [f32; 3],
@@ -796,6 +804,8 @@ impl From<&EnvironmentObject> for EnvironmentObjectSettings {
             name: Some(obj.name.clone()),
             visible: obj.visible,
             textures_enabled: obj.textures_enabled,
+            flip_normals: obj.flip_normals,
+            double_sided: obj.double_sided,
             position: obj.transform.position,
             rotation_degrees: obj.transform.rotation_degrees,
             scale: obj.transform.scale,
@@ -833,6 +843,8 @@ impl From<&EnvironmentObjectSettings> for EnvironmentObject {
             path,
             visible: s.visible,
             textures_enabled: s.textures_enabled,
+            flip_normals: s.flip_normals,
+            double_sided: s.double_sided,
             material_override: parse_material_override(
                 &s.material_mode,
                 s.material_color,
@@ -2411,6 +2423,8 @@ rotation = [0.0, 0.0, 0.0]
                 name: "Roof".to_string(),
                 visible: false,
             }],
+            flip_normals: false,
+            double_sided: false,
             material_mode: default_material_mode(),
             material_color: default_material_color(),
             material_roughness: default_material_roughness(),
@@ -2538,6 +2552,8 @@ rotation = [0.0, 0.0, 0.0]
             rotation_degrees: [0.0; 3],
             scale: [1.0, 1.0, 1.0],
             mesh_visibility: vec![],
+            flip_normals: false,
+            double_sided: false,
             material_mode: default_material_mode(),
             material_color: default_material_color(),
             material_roughness: default_material_roughness(),
