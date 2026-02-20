@@ -33,7 +33,7 @@ use bevy_egui::{egui, EguiContexts};
 use crate::app::environment_objects::{EnvironmentObjectStoreRes, ImportEnvironmentObjectEvent};
 use crate::app::systems::bvh_gizmos::BvhGizmoConfig;
 use crate::app::systems::diagnostics::RenderingStats;
-use crate::app::ui::state::{MaterialConfig, RenderConfig, UiState};
+use crate::app::ui::state::{MaterialConfig, RenderConfig, SsrConfig, UiState};
 use crate::app::ui::widgets::{section_header, section_header_tracked};
 use crate::lib::coordinates::SourceOrientation;
 use crate::lib::lighting::{
@@ -56,6 +56,7 @@ pub struct EnvironmentPanelParams<'w, 's> {
     gen_state: Local<'s, GenerateGroupState>,
     material_config: ResMut<'w, MaterialConfig>,
     render_config: ResMut<'w, RenderConfig>,
+    ssr_config: ResMut<'w, SsrConfig>,
     env_map_config: ResMut<'w, EnvironmentMapConfig>,
     env_map_catalog: Res<'w, EnvironmentMapCatalog>,
     mesh_dims: Res<'w, MeshDimensions>,
@@ -238,6 +239,7 @@ pub fn environment_panel_system(
                         &mut ui_state,
                         &mut panel.render_config,
                         &panel.frame_store,
+                        &mut panel.ssr_config,
                     );
 
                     ui.add_space(5.0);

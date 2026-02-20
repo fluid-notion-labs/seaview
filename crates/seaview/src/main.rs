@@ -18,7 +18,7 @@ use seaview::app::systems::camera::{
     CenterOnMeshEvent, FpsCamera,
 };
 use seaview::app::systems::diagnostics::RenderingDiagnosticsPlugin;
-use seaview::app::ui::state::{MaterialConfig, UiState};
+use seaview::app::ui::state::{MaterialConfig, SsrConfig, UiState};
 use seaview::lib::actions::Action;
 use seaview::lib::fade::FadeEffect;
 
@@ -396,6 +396,17 @@ fn setup(
         ..default()
     });
 
+    // -- SSR: restore screen-space reflections from seaview.toml ---------------
+    if let Some(ssr_cfg) = settings_res.settings.get_ssr() {
+        debug!(
+            "Restored SSR from seaview.toml: enabled={}, roughness_threshold={}, linear_steps={}",
+            ssr_cfg.enabled,
+            ssr_cfg.perceptual_roughness_threshold,
+            ssr_cfg.linear_steps,
+        );
+        commands.insert_resource(ssr_cfg);
+    }
+
     // -- Environment: restore lighting + materials from seaview.toml -----------
     if let Some(ref env) = settings_res.settings.environment {
         // Environment (global) light
@@ -545,6 +556,7 @@ fn handle_save_view(
     timeline: Res<Timeline>,
     env_obj_store: Res<EnvironmentObjectStoreRes>,
     series_mgr: Res<seaview::SeriesManagerRes>,
+    ssr_config: Res<SsrConfig>,
     mut ui_state: ResMut<UiState>,
     time: Res<Time>,
 ) {
@@ -583,6 +595,9 @@ fn handle_save_view(
             settings_res
                 .settings
                 .set_environment_objects(&env_obj_store);
+
+            // SSR — persist screen-space reflections settings
+            settings_res.settings.set_ssr(&ssr_config);
 
             match settings_res.save() {
                 Ok(()) => {

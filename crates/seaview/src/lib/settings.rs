@@ -1067,6 +1067,67 @@ pub fn settings_to_environment_objects(
 }
 
 // ---------------------------------------------------------------------------
+// SSR — screen-space reflections persistence
+// ---------------------------------------------------------------------------
+
+/// TOML-friendly settings for screen-space reflections.
+///
+/// Maps 1:1 to [`crate::app::ui::state::SsrConfig`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SsrSettings {
+    pub enabled: bool,
+    pub perceptual_roughness_threshold: f32,
+    pub thickness: f32,
+    pub linear_steps: u32,
+    pub linear_march_exponent: f32,
+    pub bisection_steps: u32,
+    pub use_secant: bool,
+}
+
+impl Default for SsrSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            perceptual_roughness_threshold: 0.1,
+            thickness: 0.25,
+            linear_steps: 16,
+            linear_march_exponent: 1.0,
+            bisection_steps: 4,
+            use_secant: true,
+        }
+    }
+}
+
+impl From<&crate::app::ui::state::SsrConfig> for SsrSettings {
+    fn from(cfg: &crate::app::ui::state::SsrConfig) -> Self {
+        Self {
+            enabled: cfg.enabled,
+            perceptual_roughness_threshold: cfg.perceptual_roughness_threshold,
+            thickness: cfg.thickness,
+            linear_steps: cfg.linear_steps,
+            linear_march_exponent: cfg.linear_march_exponent,
+            bisection_steps: cfg.bisection_steps,
+            use_secant: cfg.use_secant,
+        }
+    }
+}
+
+impl From<&SsrSettings> for crate::app::ui::state::SsrConfig {
+    fn from(s: &SsrSettings) -> Self {
+        Self {
+            enabled: s.enabled,
+            perceptual_roughness_threshold: s.perceptual_roughness_threshold,
+            thickness: s.thickness,
+            linear_steps: s.linear_steps,
+            linear_march_exponent: s.linear_march_exponent,
+            bisection_steps: s.bisection_steps,
+            use_secant: s.use_secant,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // EnvironmentSettings — grouping struct
 // ---------------------------------------------------------------------------
 
@@ -1092,6 +1153,10 @@ pub struct EnvironmentSettings {
     /// Imported environment objects (GLB/glTF scene props).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub objects: Vec<EnvironmentObjectSettings>,
+
+    /// Screen-space reflections configuration.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ssr: Option<SsrSettings>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1464,6 +1529,24 @@ impl Settings {
             return None;
         }
         Some(settings_to_environment_objects(&env.objects))
+    }
+
+    /// Save SSR configuration into the environment settings.
+    pub fn set_ssr(&mut self, ssr_cfg: &crate::app::ui::state::SsrConfig) {
+        let env = self
+            .environment
+            .get_or_insert_with(EnvironmentSettings::default);
+        env.ssr = Some(SsrSettings::from(ssr_cfg));
+    }
+
+    /// Retrieve saved SSR configuration as an [`SsrConfig`].
+    ///
+    /// Returns `None` if no SSR section was present in the TOML.
+    pub fn get_ssr(&self) -> Option<crate::app::ui::state::SsrConfig> {
+        self.environment
+            .as_ref()
+            .and_then(|env| env.ssr.as_ref())
+            .map(crate::app::ui::state::SsrConfig::from)
     }
 
     /// Build a [`SavedCameras`] resource from the current settings.
@@ -2095,6 +2178,7 @@ alpha_cutoff = 0.5
                     m
                 },
                 objects: vec![],
+                ssr: None,
             }),
             load_section: None,
             load_sections: vec![],
@@ -2459,6 +2543,7 @@ visible = true
             lighting_groups: vec![],
             materials: HashMap::new(),
             objects: vec![],
+            ssr: None,
         });
 
         let toml_str = toml::to_string_pretty(&settings).unwrap();

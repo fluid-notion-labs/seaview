@@ -3,6 +3,7 @@
 //! This module contains the global UI state that persists across frames
 //! and is shared between different UI systems.
 
+use bevy::pbr::ScreenSpaceReflections;
 use bevy::prelude::*;
 use uuid::Uuid;
 
@@ -31,6 +32,81 @@ impl Default for RenderConfig {
         Self {
             frame_window_size: 5,
             wireframe_enabled: false,
+        }
+    }
+}
+
+/// Configuration for screen-space reflections (SSR).
+///
+/// Wraps Bevy's [`ScreenSpaceReflections`] component with an enable toggle.
+/// A sync system copies changes into the camera entity each frame.
+///
+/// SSR requires deferred rendering (set via [`DefaultOpaqueRendererMethod`])
+/// and works best with low-roughness surfaces (water, glass, chrome).
+///
+/// ## Parameters
+///
+/// | Field | Bevy field | Range | Effect |
+/// |---|---|---|---|
+/// | `perceptual_roughness_threshold` | same | 0.0–1.0 | Max roughness that gets SSR |
+/// | `thickness` | same | 0.01–10.0 | Assumed surface thickness for depth comparison |
+/// | `linear_steps` | same | 1–128 | Ray-march steps (quality vs perf) |
+/// | `linear_march_exponent` | same | 1.0–4.0 | Step distribution (1=uniform, >1=near-biased) |
+/// | `bisection_steps` | same | 0–16 | Binary-search refinement after hit |
+/// | `use_secant` | same | bool | Secant method for sub-step accuracy |
+#[derive(Resource, Debug, Clone)]
+pub struct SsrConfig {
+    /// Master toggle — when false the `ScreenSpaceReflections` component is
+    /// removed from the camera entirely.
+    pub enabled: bool,
+
+    /// Maximum PBR roughness that will receive screen-space reflections.
+    /// Lower values restrict SSR to smoother (more mirror-like) surfaces.
+    pub perceptual_roughness_threshold: f32,
+
+    /// Assumed surface thickness (metres) for depth-buffer ray intersection.
+    /// Thicker values are more forgiving but produce more artefacts on thin geometry.
+    pub thickness: f32,
+
+    /// Number of uniform ray-march steps.  Higher = better quality, more GPU cost.
+    pub linear_steps: u32,
+
+    /// Exponent for the linear march.  1.0 = equidistant steps.
+    /// Higher values compress early steps (more detail near the surface).
+    pub linear_march_exponent: f32,
+
+    /// Binary-search refinement steps after the linear march finds a hit.
+    pub bisection_steps: u32,
+
+    /// Use the secant method for sub-step intersection refinement.
+    pub use_secant: bool,
+}
+
+impl Default for SsrConfig {
+    fn default() -> Self {
+        let defaults = ScreenSpaceReflections::default();
+        Self {
+            enabled: true,
+            perceptual_roughness_threshold: defaults.perceptual_roughness_threshold,
+            thickness: defaults.thickness,
+            linear_steps: defaults.linear_steps,
+            linear_march_exponent: defaults.linear_march_exponent,
+            bisection_steps: defaults.bisection_steps,
+            use_secant: defaults.use_secant,
+        }
+    }
+}
+
+impl SsrConfig {
+    /// Convert to Bevy's camera component.
+    pub fn to_component(&self) -> ScreenSpaceReflections {
+        ScreenSpaceReflections {
+            perceptual_roughness_threshold: self.perceptual_roughness_threshold,
+            thickness: self.thickness,
+            linear_steps: self.linear_steps,
+            linear_march_exponent: self.linear_march_exponent,
+            bisection_steps: self.bisection_steps,
+            use_secant: self.use_secant,
         }
     }
 }
