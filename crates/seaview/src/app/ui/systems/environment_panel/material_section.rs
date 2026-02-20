@@ -116,7 +116,7 @@ pub fn render_material_controls(ui: &mut egui::Ui, material_config: &mut Materia
             Color::srgb(emissive_color[0], emissive_color[1], emissive_color[2]);
     }
     ui.add(
-        egui::Slider::new(&mut material_config.emissive_intensity, 0.0..=100.0)
+        egui::Slider::new(&mut material_config.emissive_intensity, 0.0..=50_000.0)
             .text("intensity")
             .logarithmic(true),
     );

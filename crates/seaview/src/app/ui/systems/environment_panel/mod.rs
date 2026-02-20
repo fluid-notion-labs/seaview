@@ -168,7 +168,7 @@ pub fn environment_panel_system(
                             ui.add(
                                 egui::Slider::new(
                                     &mut panel.env_map_config.intensity,
-                                    0.0..=5000.0,
+                                    0.0..=50_000.0,
                                 )
                                 .text("IBL intensity")
                                 .logarithmic(true),
@@ -178,7 +178,7 @@ pub fn environment_panel_system(
                             ui.add(
                                 egui::Slider::new(
                                     &mut panel.env_map_config.skybox_brightness,
-                                    0.0..=5000.0,
+                                    0.0..=50_000.0,
                                 )
                                 .text("Sky brightness")
                                 .logarithmic(true),

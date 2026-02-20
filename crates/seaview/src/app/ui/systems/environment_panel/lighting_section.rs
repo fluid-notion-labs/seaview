@@ -271,27 +271,27 @@ fn render_light_editor(ui: &mut egui::Ui, light: &mut Light, mesh_dims: &MeshDim
         .unwrap_or(500.0)
         .max(10.0);
     ui.add(
-        egui::Slider::new(&mut light.height, 1.0..=max_height)
+        egui::Slider::new(&mut light.height, 0.1..=max_height)
             .text("Height (m)")
             .logarithmic(true),
     );
 
     // Intensity
     ui.add(
-        egui::Slider::new(&mut light.intensity, 1000.0..=10_000_000.0)
+        egui::Slider::new(&mut light.intensity, 0.0..=100_000_000.0)
             .text("Intensity (lm)")
             .logarithmic(true),
     );
 
     // Range
     ui.add(
-        egui::Slider::new(&mut light.range, 10.0..=5000.0)
+        egui::Slider::new(&mut light.range, 0.1..=10_000.0)
             .text("Range (m)")
             .logarithmic(true),
     );
 
     // Cone angle
-    ui.add(egui::Slider::new(&mut light.cone_angle, 5.0..=180.0).text("Cone (°)"));
+    ui.add(egui::Slider::new(&mut light.cone_angle, 1.0..=180.0).text("Cone (°)"));
 
     // Color
     ui.horizontal(|ui| {
@@ -365,17 +365,17 @@ fn render_generate_panel(
                         .logarithmic(true),
                 );
                 ui.add(
-                    egui::Slider::new(&mut state.config.default_intensity, 1000.0..=10_000_000.0)
+                    egui::Slider::new(&mut state.config.default_intensity, 0.0..=100_000_000.0)
                         .text("Intensity (lm)")
                         .logarithmic(true),
                 );
                 ui.add(
-                    egui::Slider::new(&mut state.config.default_range, 10.0..=5000.0)
+                    egui::Slider::new(&mut state.config.default_range, 0.1..=10_000.0)
                         .text("Range (m)")
                         .logarithmic(true),
                 );
                 ui.add(
-                    egui::Slider::new(&mut state.config.default_cone_angle, 5.0..=180.0)
+                    egui::Slider::new(&mut state.config.default_cone_angle, 1.0..=180.0)
                         .text("Cone (°)"),
                 );
                 ui.horizontal(|ui| {

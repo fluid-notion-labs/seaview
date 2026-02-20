@@ -110,7 +110,7 @@ pub fn render_environment_light_controls(ui: &mut egui::Ui, config: &mut Environ
 
     // Ambient brightness
     ui.add(
-        egui::Slider::new(&mut config.ambient_brightness, 0.0..=5000.0)
+        egui::Slider::new(&mut config.ambient_brightness, 0.0..=50_000.0)
             .text("brightness")
             .logarithmic(true)
             .clamping(egui::SliderClamping::Always),
@@ -144,7 +144,7 @@ pub fn render_environment_light_controls(ui: &mut egui::Ui, config: &mut Environ
 
     // Directional illuminance
     ui.add(
-        egui::Slider::new(&mut config.directional_illuminance, 0.0..=100_000.0)
+        egui::Slider::new(&mut config.directional_illuminance, 0.0..=150_000.0)
             .text("lux")
             .logarithmic(true)
             .clamping(egui::SliderClamping::Always),
