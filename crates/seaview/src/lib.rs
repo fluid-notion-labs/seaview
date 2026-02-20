@@ -14,6 +14,7 @@ pub mod lib {
     pub mod mesh_info;
     // pub mod network;
     pub mod sequence;
+    pub mod series;
     pub mod session;
     pub mod settings;
     pub mod spatial;
@@ -55,5 +56,6 @@ pub use lib::environment_objects::{
 pub use lib::fade::{format_relative_time, FadeEffect};
 pub use lib::session::{self, Session, SessionManager, SessionPlugin};
 pub use lib::spatial::{BvhNodeAabb, PointProjection, RayHit, SpatialMesh, SpatialMeshError};
+pub use lib::series::{SeriesId, SeriesManager, SeriesState, SeriesSummary};
 pub use lib::toast::{Toast, ToastLevel, ToastQueue};
 pub use loadfu::MeshFormat;
