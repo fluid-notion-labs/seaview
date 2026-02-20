@@ -22,7 +22,7 @@
 //! mutations from the egui UI pass.
 
 use bevy::prelude::*;
-use log::{debug, trace};
+use log::debug;
 
 use bevy::ecs::system::SystemParam;
 
@@ -46,12 +46,22 @@ use crate::lib::sequence::SequenceManager;
 #[derive(Resource)]
 pub struct AutosaveRes {
     pub state: AutosaveState,
+    /// Elapsed time since app start.  Change detection is suppressed until
+    /// this exceeds [`STARTUP_GRACE_SECS`] so that resource initialisation
+    /// during loading doesn't spam dirty marks.
+    elapsed: f64,
 }
+
+/// Seconds after app start before autosave change detection activates.
+/// During this window, resources like timeline, series_manager, watch_config
+/// etc. are being initialised by the loader and would trigger false positives.
+const STARTUP_GRACE_SECS: f64 = 5.0;
 
 impl Default for AutosaveRes {
     fn default() -> Self {
         Self {
             state: AutosaveState::with_defaults(),
+            elapsed: 0.0,
         }
     }
 }
@@ -60,6 +70,7 @@ impl AutosaveRes {
     pub fn new(config: AutosaveConfig) -> Self {
         Self {
             state: AutosaveState::new(config),
+            elapsed: 0.0,
         }
     }
 }
@@ -151,27 +162,43 @@ fn autosave_system(
     camera_read: Query<&Transform, (With<Camera3d>, With<FpsCamera>)>,
     watched: WatchedResources,
 ) {
+    // -- Startup grace period ------------------------------------------------
+    // During the first few seconds, resources are being initialised by the
+    // loader (timeline, series_manager, watch_config, etc.).  Skip change
+    // detection to avoid spamming dirty marks on every frame.
+    autosave.elapsed += time.delta_secs_f64();
+    if autosave.elapsed < STARTUP_GRACE_SECS {
+        return;
+    }
+
     // -- Change detection ----------------------------------------------------
-    // Log the *cause* first ("user did X"), then the effect ("→ marking dirty").
+    // Only log on the clean→dirty transition, not every frame that's already
+    // dirty.  This prevents log spam when resources are mutated continuously.
+
+    let was_dirty = autosave.state.is_dirty();
 
     let camera_moved = !camera_changed.is_empty();
     let changed_resources = watched.changed_names();
 
     if camera_moved || !changed_resources.is_empty() {
-        if camera_moved && !changed_resources.is_empty() {
-            debug!(
-                "User moved camera + changed [{}] → marking dirty",
-                changed_resources.join(", ")
-            );
-        } else if camera_moved {
-            trace!("User moved camera → marking dirty");
-        } else {
-            debug!(
-                "User changed [{}] → marking dirty",
-                changed_resources.join(", ")
-            );
-        }
         autosave.state.mark_dirty();
+
+        // Only log the transition from clean to dirty
+        if !was_dirty {
+            if camera_moved && !changed_resources.is_empty() {
+                debug!(
+                    "User moved camera + changed [{}] → marking dirty",
+                    changed_resources.join(", ")
+                );
+            } else if camera_moved {
+                debug!("User moved camera → marking dirty");
+            } else {
+                debug!(
+                    "User changed [{}] → marking dirty",
+                    changed_resources.join(", ")
+                );
+            }
+        }
     }
 
     // -- Tick + save ---------------------------------------------------------
