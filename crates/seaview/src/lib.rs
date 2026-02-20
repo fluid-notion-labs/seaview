@@ -56,7 +56,7 @@ pub use lib::environment_objects::{
 pub use lib::fade::{format_relative_time, FadeEffect};
 pub use lib::session::{self, Session, SessionManager, SessionPlugin};
 pub use lib::spatial::{BvhNodeAabb, PointProjection, RayHit, SpatialMesh, SpatialMeshError};
-pub use lib::series::{SeriesId, SeriesManager, SeriesState, SeriesSummary};
+pub use lib::series::{SavedSeriesEntry, SeriesId, SeriesManager, SeriesState, SeriesSummary};
 pub use lib::sequence::SeriesManagerRes;
 pub use lib::sequence::discovery::AllSequencesDiscovered;
 pub use lib::toast::{Toast, ToastLevel, ToastQueue};

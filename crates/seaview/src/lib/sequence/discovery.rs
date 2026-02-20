@@ -12,6 +12,8 @@
 
 use super::{loader::LoadSequenceRequest, FrameInfo, Sequence, SequenceEvent, SequenceManager};
 use crate::lib::memory_budget::MemoryBudget;
+use crate::lib::series::SavedSeriesEntry;
+use crate::lib::settings::SettingsResource;
 use super::SeriesManagerRes;
 use bevy::prelude::*;
 use bevy::tasks::{block_on, IoTaskPool, Task};
@@ -292,6 +294,7 @@ fn register_discovered_series(
     mut discovered: MessageReader<AllSequencesDiscovered>,
     mut series_manager: ResMut<SeriesManagerRes>,
     memory_budget: Res<MemoryBudget>,
+    settings_res: Res<SettingsResource>,
 ) {
     let mgr = &mut *series_manager;
 
@@ -315,6 +318,23 @@ fn register_discovered_series(
                 id,
                 sequence.frame_count(),
                 max_frames,
+            );
+        }
+
+        // -- Restore per-series state from saved settings ---------------------
+        let saved_series = settings_res.settings.get_series();
+        if !saved_series.is_empty() {
+            let entries: Vec<SavedSeriesEntry> = saved_series
+                .iter()
+                .map(SavedSeriesEntry::from)
+                .collect();
+
+            let matched = mgr.restore_from_saved(&entries, max_frames);
+            info!(
+                "Restored {}/{} series from seaview.toml (active: {:?})",
+                matched,
+                entries.len(),
+                mgr.active_id(),
             );
         }
 

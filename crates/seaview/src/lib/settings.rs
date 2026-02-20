@@ -332,6 +332,18 @@ impl SeriesSettings {
     }
 }
 
+impl From<&SeriesSettings> for crate::lib::series::SavedSeriesEntry {
+    fn from(s: &SeriesSettings) -> Self {
+        Self {
+            name: s.name.clone(),
+            path: s.path.as_ref().map(std::path::PathBuf::from),
+            active: s.active,
+            playhead: s.playhead,
+            load_sections: s.load_sections.iter().map(LoadSection::from).collect(),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Environment — Lighting bridge
 // ---------------------------------------------------------------------------

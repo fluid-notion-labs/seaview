@@ -428,6 +428,104 @@ impl SeriesManager {
 }
 
 // ---------------------------------------------------------------------------
+// SavedSeriesEntry — settings restoration input
+// ---------------------------------------------------------------------------
+
+/// Input struct for restoring series state from saved settings.
+///
+/// This is a plain-data struct with no Bevy dependencies, keeping the
+/// restoration logic testable in `lib/`.  Callers (e.g. the discovery
+/// system) convert from [`SeriesSettings`] into this before calling
+/// [`SeriesManager::restore_from_saved`].
+#[derive(Debug, Clone)]
+pub struct SavedSeriesEntry {
+    /// Human-readable label (matched against `SeriesState::label` or
+    /// `Sequence::name`).
+    pub name: String,
+    /// Base directory path (matched against `SeriesState::base_dir`).
+    pub path: Option<PathBuf>,
+    /// Whether this was the active series when the session was saved.
+    pub active: bool,
+    /// Saved playhead position.
+    pub playhead: usize,
+    /// Saved per-series load sections.
+    pub load_sections: Vec<LoadSection>,
+}
+
+impl SeriesManager {
+    /// Restore per-series state from saved settings entries.
+    ///
+    /// For each saved entry, finds a matching series (by base directory
+    /// first, then by name) and applies:
+    /// - Label (rename)
+    /// - Load sections (via [`SeriesState::apply_saved_sections`])
+    /// - Playhead position
+    /// - Active flag (the last entry with `active = true` wins)
+    ///
+    /// Returns the number of entries that were successfully matched.
+    pub fn restore_from_saved(
+        &mut self,
+        saved: &[SavedSeriesEntry],
+        max_frames: usize,
+    ) -> usize {
+        let mut matched = 0usize;
+        let mut active_id: Option<SeriesId> = None;
+
+        for entry in saved {
+            // Try to match by path first (most reliable), then by name.
+            let found_id = entry
+                .path
+                .as_deref()
+                .and_then(|p| self.find_by_dir(p).map(|s| s.id))
+                .or_else(|| {
+                    if !entry.name.is_empty() {
+                        self.find_by_name(&entry.name).map(|s| s.id)
+                    } else {
+                        None
+                    }
+                });
+
+            let Some(id) = found_id else {
+                continue;
+            };
+
+            let Some(state) = self.get_mut(id) else {
+                continue;
+            };
+
+            // Apply label
+            if !entry.name.is_empty() {
+                state.label = entry.name.clone();
+            }
+
+            // Apply saved load sections
+            if !entry.load_sections.is_empty() {
+                state.apply_saved_sections(entry.load_sections.clone(), max_frames);
+            }
+
+            // Apply playhead (clamped to valid range)
+            if entry.playhead > 0 {
+                let max_playhead = state.timeline.total_frames.saturating_sub(1);
+                state.timeline.playhead = entry.playhead.min(max_playhead);
+            }
+
+            if entry.active {
+                active_id = Some(id);
+            }
+
+            matched += 1;
+        }
+
+        // Set the active series from saved state (if found).
+        if let Some(id) = active_id {
+            self.set_active(id);
+        }
+
+        matched
+    }
+}
+
+// ---------------------------------------------------------------------------
 // SeriesSummary — lightweight snapshot for UI
 // ---------------------------------------------------------------------------
 
@@ -449,9 +547,33 @@ pub struct SeriesSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
     use crate::lib::coordinates::SourceOrientation;
 
-    /// Helper: create a dummy sequence with `n` frames.
+    /// Helper: create a dummy sequence with `n` frames in a specific directory.
+    fn dummy_sequence_in_dir(name: &str, n: usize, base_dir: &str) -> Sequence {
+        use crate::lib::sequence::FrameInfo;
+        let base = PathBuf::from(base_dir);
+        let frames: Vec<FrameInfo> = (0..n)
+            .map(|i| {
+                let path = base.join(format!("{name}_{i:04}.obj"));
+                FrameInfo {
+                    filename: path.file_name().unwrap().to_string_lossy().into_owned(),
+                    path,
+                    frame_number: i,
+                    file_size: 1024,
+                }
+            })
+            .collect();
+        Sequence {
+            name: name.to_string(),
+            frames,
+            base_dir: base,
+            source_orientation: SourceOrientation::default(),
+            pattern: format!("{name}_*.obj"),
+        }
+    }
+
     fn dummy_sequence(name: &str, n: usize) -> Sequence {
         use crate::lib::sequence::FrameInfo;
         let mut seq = Sequence::new(
@@ -947,5 +1069,221 @@ mod tests {
         // The removed ID is never reused
         assert_ne!(id1, id2);
         assert!(id2.raw() > id1.raw());
+    }
+
+    // -----------------------------------------------------------------------
+    // restore_from_saved tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn restore_matches_by_path() {
+        let mut mgr = SeriesManager::new();
+        let seq_a = dummy_sequence_in_dir("alpha", 100, "/data/alpha");
+        let seq_b = dummy_sequence_in_dir("beta", 200, "/data/beta");
+        mgr.add(seq_a, 100);
+        mgr.add(seq_b, 200);
+
+        let saved = vec![
+            SavedSeriesEntry {
+                name: "Alpha Renamed".into(),
+                path: Some(PathBuf::from("/data/alpha")),
+                active: false,
+                playhead: 42,
+                load_sections: vec![LoadSection::new(10, 50)],
+            },
+            SavedSeriesEntry {
+                name: "Beta Renamed".into(),
+                path: Some(PathBuf::from("/data/beta")),
+                active: true,
+                playhead: 99,
+                load_sections: vec![LoadSection::new(0, 80)],
+            },
+        ];
+
+        let matched = mgr.restore_from_saved(&saved, 200);
+        assert_eq!(matched, 2);
+
+        // Check alpha
+        let alpha = mgr.find_by_dir(Path::new("/data/alpha")).unwrap();
+        assert_eq!(alpha.label, "Alpha Renamed");
+        assert_eq!(alpha.timeline.playhead, 42);
+        assert_eq!(alpha.timeline.sections.len(), 1);
+        assert_eq!(alpha.timeline.sections[0].start, 10);
+        assert_eq!(alpha.timeline.sections[0].end, 50);
+
+        // Check beta is active
+        let beta = mgr.find_by_dir(Path::new("/data/beta")).unwrap();
+        assert_eq!(beta.label, "Beta Renamed");
+        assert_eq!(beta.timeline.playhead, 99);
+        assert_eq!(mgr.active_id(), Some(beta.id));
+    }
+
+    #[test]
+    fn restore_matches_by_name_when_no_path() {
+        let mut mgr = SeriesManager::new();
+        let seq = dummy_sequence("splash_v3", 50);
+        mgr.add(seq, 50);
+
+        let saved = vec![SavedSeriesEntry {
+            name: "splash_v3".into(),
+            path: None,
+            active: true,
+            playhead: 25,
+            load_sections: vec![],
+        }];
+
+        let matched = mgr.restore_from_saved(&saved, 50);
+        assert_eq!(matched, 1);
+        let found = mgr.find_by_name("splash_v3").unwrap();
+        assert_eq!(found.timeline.playhead, 25);
+    }
+
+    #[test]
+    fn restore_skips_unmatched_entries() {
+        let mut mgr = SeriesManager::new();
+        let seq = dummy_sequence_in_dir("alpha", 100, "/data/alpha");
+        mgr.add(seq, 100);
+
+        let saved = vec![
+            SavedSeriesEntry {
+                name: "alpha".into(),
+                path: Some(PathBuf::from("/data/alpha")),
+                active: false,
+                playhead: 10,
+                load_sections: vec![],
+            },
+            SavedSeriesEntry {
+                name: "nonexistent".into(),
+                path: Some(PathBuf::from("/data/gone")),
+                active: true,
+                playhead: 0,
+                load_sections: vec![],
+            },
+        ];
+
+        let matched = mgr.restore_from_saved(&saved, 100);
+        assert_eq!(matched, 1);
+        // Active should NOT have changed because the "active" entry didn't match
+        let alpha = mgr.find_by_name("alpha").unwrap();
+        assert_eq!(alpha.timeline.playhead, 10);
+    }
+
+    #[test]
+    fn restore_clamps_playhead_to_bounds() {
+        let mut mgr = SeriesManager::new();
+        let seq = dummy_sequence_in_dir("tiny", 10, "/data/tiny");
+        mgr.add(seq, 10);
+
+        let saved = vec![SavedSeriesEntry {
+            name: "tiny".into(),
+            path: Some(PathBuf::from("/data/tiny")),
+            active: true,
+            playhead: 9999, // way out of range
+            load_sections: vec![],
+        }];
+
+        let matched = mgr.restore_from_saved(&saved, 10);
+        assert_eq!(matched, 1);
+        let found = mgr.find_by_name("tiny").unwrap();
+        assert_eq!(found.timeline.playhead, 9); // clamped to total_frames - 1
+    }
+
+    #[test]
+    fn restore_empty_saved_is_noop() {
+        let mut mgr = SeriesManager::new();
+        let seq = dummy_sequence("alpha", 50);
+        let id = mgr.add(seq, 50);
+
+        let matched = mgr.restore_from_saved(&[], 50);
+        assert_eq!(matched, 0);
+        // Active should still be the first series
+        assert_eq!(mgr.active_id(), Some(id));
+    }
+
+    #[test]
+    fn restore_active_last_wins() {
+        let mut mgr = SeriesManager::new();
+        let seq_a = dummy_sequence_in_dir("a", 100, "/data/a");
+        let seq_b = dummy_sequence_in_dir("b", 100, "/data/b");
+        mgr.add(seq_a, 100);
+        let id_b = mgr.add(seq_b, 100);
+
+        // Both marked active — last one wins
+        let saved = vec![
+            SavedSeriesEntry {
+                name: "a".into(),
+                path: Some(PathBuf::from("/data/a")),
+                active: true,
+                playhead: 0,
+                load_sections: vec![],
+            },
+            SavedSeriesEntry {
+                name: "b".into(),
+                path: Some(PathBuf::from("/data/b")),
+                active: true,
+                playhead: 0,
+                load_sections: vec![],
+            },
+        ];
+
+        mgr.restore_from_saved(&saved, 100);
+        assert_eq!(mgr.active_id(), Some(id_b));
+    }
+
+    #[test]
+    fn restore_preserves_sections_when_saved_empty() {
+        let mut mgr = SeriesManager::new();
+        let seq = dummy_sequence_in_dir("alpha", 100, "/data/alpha");
+        mgr.add(seq, 100);
+
+        // The default section should exist from add()
+        let original_sections = mgr
+            .find_by_dir(Path::new("/data/alpha"))
+            .unwrap()
+            .timeline
+            .sections
+            .clone();
+        assert!(!original_sections.is_empty());
+
+        let saved = vec![SavedSeriesEntry {
+            name: "alpha".into(),
+            path: Some(PathBuf::from("/data/alpha")),
+            active: false,
+            playhead: 0,
+            load_sections: vec![], // empty — should keep existing
+        }];
+
+        mgr.restore_from_saved(&saved, 100);
+        let after = mgr.find_by_dir(Path::new("/data/alpha")).unwrap();
+        assert_eq!(after.timeline.sections, original_sections);
+    }
+
+    #[test]
+    fn restore_zero_playhead_not_applied() {
+        // playhead=0 is the default, so we skip applying it to avoid
+        // overwriting a previously-computed default playhead.
+        let mut mgr = SeriesManager::new();
+        let seq = dummy_sequence_in_dir("alpha", 100, "/data/alpha");
+        mgr.add(seq, 100);
+
+        // Manually set playhead to something nonzero
+        mgr.find_by_dir(Path::new("/data/alpha"))
+            .map(|s| s.id)
+            .and_then(|id| mgr.get_mut(id))
+            .unwrap()
+            .timeline
+            .playhead = 55;
+
+        let saved = vec![SavedSeriesEntry {
+            name: "alpha".into(),
+            path: Some(PathBuf::from("/data/alpha")),
+            active: false,
+            playhead: 0, // zero — should NOT overwrite
+            load_sections: vec![],
+        }];
+
+        mgr.restore_from_saved(&saved, 100);
+        let after = mgr.find_by_dir(Path::new("/data/alpha")).unwrap();
+        assert_eq!(after.timeline.playhead, 55);
     }
 }

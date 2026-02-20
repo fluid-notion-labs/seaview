@@ -334,13 +334,24 @@ fn setup(
     }
 
     // -- Load sections: stash for deferred application -------------------------
-    let saved_sections = settings_res.settings.get_load_sections();
-    if !saved_sections.is_empty() {
+    // When [[series]] entries are present in seaview.toml, per-series load
+    // sections are restored by `register_discovered_series` directly into
+    // SeriesManagerRes.  The global PendingSavedSections path is only needed
+    // for legacy single-series files.
+    if settings_res.settings.has_series() {
         debug!(
-            "Stashing {} saved load section(s) for deferred restore",
-            saved_sections.len()
+            "Skipping PendingSavedSections — {} series entries will be restored per-series",
+            settings_res.settings.get_series().len()
         );
-        commands.insert_resource(PendingSavedSections(saved_sections));
+    } else {
+        let saved_sections = settings_res.settings.get_load_sections();
+        if !saved_sections.is_empty() {
+            debug!(
+                "Stashing {} saved load section(s) for deferred restore",
+                saved_sections.len()
+            );
+            commands.insert_resource(PendingSavedSections(saved_sections));
+        }
     }
 
     // Add a directional light for overall illumination

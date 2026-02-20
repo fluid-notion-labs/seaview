@@ -1105,12 +1105,61 @@ fn sync_series_manager(
         let is_initial_registration = sync_state.prev_active.is_none();
 
         if let Some(active) = series_mgr.active() {
-            if is_initial_registration {
+            // On initial registration (None → Some), the legacy discovery
+            // path already loaded the *first* sequence into SequenceManager
+            // + Timeline.  If the restored active series IS that first
+            // sequence we can skip the reload.  But if settings restoration
+            // changed the active to a *different* series, we must reload.
+            let legacy_matches_active = is_initial_registration
+                && sequence_manager
+                    .current_sequence
+                    .as_ref()
+                    .map(|seq| seq.base_dir == active.base_dir)
+                    .unwrap_or(false);
+
+            if legacy_matches_active {
+                // Active series matches what the legacy path already loaded.
+                // Just sync the restored timeline (playhead, sections) into
+                // the global Timeline so the UI reflects saved state.
                 info!(
-                    "Initial series registration: {} '{}' (skipping reload — legacy path handled it)",
+                    "Initial series registration: {} '{}' (syncing timeline, skipping reload)",
                     active.id,
                     active.label,
                 );
+                *timeline = active.timeline.clone();
+            } else if is_initial_registration && sequence_manager.current_sequence.is_none() {
+                // No legacy sequence loaded yet — skip reload entirely.
+                info!(
+                    "Initial series registration: {} '{}' (no legacy sequence, skipping reload)",
+                    active.id,
+                    active.label,
+                );
+            } else if is_initial_registration {
+                // Active series differs from what legacy path loaded — reload.
+                info!(
+                    "Initial series registration: {} '{}' (differs from legacy-loaded sequence, reloading)",
+                    active.id,
+                    active.label,
+                );
+
+                *timeline = active.timeline.clone();
+                sequence_manager.load_sequence(active.sequence.clone());
+
+                let frame_paths: Vec<_> = active
+                    .sequence
+                    .frames
+                    .iter()
+                    .map(|f| f.path.clone())
+                    .collect();
+                if !frame_paths.is_empty() {
+                    info!(
+                        "Loading {} frames for series '{}' ({})",
+                        frame_paths.len(),
+                        active.label,
+                        active.id,
+                    );
+                    load_events.write(LoadSequenceRequest { frame_paths });
+                }
             } else {
                 info!(
                     "Series switch: {:?} → {} '{}'",
