@@ -2063,6 +2063,86 @@ rotation = [-89.0, 0.0, 0.0]
     }
 
     #[test]
+    fn test_environment_light_save_load_roundtrip() {
+        // Non-default environment light values should survive save → disk → load.
+        let dir = tempfile::tempdir().unwrap();
+
+        let env_light = crate::lib::lighting::EnvironmentLightConfig {
+            enabled: false,
+            ambient_color: bevy::prelude::Color::srgb(0.1, 0.2, 0.3),
+            ambient_brightness: 1234.5,
+            directional_illuminance: 77777.0,
+            directional_color: bevy::prelude::Color::srgb(0.9, 0.8, 0.7),
+        };
+        let material = MaterialConfig {
+            base_color: bevy::prelude::Color::srgb(0.5, 0.6, 0.7),
+            perceptual_roughness: 0.99,
+            metallic: 0.88,
+            ..MaterialConfig::default()
+        };
+
+        let mut settings = Settings::default();
+        settings.set_environment(&env_light, &material);
+        settings.save_to_dir(dir.path()).unwrap();
+
+        let loaded = Settings::load_from_dir(dir.path()).unwrap().unwrap();
+        let env = loaded.environment.as_ref().expect("environment section missing");
+        let els = env.environment_light.as_ref().expect("environment_light missing");
+
+        assert!(!els.enabled);
+        assert!((els.ambient_brightness - 1234.5).abs() < 0.1);
+        assert!((els.directional_illuminance - 77777.0).abs() < 1.0);
+        assert!((els.ambient_color[0] - 0.1).abs() < 0.01);
+        assert!((els.ambient_color[1] - 0.2).abs() < 0.01);
+        assert!((els.ambient_color[2] - 0.3).abs() < 0.01);
+        assert!((els.directional_color[0] - 0.9).abs() < 0.01);
+        assert!((els.directional_color[1] - 0.8).abs() < 0.01);
+        assert!((els.directional_color[2] - 0.7).abs() < 0.01);
+
+        // Verify the From conversion produces correct runtime config
+        let restored = crate::lib::lighting::EnvironmentLightConfig::from(els);
+        assert!(!restored.enabled);
+        assert!((restored.ambient_brightness - 1234.5).abs() < 0.1);
+        assert!((restored.directional_illuminance - 77777.0).abs() < 1.0);
+
+        // Material should also roundtrip
+        let mat = env.materials.get("fluid").expect("fluid material missing");
+        assert!((mat.perceptual_roughness - 0.99).abs() < 0.01);
+        assert!((mat.metallic - 0.88).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_ssr_settings_save_load_roundtrip() {
+        // Non-default SSR values should survive save → disk → load.
+        let dir = tempfile::tempdir().unwrap();
+
+        let ssr_cfg = crate::app::ui::state::SsrConfig {
+            enabled: false,
+            perceptual_roughness_threshold: 0.75,
+            thickness: 2.5,
+            linear_steps: 64,
+            linear_march_exponent: 3.0,
+            bisection_steps: 12,
+            use_secant: false,
+        };
+
+        let mut settings = Settings::default();
+        settings.set_ssr(&ssr_cfg);
+        settings.save_to_dir(dir.path()).unwrap();
+
+        let loaded = Settings::load_from_dir(dir.path()).unwrap().unwrap();
+        let restored = loaded.get_ssr().expect("SSR settings missing after load");
+
+        assert!(!restored.enabled);
+        assert!((restored.perceptual_roughness_threshold - 0.75).abs() < 0.01);
+        assert!((restored.thickness - 2.5).abs() < 0.01);
+        assert_eq!(restored.linear_steps, 64);
+        assert!((restored.linear_march_exponent - 3.0).abs() < 0.01);
+        assert_eq!(restored.bisection_steps, 12);
+        assert!(!restored.use_secant);
+    }
+
+    #[test]
     fn test_save_camera_helper() {
         let mut settings = Settings::default();
         let transform = Transform::from_xyz(1.0, 2.0, 3.0);
@@ -3183,7 +3263,7 @@ end = 200
 
     #[test]
     fn test_multi_series_full_roundtrip() {
-        use crate::lib::sequence::{FrameInfo, LoadSection, Sequence, Timeline};
+        use crate::lib::sequence::{FrameInfo, LoadSection, Sequence};
         use crate::lib::series::{SavedSeriesEntry, SeriesManager};
 
         let dir = tempfile::tempdir().unwrap();
@@ -3340,7 +3420,7 @@ end = 200
     fn test_multi_series_roundtrip_partial_match() {
         // Saved settings have 3 series, but only 2 are discovered on disk.
         // The unmatched entry should be silently skipped.
-        use crate::lib::sequence::{FrameInfo, LoadSection, Sequence};
+        use crate::lib::sequence::{FrameInfo, Sequence};
         use crate::lib::series::{SavedSeriesEntry, SeriesManager};
 
         let dir = tempfile::tempdir().unwrap();
