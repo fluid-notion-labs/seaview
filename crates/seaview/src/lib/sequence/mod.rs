@@ -1096,35 +1096,51 @@ fn sync_series_manager(
 
     if current_active != sync_state.prev_active {
         // --- Active series changed -------------------------------------------
+
+        // When the very first series is registered (None → Some), the legacy
+        // discovery path has already fired a LoadSequenceRequest and populated
+        // SequenceManager + Timeline.  Firing another LoadSequenceRequest here
+        // would cause a double-load.  Skip the reload in that case — only
+        // trigger it for genuine user-initiated switches (Some(a) → Some(b)).
+        let is_initial_registration = sync_state.prev_active.is_none();
+
         if let Some(active) = series_mgr.active() {
-            info!(
-                "Series switch: {:?} → {} '{}'",
-                sync_state.prev_active,
-                active.id,
-                active.label,
-            );
-
-            // Push active series' timeline into the global resource.
-            *timeline = active.timeline.clone();
-
-            // Push sequence metadata into SequenceManager.
-            sequence_manager.load_sequence(active.sequence.clone());
-
-            // Trigger reload of the new series' frames.
-            let frame_paths: Vec<_> = active
-                .sequence
-                .frames
-                .iter()
-                .map(|f| f.path.clone())
-                .collect();
-            if !frame_paths.is_empty() {
+            if is_initial_registration {
                 info!(
-                    "Loading {} frames for series '{}' ({})",
-                    frame_paths.len(),
-                    active.label,
+                    "Initial series registration: {} '{}' (skipping reload — legacy path handled it)",
                     active.id,
+                    active.label,
                 );
-                load_events.write(LoadSequenceRequest { frame_paths });
+            } else {
+                info!(
+                    "Series switch: {:?} → {} '{}'",
+                    sync_state.prev_active,
+                    active.id,
+                    active.label,
+                );
+
+                // Push active series' timeline into the global resource.
+                *timeline = active.timeline.clone();
+
+                // Push sequence metadata into SequenceManager.
+                sequence_manager.load_sequence(active.sequence.clone());
+
+                // Trigger reload of the new series' frames.
+                let frame_paths: Vec<_> = active
+                    .sequence
+                    .frames
+                    .iter()
+                    .map(|f| f.path.clone())
+                    .collect();
+                if !frame_paths.is_empty() {
+                    info!(
+                        "Loading {} frames for series '{}' ({})",
+                        frame_paths.len(),
+                        active.label,
+                        active.id,
+                    );
+                    load_events.write(LoadSequenceRequest { frame_paths });
+                }
             }
         }
         sync_state.prev_active = current_active;

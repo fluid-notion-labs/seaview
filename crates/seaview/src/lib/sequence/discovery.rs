@@ -200,8 +200,6 @@ fn start_async_discovery(
 }
 
 /// System that polls in-flight discovery tasks each frame and, when one
-/// completes, fires events and triggers asset loading.
-/// System that polls in-flight discovery tasks each frame and, when one
 /// completes, fires events and kicks off asset loading.
 ///
 /// **Multi-series change:** emits [`AllSequencesDiscovered`] with the full
