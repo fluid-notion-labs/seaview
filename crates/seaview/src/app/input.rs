@@ -113,6 +113,12 @@ pub fn update_action_state(
     if ctrl && !shift && keyboard.just_pressed(KeyCode::KeyW) {
         active.insert(Action::ToggleWatch);
     }
+    if ctrl && keyboard.just_pressed(KeyCode::PageDown) {
+        active.insert(Action::NextSeries);
+    }
+    if ctrl && keyboard.just_pressed(KeyCode::PageUp) {
+        active.insert(Action::PrevSeries);
+    }
 
     // -- Everything below is suppressed when egui wants keyboard input -------
     if !egui_kb {

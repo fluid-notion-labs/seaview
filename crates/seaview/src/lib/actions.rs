@@ -70,6 +70,12 @@ pub enum Action {
     ToggleWireframe,
     /// Toggle directory watch mode (default: Ctrl+W).
     ToggleWatch,
+
+    // ── Series switching ───────────────────────────────────────────
+    /// Switch to the next loaded series (default: Ctrl+PageDown).
+    NextSeries,
+    /// Switch to the previous loaded series (default: Ctrl+PageUp).
+    PrevSeries,
 }
 
 impl Action {
@@ -422,6 +428,8 @@ mod tests {
         assert!(!Action::PlayPause.is_held());
         assert!(!Action::ToggleFullscreen.is_held());
         assert!(!Action::CenterOnMesh.is_held());
+        assert!(!Action::NextSeries.is_held());
+        assert!(!Action::PrevSeries.is_held());
     }
 
     // -- Iterators -----------------------------------------------------------

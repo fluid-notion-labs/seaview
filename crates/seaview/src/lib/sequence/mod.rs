@@ -33,6 +33,7 @@ use std::path::PathBuf;
 
 use crate::app::ui::state::UiState;
 use crate::lib::memory_budget::MemoryBudget;
+use crate::lib::actions::Action;
 use crate::lib::series::{SeriesId, SeriesManager};
 
 // Re-export commonly used types from loader
@@ -1079,7 +1080,18 @@ fn sync_series_manager(
     mut sequence_manager: ResMut<SequenceManager>,
     mut load_events: MessageWriter<LoadSequenceRequest>,
     mut sync_state: Local<SeriesSyncState>,
+    actions: Res<crate::app::input::ActionStateRes>,
 ) {
+    // -- Keyboard-driven series switching (Ctrl+PageDown / Ctrl+PageUp) ------
+    if actions.0.just_activated(Action::NextSeries) {
+        series_mgr.cycle_next();
+        debug!("▶ NextSeries action — cycled to {:?}", series_mgr.active_id());
+    }
+    if actions.0.just_activated(Action::PrevSeries) {
+        series_mgr.cycle_prev();
+        debug!("◀ PrevSeries action — cycled to {:?}", series_mgr.active_id());
+    }
+
     let current_active = series_mgr.active_id();
 
     if current_active != sync_state.prev_active {
