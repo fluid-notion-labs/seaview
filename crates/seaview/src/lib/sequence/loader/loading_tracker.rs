@@ -35,6 +35,54 @@ pub fn default_material_properties() -> StandardMaterial {
     }
 }
 
+/// Build a `StandardMaterial` using values from the current material config.
+///
+/// Called when creating the shared material so it starts with the user's
+/// persisted settings (base color, roughness, metallic, etc.) instead of
+/// hardcoded defaults.
+pub fn material_from_config(
+    base_color: Color,
+    opacity: f32,
+    perceptual_roughness: f32,
+    metallic: f32,
+    reflectance: f32,
+    emissive: Color,
+    emissive_intensity: f32,
+    double_sided: bool,
+) -> StandardMaterial {
+    let mut color = base_color;
+    color.set_alpha(opacity);
+
+    let emissive_linear = if emissive_intensity > 0.0 {
+        (emissive.to_linear() * emissive_intensity).into()
+    } else {
+        Color::BLACK.into()
+    };
+
+    let cull_mode = if double_sided {
+        None
+    } else {
+        Some(bevy::render::render_resource::Face::Back)
+    };
+
+    let alpha_mode = if opacity < 1.0 {
+        AlphaMode::Blend
+    } else {
+        AlphaMode::Opaque
+    };
+
+    StandardMaterial {
+        base_color: color,
+        perceptual_roughness,
+        metallic,
+        reflectance,
+        emissive: emissive_linear,
+        cull_mode,
+        alpha_mode,
+        ..default()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Systems
 // ---------------------------------------------------------------------------
@@ -60,6 +108,7 @@ pub(super) fn track_asset_loading(
     mut materials: ResMut<Assets<StandardMaterial>>,
     meshes: Res<Assets<Mesh>>,
     mut memory_budget: ResMut<MemoryBudget>,
+    material_config: Res<crate::app::ui::state::MaterialConfig>,
 ) {
     if !frame_store.loading {
         return;
@@ -99,10 +148,21 @@ pub(super) fn track_asset_loading(
                     success: true,
                 });
 
-                // Create shared material on first loaded frame
+                // Create shared material on first loaded frame, using the
+                // current MaterialConfig so persisted values (color, roughness,
+                // etc.) are applied immediately — not the hardcoded defaults.
                 if loader_config.shared_material.is_none() {
-                    loader_config.shared_material =
-                        Some(materials.add(default_material_properties()));
+                    let mat = material_from_config(
+                        material_config.base_color,
+                        material_config.opacity,
+                        material_config.perceptual_roughness,
+                        material_config.metallic,
+                        material_config.reflectance,
+                        material_config.emissive,
+                        material_config.emissive_intensity,
+                        material_config.double_sided,
+                    );
+                    loader_config.shared_material = Some(materials.add(mat));
                 }
 
                 // Estimate frame size from first loaded mesh for memory budgeting,
