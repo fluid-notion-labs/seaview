@@ -17,6 +17,7 @@ use crate::lib::environment_objects::{
 };
 use crate::lib::lighting::{Light, LightGroup, LightingRig};
 use crate::lib::sequence::LoadSection;
+use crate::lib::series::{SeriesManager, SeriesState};
 use uuid::Uuid;
 
 /// Filename used for per-directory settings
@@ -246,6 +247,88 @@ impl From<&LoadSection> for LoadSectionSettings {
         let mut ls = LoadSectionSettings::new(s.start, s.end);
         ls.active = s.active;
         ls
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Series — multi-series persistence
+// ---------------------------------------------------------------------------
+
+/// Settings for a single series entry in `seaview.toml`.
+///
+/// Stored as `[[series]]` array-of-tables.  Each entry captures the series
+/// label, optional base directory, per-series load sections, and playhead.
+///
+/// ```toml
+/// [[series]]
+/// name = "splash_v3"
+/// path = "/data/sims/splash_v3/meshes"
+/// active = true
+/// playhead = 42
+///
+/// [[series.load_sections]]
+/// start = 0
+/// end = 100
+/// active = true
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SeriesSettings {
+    /// Human-readable label for this series.
+    pub name: String,
+
+    /// Base directory for the series' mesh frames.
+    /// Optional — when loading from the same directory as `seaview.toml`,
+    /// this can be omitted and the directory is inferred.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+
+    /// Whether this series is the active (visible) one.
+    #[serde(default)]
+    pub active: bool,
+
+    /// Playhead position (frame index) when the session was saved.
+    #[serde(default)]
+    pub playhead: usize,
+
+    /// Per-series load sections.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub load_sections: Vec<LoadSectionSettings>,
+}
+
+impl Default for SeriesSettings {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            path: None,
+            active: false,
+            playhead: 0,
+            load_sections: Vec::new(),
+        }
+    }
+}
+
+impl From<&SeriesState> for SeriesSettings {
+    fn from(state: &SeriesState) -> Self {
+        Self {
+            name: state.label.clone(),
+            path: Some(state.base_dir.to_string_lossy().into_owned()),
+            active: false, // caller sets this based on active_id
+            playhead: state.timeline.playhead,
+            load_sections: state
+                .timeline
+                .sections
+                .iter()
+                .map(LoadSectionSettings::from)
+                .collect(),
+        }
+    }
+}
+
+impl SeriesSettings {
+    /// Convert to runtime [`LoadSection`] values.
+    pub fn get_load_sections(&self) -> Vec<LoadSection> {
+        self.load_sections.iter().map(LoadSection::from).collect()
     }
 }
 
@@ -1078,6 +1161,20 @@ pub struct Settings {
     /// Takes precedence over `load_section` when present.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub load_sections: Vec<LoadSectionSettings>,
+
+    // -- multi-series -----------------------------------------------------
+    /// Named series entries for multi-series sessions.
+    ///
+    /// Each entry stores a series label, optional path, per-series load
+    /// sections, and playhead.  When present, these take precedence over
+    /// the top-level `load_section` / `load_sections` for the *first*
+    /// (active) series.
+    ///
+    /// **Backward compatibility:** if `series` is empty, the top-level
+    /// `load_section`/`load_sections` are used as a single default series
+    /// (legacy behavior).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub series: Vec<SeriesSettings>,
 }
 
 impl Settings {
@@ -1116,6 +1213,45 @@ impl Settings {
                 self.load_sections = sections.iter().map(LoadSectionSettings::from).collect();
             }
         }
+    }
+
+    // -- Multi-series settings helpers ------------------------------------
+
+    /// Get persisted series entries.
+    ///
+    /// Returns `&[SeriesSettings]` — may be empty for legacy single-series
+    /// files.
+    pub fn get_series(&self) -> &[SeriesSettings] {
+        &self.series
+    }
+
+    /// Populate `series` entries from a [`SeriesManager`].
+    ///
+    /// Also updates the top-level `load_section`/`load_sections` from the
+    /// *active* series for backward compatibility (so older seaview versions
+    /// can still read the file).
+    pub fn set_series_from_manager(&mut self, mgr: &SeriesManager) {
+        let active_id = mgr.active_id();
+
+        self.series = mgr
+            .iter()
+            .map(|state| {
+                let mut s = SeriesSettings::from(state);
+                s.active = active_id == Some(state.id);
+                s
+            })
+            .collect();
+
+        // Backward compat: mirror the active series' load sections into
+        // the top-level fields so older seaview versions still work.
+        if let Some(active) = mgr.active() {
+            self.set_load_sections(&active.timeline.sections);
+        }
+    }
+
+    /// Check whether this settings file has multi-series entries.
+    pub fn has_series(&self) -> bool {
+        !self.series.is_empty()
     }
 }
 
@@ -1493,6 +1629,7 @@ mod tests {
             environment: None,
             load_section: None,
             load_sections: vec![],
+            series: vec![],
         };
 
         let toml_str = toml::to_string_pretty(&settings).unwrap();
@@ -1949,6 +2086,7 @@ alpha_cutoff = 0.5
             }),
             load_section: None,
             load_sections: vec![],
+            series: vec![],
         };
 
         settings.save_to_dir(&dir).unwrap();
@@ -2667,5 +2805,278 @@ rotation = [0.0, 0.0, 0.0]
         assert_eq!(item.transform.position, [1.0, 2.0, 3.0]);
         assert_eq!(item.transform.rotation_degrees, [0.0, 180.0, 0.0]);
         assert_eq!(item.transform.scale, [1.0, 1.0, 1.0]);
+    }
+
+    // -- Series settings --------------------------------------------------
+
+    #[test]
+    fn test_series_settings_default() {
+        let s = SeriesSettings::default();
+        assert_eq!(s.name, "");
+        assert!(s.path.is_none());
+        assert!(!s.active);
+        assert_eq!(s.playhead, 0);
+        assert!(s.load_sections.is_empty());
+    }
+
+    #[test]
+    fn test_series_settings_toml_roundtrip() {
+        let series = SeriesSettings {
+            name: "splash_v3".to_string(),
+            path: Some("/data/sims/splash_v3/meshes".to_string()),
+            active: true,
+            playhead: 42,
+            load_sections: vec![
+                LoadSectionSettings::new(0, 100),
+                LoadSectionSettings::new(200, 350),
+            ],
+        };
+
+        let toml_str = toml::to_string_pretty(&series).unwrap();
+        assert!(toml_str.contains("splash_v3"));
+        assert!(toml_str.contains("42"));
+
+        let recovered: SeriesSettings = toml::from_str(&toml_str).unwrap();
+        assert_eq!(recovered.name, "splash_v3");
+        assert_eq!(recovered.path.as_deref(), Some("/data/sims/splash_v3/meshes"));
+        assert!(recovered.active);
+        assert_eq!(recovered.playhead, 42);
+        assert_eq!(recovered.load_sections.len(), 2);
+        assert_eq!(recovered.load_sections[0].start, 0);
+        assert_eq!(recovered.load_sections[0].end, 100);
+        assert_eq!(recovered.load_sections[1].start, 200);
+        assert_eq!(recovered.load_sections[1].end, 350);
+    }
+
+    #[test]
+    fn test_series_in_settings_toml_roundtrip() {
+        let mut settings = Settings::default();
+        settings.series = vec![
+            SeriesSettings {
+                name: "alpha".to_string(),
+                path: Some("/tmp/alpha".to_string()),
+                active: true,
+                playhead: 10,
+                load_sections: vec![LoadSectionSettings::new(0, 50)],
+            },
+            SeriesSettings {
+                name: "beta".to_string(),
+                path: Some("/tmp/beta".to_string()),
+                active: false,
+                playhead: 0,
+                load_sections: vec![LoadSectionSettings::new(0, 200)],
+            },
+        ];
+
+        let toml_str = toml::to_string_pretty(&settings).unwrap();
+        assert!(toml_str.contains("[[series]]"), "should have [[series]] tables:\n{toml_str}");
+        assert!(toml_str.contains("alpha"));
+        assert!(toml_str.contains("beta"));
+
+        let recovered: Settings = toml::from_str(&toml_str).unwrap();
+        assert_eq!(recovered.series.len(), 2);
+        assert_eq!(recovered.series[0].name, "alpha");
+        assert!(recovered.series[0].active);
+        assert_eq!(recovered.series[0].playhead, 10);
+        assert_eq!(recovered.series[1].name, "beta");
+        assert!(!recovered.series[1].active);
+    }
+
+    #[test]
+    fn test_series_empty_omitted_from_toml() {
+        let settings = Settings::default();
+        let toml_str = toml::to_string_pretty(&settings).unwrap();
+        assert!(
+            !toml_str.contains("series"),
+            "empty series should be omitted:\n{toml_str}"
+        );
+    }
+
+    #[test]
+    fn test_series_backward_compat_no_series_field() {
+        // Simulates an old seaview.toml with no [[series]] at all —
+        // just top-level load_section.
+        let toml_str = r#"
+[load_section]
+start = 10
+end = 200
+"#;
+        let settings: Settings = toml::from_str(toml_str).unwrap();
+        assert!(settings.series.is_empty());
+        assert!(!settings.has_series());
+
+        // Legacy path should still work
+        let sections = settings.get_load_sections();
+        assert_eq!(sections.len(), 1);
+        assert_eq!(sections[0].start, 10);
+        assert_eq!(sections[0].end, 200);
+    }
+
+    #[test]
+    fn test_series_settings_get_load_sections() {
+        let series = SeriesSettings {
+            name: "test".to_string(),
+            load_sections: vec![
+                LoadSectionSettings::new(5, 50),
+                LoadSectionSettings::new(100, 200),
+            ],
+            ..Default::default()
+        };
+
+        let sections = series.get_load_sections();
+        assert_eq!(sections.len(), 2);
+        assert_eq!(sections[0].start, 5);
+        assert_eq!(sections[0].end, 50);
+        assert!(sections[0].active);
+        assert_eq!(sections[1].start, 100);
+        assert_eq!(sections[1].end, 200);
+    }
+
+    #[test]
+    fn test_set_series_from_manager() {
+        use crate::lib::coordinates::SourceOrientation;
+        use crate::lib::sequence::{FrameInfo, Sequence};
+        use crate::lib::series::SeriesManager;
+
+        let mut mgr = SeriesManager::new();
+
+        // Create two sequences
+        let mut seq1 = Sequence::new(
+            "alpha".to_string(),
+            std::path::PathBuf::from("/tmp/alpha"),
+            "frame_*.stl".to_string(),
+            SourceOrientation::default(),
+        );
+        for i in 0..100 {
+            seq1.frames.push(FrameInfo {
+                path: std::path::PathBuf::from(format!("/tmp/alpha/frame_{:04}.stl", i)),
+                frame_number: i,
+                filename: format!("frame_{:04}.stl", i),
+                file_size: 1024,
+            });
+        }
+
+        let mut seq2 = Sequence::new(
+            "beta".to_string(),
+            std::path::PathBuf::from("/tmp/beta"),
+            "frame_*.stl".to_string(),
+            SourceOrientation::default(),
+        );
+        for i in 0..200 {
+            seq2.frames.push(FrameInfo {
+                path: std::path::PathBuf::from(format!("/tmp/beta/frame_{:04}.stl", i)),
+                frame_number: i,
+                filename: format!("frame_{:04}.stl", i),
+                file_size: 1024,
+            });
+        }
+
+        let _id1 = mgr.add(seq1, 40);
+        let _id2 = mgr.add(seq2, 60);
+
+        // Advance playhead on the active series
+        mgr.active_mut().unwrap().timeline.playhead = 15;
+
+        let mut settings = Settings::default();
+        settings.set_series_from_manager(&mgr);
+
+        assert_eq!(settings.series.len(), 2);
+
+        // First series (alpha) is active
+        assert_eq!(settings.series[0].name, "alpha");
+        assert!(settings.series[0].active);
+        assert_eq!(settings.series[0].playhead, 15);
+        assert_eq!(settings.series[0].load_sections.len(), 1);
+        assert_eq!(settings.series[0].load_sections[0].start, 0);
+        assert_eq!(settings.series[0].load_sections[0].end, 40);
+
+        // Second series (beta) is not active
+        assert_eq!(settings.series[1].name, "beta");
+        assert!(!settings.series[1].active);
+        assert_eq!(settings.series[1].playhead, 0);
+        assert_eq!(settings.series[1].load_sections[0].end, 60);
+
+        // Backward compat: top-level load_section mirrors the active series
+        let top_level = settings.get_load_sections();
+        assert_eq!(top_level.len(), 1);
+        assert_eq!(top_level[0].start, 0);
+        assert_eq!(top_level[0].end, 40);
+    }
+
+    #[test]
+    fn test_set_series_from_manager_empty() {
+        use crate::lib::series::SeriesManager;
+
+        let mgr = SeriesManager::new();
+        let mut settings = Settings::default();
+        settings.set_series_from_manager(&mgr);
+
+        assert!(settings.series.is_empty());
+    }
+
+    #[test]
+    fn test_series_settings_from_series_state() {
+        use crate::lib::coordinates::SourceOrientation;
+        use crate::lib::sequence::{FrameInfo, Sequence};
+        use crate::lib::series::{SeriesId, SeriesState};
+
+        let mut seq = Sequence::new(
+            "test_seq".to_string(),
+            std::path::PathBuf::from("/data/test"),
+            "mesh_*.stl".to_string(),
+            SourceOrientation::default(),
+        );
+        for i in 0..50 {
+            seq.frames.push(FrameInfo {
+                path: std::path::PathBuf::from(format!("/data/test/mesh_{:04}.stl", i)),
+                frame_number: i,
+                filename: format!("mesh_{:04}.stl", i),
+                file_size: 512,
+            });
+        }
+
+        let mut state = SeriesState::new(SeriesId::from_raw(0), seq, 30);
+        state.timeline.playhead = 12;
+        state.label = "My Series".to_string();
+
+        let ss = SeriesSettings::from(&state);
+        assert_eq!(ss.name, "My Series");
+        assert_eq!(ss.path.as_deref(), Some("/data/test"));
+        assert!(!ss.active); // caller sets this
+        assert_eq!(ss.playhead, 12);
+        assert_eq!(ss.load_sections.len(), 1);
+        assert_eq!(ss.load_sections[0].start, 0);
+        assert_eq!(ss.load_sections[0].end, 30);
+    }
+
+    #[test]
+    fn test_series_settings_toml_roundtrip_full_settings() {
+        // Ensure [[series]] survives a full Settings save/load cycle
+        let dir = tempfile::tempdir().unwrap();
+        let mut settings = Settings::default();
+        settings.series = vec![
+            SeriesSettings {
+                name: "run_a".to_string(),
+                path: Some("/sims/run_a".to_string()),
+                active: true,
+                playhead: 50,
+                load_sections: vec![LoadSectionSettings::new(0, 100)],
+            },
+        ];
+        // Also set backward-compat top-level sections
+        settings.load_section = Some(LoadSectionSettings::new(0, 100));
+
+        settings.save_to_dir(dir.path()).unwrap();
+
+        let loaded = Settings::load_from_dir(dir.path()).unwrap().unwrap();
+        assert!(loaded.has_series());
+        assert_eq!(loaded.series.len(), 1);
+        assert_eq!(loaded.series[0].name, "run_a");
+        assert!(loaded.series[0].active);
+        assert_eq!(loaded.series[0].playhead, 50);
+
+        // Top-level still present for backward compat
+        let top = loaded.get_load_sections();
+        assert_eq!(top.len(), 1);
     }
 }

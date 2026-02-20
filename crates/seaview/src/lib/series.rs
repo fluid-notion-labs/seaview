@@ -49,6 +49,15 @@ impl SeriesId {
     pub fn raw(self) -> u64 {
         self.0
     }
+
+    /// Create a `SeriesId` from a raw `u64`.
+    ///
+    /// Intended for tests and settings restoration where IDs are
+    /// reconstructed from persisted data.  Normal runtime code should
+    /// let [`SeriesManager::add`] allocate IDs.
+    pub fn from_raw(val: u64) -> Self {
+        Self(val)
+    }
 }
 
 impl fmt::Display for SeriesId {

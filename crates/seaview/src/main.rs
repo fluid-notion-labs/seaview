@@ -533,6 +533,7 @@ fn handle_save_view(
     watch_config: Res<WatchConfig>,
     timeline: Res<Timeline>,
     env_obj_store: Res<EnvironmentObjectStoreRes>,
+    series_mgr: Res<seaview::SeriesManagerRes>,
     mut ui_state: ResMut<UiState>,
     time: Res<Time>,
 ) {
@@ -557,8 +558,15 @@ fn handle_save_view(
                 .set_environment(&env_light_cfg, &material_cfg);
             settings_res.settings.set_lighting_rig(&lighting_rig);
 
-            // Load sections — persist multi-section layout
-            settings_res.settings.set_load_sections(&timeline.sections);
+            // Load sections — persist multi-section layout.
+            // If we have multiple series, persist them all and use the
+            // active series' sections as the top-level backward-compat value.
+            // Otherwise fall back to the global timeline sections.
+            if series_mgr.len() > 0 {
+                settings_res.settings.set_series_from_manager(&series_mgr);
+            } else {
+                settings_res.settings.set_load_sections(&timeline.sections);
+            }
 
             // Environment objects — persist imported GLB scene props
             settings_res
