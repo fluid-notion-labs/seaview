@@ -33,7 +33,7 @@ use std::path::PathBuf;
 
 use crate::app::ui::state::UiState;
 use crate::lib::memory_budget::MemoryBudget;
-use crate::lib::series::SeriesManager;
+use crate::lib::series::{SeriesId, SeriesManager};
 
 // Re-export commonly used types from loader
 pub use loader::{
@@ -832,11 +832,16 @@ impl Plugin for SequencePlugin {
         .add_systems(
             Update,
             (advance_playback, playback::handle_keyboard_playback)
-                .before(sync_ui_from_sequence_manager),
+                .before(sync_series_manager),
         )
         .add_systems(
             Update,
-            (sync_ui_from_sequence_manager, update_timeline_budget),
+            (
+                sync_series_manager,
+                sync_ui_from_sequence_manager,
+                update_timeline_budget,
+            )
+                .chain(),
         );
     }
 }
@@ -1040,6 +1045,89 @@ fn advance_playback(
                 sm.is_playing = false;
                 *accumulator = 0.0;
                 break;
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Series ↔ global resource sync
+// ---------------------------------------------------------------------------
+
+/// Tracks which series was active last frame so we can detect switches.
+#[derive(Default)]
+struct SeriesSyncState {
+    /// The active series ID on the previous frame.
+    prev_active: Option<SeriesId>,
+}
+
+/// Bidirectional sync between [`SeriesManagerRes`] and the global
+/// [`Timeline`] / [`SequenceManager`] resources.
+///
+/// **Active-series switch** (detected by comparing `prev_active`):
+///   - Copies the new active series' `Timeline` into the global `Timeline`.
+///   - Copies the new active series' `Sequence` into `SequenceManager`.
+///   - Fires a [`LoadSequenceRequest`] so the loader picks up the new frames.
+///
+/// **Steady state** (same active series, no switch):
+///   - Syncs the global `Timeline` (mutated by playback, keyboard, UI drag)
+///     **back** into the active series' per-series timeline so the
+///     `SeriesManager` stays up to date.
+fn sync_series_manager(
+    mut series_mgr: ResMut<SeriesManagerRes>,
+    mut timeline: ResMut<Timeline>,
+    mut sequence_manager: ResMut<SequenceManager>,
+    mut load_events: MessageWriter<LoadSequenceRequest>,
+    mut sync_state: Local<SeriesSyncState>,
+) {
+    let current_active = series_mgr.active_id();
+
+    if current_active != sync_state.prev_active {
+        // --- Active series changed -------------------------------------------
+        if let Some(active) = series_mgr.active() {
+            info!(
+                "Series switch: {:?} → {} '{}'",
+                sync_state.prev_active,
+                active.id,
+                active.label,
+            );
+
+            // Push active series' timeline into the global resource.
+            *timeline = active.timeline.clone();
+
+            // Push sequence metadata into SequenceManager.
+            sequence_manager.load_sequence(active.sequence.clone());
+
+            // Trigger reload of the new series' frames.
+            let frame_paths: Vec<_> = active
+                .sequence
+                .frames
+                .iter()
+                .map(|f| f.path.clone())
+                .collect();
+            if !frame_paths.is_empty() {
+                info!(
+                    "Loading {} frames for series '{}' ({})",
+                    frame_paths.len(),
+                    active.label,
+                    active.id,
+                );
+                load_events.write(LoadSequenceRequest { frame_paths });
+            }
+        }
+        sync_state.prev_active = current_active;
+    } else if let Some(id) = current_active {
+        // --- Steady state: sync global Timeline back to active series --------
+        // Only write if something actually changed (avoid needless clones).
+        if let Some(active) = series_mgr.get(id) {
+            let global_changed = active.timeline.playhead != timeline.playhead
+                || active.timeline.sections != timeline.sections
+                || active.timeline.total_frames != timeline.total_frames;
+
+            if global_changed {
+                if let Some(active_mut) = series_mgr.get_mut(id) {
+                    active_mut.timeline = (*timeline).clone();
+                }
             }
         }
     }
