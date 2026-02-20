@@ -22,6 +22,7 @@
 //! mutations from the egui UI pass.
 
 use bevy::prelude::*;
+use log::{debug, trace};
 
 use bevy::ecs::system::SystemParam;
 
@@ -104,18 +105,23 @@ struct WatchedResources<'w> {
 }
 
 impl WatchedResources<'_> {
-    /// Returns `true` if any watched resource was mutated this frame.
-    fn any_changed(&self) -> bool {
-        self.env_light_cfg.is_changed()
-            || self.lighting_rig.is_changed()
-            || self.material_cfg.is_changed()
-            || self.ssr_config.is_changed()
-            || self.watch_config.is_changed()
-            || self.timeline.is_changed()
-            || self.env_obj_store.is_changed()
-            || self.series_mgr.is_changed()
-            || self.source_orientation.is_changed()
-            || self.saved_cameras.as_ref().map_or(false, |sc| sc.is_changed())
+    /// Returns a list of human-readable names of resources that changed this
+    /// frame.  Empty vec means nothing changed.
+    fn changed_names(&self) -> Vec<&'static str> {
+        let mut names = Vec::new();
+        if self.env_light_cfg.is_changed() { names.push("environment_light"); }
+        if self.lighting_rig.is_changed() { names.push("lighting_rig"); }
+        if self.material_cfg.is_changed() { names.push("material"); }
+        if self.ssr_config.is_changed() { names.push("ssr"); }
+        if self.watch_config.is_changed() { names.push("watch_config"); }
+        if self.timeline.is_changed() { names.push("timeline"); }
+        if self.env_obj_store.is_changed() { names.push("environment_objects"); }
+        if self.series_mgr.is_changed() { names.push("series_manager"); }
+        if self.source_orientation.is_changed() { names.push("source_orientation"); }
+        if self.saved_cameras.as_ref().map_or(false, |sc| sc.is_changed()) {
+            names.push("saved_cameras");
+        }
+        names
     }
 }
 
@@ -146,11 +152,25 @@ fn autosave_system(
     watched: WatchedResources,
 ) {
     // -- Change detection ----------------------------------------------------
-    // Mark dirty if any tracked resource changed this frame.
+    // Log the *cause* first ("user did X"), then the effect ("→ marking dirty").
 
-    let changed = !camera_changed.is_empty() || watched.any_changed();
+    let camera_moved = !camera_changed.is_empty();
+    let changed_resources = watched.changed_names();
 
-    if changed {
+    if camera_moved || !changed_resources.is_empty() {
+        if camera_moved && !changed_resources.is_empty() {
+            debug!(
+                "User moved camera + changed [{}] → marking dirty",
+                changed_resources.join(", ")
+            );
+        } else if camera_moved {
+            trace!("User moved camera → marking dirty");
+        } else {
+            debug!(
+                "User changed [{}] → marking dirty",
+                changed_resources.join(", ")
+            );
+        }
         autosave.state.mark_dirty();
     }
 
@@ -159,8 +179,12 @@ fn autosave_system(
     let delta = time.delta_secs_f64();
     let action = autosave.state.tick(delta);
 
-    if action != AutosaveAction::Save {
-        return;
+    match action {
+        AutosaveAction::Clean => return,
+        AutosaveAction::Wait => return,
+        AutosaveAction::Save => {
+            debug!("Autosave: debounce expired → saving seaview.toml");
+        }
     }
 
     // --- Gather current state into Settings ---
@@ -239,14 +263,14 @@ fn autosave_system(
                 Some(fade) => fade.restart(now),
                 None => ui_state.save_fade = Some(FadeEffect::new(now, 3.0)),
             }
-
             debug!(
-                "💾 Autosaved seaview.toml (save #{})",
-                autosave.state.save_count()
+                "Autosave: wrote seaview.toml (save #{}) → set last_saved_at={:.2}, save_fade active",
+                autosave.state.save_count(),
+                now,
             );
         }
         Err(e) => {
-            error!("Autosave failed: {}", e);
+            error!("Autosave: write failed: {} → will retry next frame", e);
             // Don't call saved() — will retry next frame
         }
     }

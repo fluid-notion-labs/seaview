@@ -141,7 +141,7 @@ pub fn draw_transport_row(
             .on_hover_text("Save now (autosave also runs automatically)")
             .clicked()
         {
-            debug!("💾 Save now button clicked!");
+            debug!("User clicked 💾 save now → skipping debounce");
             autosave.state.save_now();
         }
 
