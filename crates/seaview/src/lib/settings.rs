@@ -3091,4 +3091,248 @@ end = 200
         let top = loaded.get_load_sections();
         assert_eq!(top.len(), 1);
     }
+
+    // -----------------------------------------------------------------------
+    // Integration: full save → disk → load → restore round-trip
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_multi_series_full_roundtrip() {
+        use crate::lib::sequence::{FrameInfo, LoadSection, Sequence, Timeline};
+        use crate::lib::series::{SavedSeriesEntry, SeriesManager};
+
+        let dir = tempfile::tempdir().unwrap();
+
+        // -- Step 1: Build a SeriesManager with two series --------------------
+        let make_sequence = |name: &str, base: &str, n: usize| -> Sequence {
+            let base_dir = std::path::PathBuf::from(base);
+            let frames: Vec<FrameInfo> = (0..n)
+                .map(|i| {
+                    let path = base_dir.join(format!("{name}_{i:04}.obj"));
+                    FrameInfo {
+                        filename: path.file_name().unwrap().to_string_lossy().into_owned(),
+                        path,
+                        frame_number: i,
+                        file_size: 1024,
+                    }
+                })
+                .collect();
+            Sequence {
+                name: name.to_string(),
+                frames,
+                base_dir,
+                source_orientation: crate::lib::coordinates::SourceOrientation::default(),
+                pattern: format!("{name}_*.obj"),
+            }
+        };
+
+        let mut mgr = SeriesManager::new();
+        let seq_a = make_sequence("splash_v3", "/data/sims/splash_v3", 200);
+        let seq_b = make_sequence("flow_v7", "/data/sims/flow_v7", 500);
+
+        let id_a = mgr.add(seq_a, 200);
+        let id_b = mgr.add_with_sections(
+            seq_b,
+            500,
+            vec![LoadSection::new(10, 100), LoadSection::new(200, 350)],
+        );
+
+        // Make B the active series and set its playhead
+        mgr.set_active(id_b);
+        mgr.get_mut(id_a).unwrap().timeline.playhead = 42;
+        mgr.get_mut(id_b).unwrap().timeline.playhead = 175;
+
+        // Rename A to a custom label
+        mgr.rename(id_a, "Splash (renamed)");
+
+        // -- Step 2: Persist to Settings and write to disk --------------------
+        let mut settings = Settings::default();
+        settings.set_series_from_manager(&mgr);
+
+        // Verify in-memory state before write
+        assert_eq!(settings.series.len(), 2);
+        assert!(!settings.series[0].active); // A is not active
+        assert!(settings.series[1].active);  // B is active
+        assert_eq!(settings.series[0].name, "Splash (renamed)");
+        assert_eq!(settings.series[1].name, "flow_v7");
+        assert_eq!(settings.series[0].playhead, 42);
+        assert_eq!(settings.series[1].playhead, 175);
+
+        // B has 2 load sections, A has 1 (the default)
+        assert_eq!(settings.series[0].load_sections.len(), 1);
+        assert_eq!(settings.series[1].load_sections.len(), 2);
+
+        // Top-level backward-compat mirrors active series (B)
+        let top = settings.get_load_sections();
+        assert_eq!(top.len(), 2);
+        assert_eq!(top[0].start, 10);
+        assert_eq!(top[1].start, 200);
+
+        settings.save_to_dir(dir.path()).unwrap();
+
+        // -- Step 3: Load from disk into fresh Settings -----------------------
+        let loaded = Settings::load_from_dir(dir.path()).unwrap().unwrap();
+        assert!(loaded.has_series());
+        assert_eq!(loaded.series.len(), 2);
+
+        // Verify loaded matches written
+        assert_eq!(loaded.series[0].name, "Splash (renamed)");
+        assert_eq!(loaded.series[1].name, "flow_v7");
+        assert!(!loaded.series[0].active);
+        assert!(loaded.series[1].active);
+        assert_eq!(loaded.series[0].playhead, 42);
+        assert_eq!(loaded.series[1].playhead, 175);
+        assert_eq!(loaded.series[1].load_sections.len(), 2);
+        assert_eq!(loaded.series[1].load_sections[0].start, 10);
+        assert_eq!(loaded.series[1].load_sections[0].end, 100);
+        assert_eq!(loaded.series[1].load_sections[1].start, 200);
+        assert_eq!(loaded.series[1].load_sections[1].end, 350);
+
+        // -- Step 4: Simulate fresh discovery (new SeriesManager) -------------
+        // In real app, discovery finds the same sequences on disk.
+        let mut fresh_mgr = SeriesManager::new();
+        let fresh_a = make_sequence("splash_v3", "/data/sims/splash_v3", 200);
+        let fresh_b = make_sequence("flow_v7", "/data/sims/flow_v7", 500);
+        fresh_mgr.add(fresh_a, 200);
+        fresh_mgr.add(fresh_b, 500);
+
+        // Before restore: A is active (first added), default sections
+        assert_eq!(
+            fresh_mgr.active().unwrap().label,
+            "splash_v3",
+        );
+
+        // -- Step 5: Restore from loaded settings ----------------------------
+        let entries: Vec<SavedSeriesEntry> = loaded
+            .get_series()
+            .iter()
+            .map(SavedSeriesEntry::from)
+            .collect();
+        let matched = fresh_mgr.restore_from_saved(&entries, 500);
+        assert_eq!(matched, 2);
+
+        // -- Step 6: Verify restored state matches original -------------------
+        // Active should now be B (flow_v7)
+        let active = fresh_mgr.active().unwrap();
+        assert_eq!(active.label, "flow_v7");
+        assert_eq!(active.timeline.playhead, 175);
+        assert_eq!(active.timeline.sections.len(), 2);
+        assert_eq!(active.timeline.sections[0].start, 10);
+        assert_eq!(active.timeline.sections[0].end, 100);
+        assert_eq!(active.timeline.sections[1].start, 200);
+        assert_eq!(active.timeline.sections[1].end, 350);
+
+        // A should have restored label and playhead
+        let a = fresh_mgr
+            .find_by_dir(std::path::Path::new("/data/sims/splash_v3"))
+            .unwrap();
+        assert_eq!(a.label, "Splash (renamed)");
+        assert_eq!(a.timeline.playhead, 42);
+    }
+
+    #[test]
+    fn test_multi_series_roundtrip_backward_compat_no_series() {
+        // A legacy seaview.toml with no [[series]] should still work:
+        // get_series() returns empty, and the top-level load_section is used.
+        let dir = tempfile::tempdir().unwrap();
+
+        let mut settings = Settings::default();
+        settings.load_section = Some(LoadSectionSettings::new(10, 80));
+        settings.save_to_dir(dir.path()).unwrap();
+
+        let loaded = Settings::load_from_dir(dir.path()).unwrap().unwrap();
+        assert!(!loaded.has_series());
+        assert!(loaded.get_series().is_empty());
+
+        // Top-level load section is still there
+        let sections = loaded.get_load_sections();
+        assert_eq!(sections.len(), 1);
+        assert_eq!(sections[0].start, 10);
+        assert_eq!(sections[0].end, 80);
+    }
+
+    #[test]
+    fn test_multi_series_roundtrip_partial_match() {
+        // Saved settings have 3 series, but only 2 are discovered on disk.
+        // The unmatched entry should be silently skipped.
+        use crate::lib::sequence::{FrameInfo, LoadSection, Sequence};
+        use crate::lib::series::{SavedSeriesEntry, SeriesManager};
+
+        let dir = tempfile::tempdir().unwrap();
+
+        let mut settings = Settings::default();
+        settings.series = vec![
+            SeriesSettings {
+                name: "still_here".to_string(),
+                path: Some("/data/still_here".to_string()),
+                active: false,
+                playhead: 10,
+                load_sections: vec![LoadSectionSettings::new(0, 50)],
+            },
+            SeriesSettings {
+                name: "gone".to_string(),
+                path: Some("/data/deleted_run".to_string()),
+                active: true, // was active but no longer discovered
+                playhead: 99,
+                load_sections: vec![],
+            },
+            SeriesSettings {
+                name: "also_here".to_string(),
+                path: Some("/data/also_here".to_string()),
+                active: false,
+                playhead: 5,
+                load_sections: vec![],
+            },
+        ];
+        settings.save_to_dir(dir.path()).unwrap();
+
+        let loaded = Settings::load_from_dir(dir.path()).unwrap().unwrap();
+        assert_eq!(loaded.series.len(), 3);
+
+        // Simulate discovery that only finds 2 of the 3
+        let make_seq = |name: &str, base: &str, n: usize| -> Sequence {
+            let base_dir = std::path::PathBuf::from(base);
+            let frames: Vec<FrameInfo> = (0..n)
+                .map(|i| {
+                    let path = base_dir.join(format!("{name}_{i:04}.obj"));
+                    FrameInfo {
+                        filename: path.file_name().unwrap().to_string_lossy().into_owned(),
+                        path,
+                        frame_number: i,
+                        file_size: 1024,
+                    }
+                })
+                .collect();
+            Sequence {
+                name: name.to_string(),
+                frames,
+                base_dir,
+                source_orientation: crate::lib::coordinates::SourceOrientation::default(),
+                pattern: format!("{name}_*.obj"),
+            }
+        };
+
+        let mut mgr = SeriesManager::new();
+        mgr.add(make_seq("still_here", "/data/still_here", 100), 100);
+        mgr.add(make_seq("also_here", "/data/also_here", 80), 80);
+
+        let entries: Vec<SavedSeriesEntry> = loaded
+            .get_series()
+            .iter()
+            .map(SavedSeriesEntry::from)
+            .collect();
+        let matched = mgr.restore_from_saved(&entries, 100);
+        assert_eq!(matched, 2); // "gone" was skipped
+
+        // "still_here" got its playhead restored
+        let sh = mgr
+            .find_by_dir(std::path::Path::new("/data/still_here"))
+            .unwrap();
+        assert_eq!(sh.timeline.playhead, 10);
+
+        // Active should still be the first series (since the "active" entry
+        // was the deleted one that didn't match)
+        let active = mgr.active().unwrap();
+        assert_eq!(active.label, "still_here");
+    }
 }
