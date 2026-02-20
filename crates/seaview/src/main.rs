@@ -4,6 +4,7 @@ use bevy::pbr::wireframe::WireframePlugin;
 use bevy::pbr::{DefaultOpaqueRendererMethod, ScreenSpaceReflections};
 use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
+use seaview::app::autosave::AutosavePlugin;
 use seaview::app::environment_objects::{EnvironmentObjectPlugin, EnvironmentObjectStoreRes};
 use seaview::lib::lighting::{EnvironmentLightConfig, GlobalLight};
 use seaview::{
@@ -12,15 +13,12 @@ use seaview::{
 };
 
 use seaview::app::cli::Args;
-use seaview::app::input::ActionStateRes;
 use seaview::app::systems::camera::{
     camera_controller, cursor_grab_system, handle_center_on_mesh, keyboard_center_on_mesh,
     CenterOnMeshEvent, FpsCamera,
 };
 use seaview::app::systems::diagnostics::RenderingDiagnosticsPlugin;
-use seaview::app::ui::state::{MaterialConfig, SsrConfig, UiState};
-use seaview::lib::actions::Action;
-use seaview::lib::fade::FadeEffect;
+use seaview::app::ui::state::MaterialConfig;
 
 use seaview::lib::coordinates::SourceOrientation;
 use seaview::lib::global_settings::GlobalSettings;
@@ -28,7 +26,7 @@ use seaview::lib::sequence::{
     discovery::DiscoverSequenceRequest, LoadSection, LoadingPhase, LoadingPhaseState,
     SequencePlugin, Timeline, WatchConfig,
 };
-use seaview::lib::settings::{resolve_settings_dir, SaveViewEvent, Settings, SettingsResource};
+use seaview::lib::settings::{resolve_settings_dir, Settings, SettingsResource};
 
 /// Resource that holds saved load sections from `seaview.toml` until the
 /// sequence is loaded and the Timeline is ready to accept them.
@@ -170,7 +168,8 @@ fn main() {
         .add_plugins(MeshInfoPlugin)
         .add_plugins(EnvironmentObjectPlugin)
         .add_plugins(seaview::app::systems::AppSystemsPlugin)
-        .add_plugins(InputActionPlugin);
+        .add_plugins(InputActionPlugin)
+        .add_plugins(AutosavePlugin);
     #[cfg(feature = "spatial")]
     app.add_plugins(seaview::app::spatial_accelerator::SpatialAcceleratorPlugin);
 
@@ -179,7 +178,6 @@ fn main() {
         .insert_resource(settings_resource)
         .insert_resource(global_settings)
         .add_message::<CenterOnMeshEvent>()
-        .add_message::<SaveViewEvent>()
         .add_systems(
             Startup,
             (setup, handle_input_path, setup_cursor, init_watch_config),
@@ -192,12 +190,7 @@ fn main() {
                 cursor_grab_system,
                 handle_center_on_mesh,
                 keyboard_center_on_mesh,
-                action_save_bridge,
             ),
-        )
-        .add_systems(
-            PostUpdate,
-            handle_save_view.after(bevy_egui::EguiPostUpdateSet::EndPass),
         )
         .run();
 }
@@ -523,105 +516,7 @@ fn restore_saved_sections(
 /// System that handles save view requests.
 ///
 /// Persists camera (under the active name), playback, coordinates,
-/// Bridge: when the action system fires [`Action::SaveView`], emit a
-/// [`SaveViewEvent`] so the save handler picks it up.
-///
-/// Runs in `Update` (same schedule as the action system's `PreUpdate` output).
-/// The UI save button also writes `SaveViewEvent` directly (in PostUpdate /
-/// EguiPrimaryContextPass). Both are consumed by [`handle_save_view`] which
-/// now runs in `PostUpdate` after the egui pass.
-fn action_save_bridge(actions: Res<ActionStateRes>, mut save_events: MessageWriter<SaveViewEvent>) {
-    if actions.0.just_activated(Action::SaveView) {
-        save_events.write(SaveViewEvent);
-        debug!("💾 Save view triggered via action system (Ctrl+S)");
-    }
-}
 
-/// Saves the current camera, playback, lighting, material, load-section,
-/// and environment (lighting + materials) to `seaview.toml`.
-///
-/// Runs in **`PostUpdate`** (after `EguiPostUpdateSet::EndPass`) so it sees
-/// `SaveViewEvent` messages from both the action system bridge (written in
-/// `Update`) *and* the UI save button (written during `EguiPrimaryContextPass`).
-fn handle_save_view(
-    mut save_events: MessageReader<SaveViewEvent>,
-    mut settings_res: ResMut<SettingsResource>,
-    camera_query: Query<&Transform, (With<Camera3d>, With<FpsCamera>)>,
-    sequence_manager: Res<seaview::sequence::SequenceManager>,
-    source_orientation: Res<SourceOrientation>,
-    env_light_cfg: Res<EnvironmentLightConfig>,
-    lighting_rig: Res<seaview::lighting::LightingRig>,
-    material_cfg: Res<MaterialConfig>,
-    watch_config: Res<WatchConfig>,
-    timeline: Res<Timeline>,
-    env_obj_store: Res<EnvironmentObjectStoreRes>,
-    series_mgr: Res<seaview::SeriesManagerRes>,
-    ssr_config: Res<SsrConfig>,
-    mut ui_state: ResMut<UiState>,
-    time: Res<Time>,
-) {
-    for _event in save_events.read() {
-        if let Ok(transform) = camera_query.single() {
-            // Camera — save under the active name (defaults to "default")
-            settings_res.settings.set_camera_from_transform(transform);
-
-            // Playback + coordinates + watch
-            settings_res.settings.set_playback(
-                sequence_manager.speed,
-                sequence_manager.loop_enabled,
-                watch_config.enabled,
-            );
-            settings_res.settings.sequence = Some(seaview::lib::settings::SequenceSettings {
-                source_coordinates: Some(source_orientation.to_string()),
-            });
-
-            // Environment — env light + material + lighting rig
-            settings_res
-                .settings
-                .set_environment(&env_light_cfg, &material_cfg);
-            settings_res.settings.set_lighting_rig(&lighting_rig);
-
-            // Load sections — persist multi-section layout.
-            // If we have multiple series, persist them all and use the
-            // active series' sections as the top-level backward-compat value.
-            // Otherwise fall back to the global timeline sections.
-            if series_mgr.len() > 0 {
-                settings_res.settings.set_series_from_manager(&series_mgr);
-            } else {
-                settings_res.settings.set_load_sections(&timeline.sections);
-            }
-
-            // Environment objects — persist imported GLB scene props
-            settings_res
-                .settings
-                .set_environment_objects(&env_obj_store);
-
-            // SSR — persist screen-space reflections settings
-            settings_res.settings.set_ssr(&ssr_config);
-
-            match settings_res.save() {
-                Ok(()) => {
-                    let now = time.elapsed_secs_f64();
-                    ui_state.last_saved_at = Some(now);
-                    // Fire a 10-second fade animation (or restart if already active)
-                    match ui_state.save_fade.as_mut() {
-                        Some(fade) => fade.restart(now),
-                        None => ui_state.save_fade = Some(FadeEffect::new(now, 10.0)),
-                    }
-                    debug!(
-                        "💾 View saved to seaview.toml (camera='{}', environment included)",
-                        settings_res.settings.active_camera_name()
-                    );
-                }
-                Err(e) => {
-                    error!("Failed to save view: {}", e);
-                }
-            }
-        } else {
-            warn!("No camera found to save");
-        }
-    }
-}
 
 /// System that handles input paths and decides how to load them.
 ///

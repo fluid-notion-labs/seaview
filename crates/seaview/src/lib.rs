@@ -5,6 +5,7 @@
 
 pub mod lib {
     pub mod actions;
+    pub mod autosave;
     pub mod coordinates;
     pub mod environment_objects;
     pub mod fade;
@@ -22,6 +23,7 @@ pub mod lib {
 }
 
 pub mod app {
+    pub mod autosave;
     pub mod cli;
     pub mod environment_objects;
     pub mod input;

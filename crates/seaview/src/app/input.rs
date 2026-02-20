@@ -12,6 +12,12 @@
 //!    builds a new `HashSet<Action>`, and calls [`ActionState::update`].
 //! 3. Consumers read `Res<ActionStateRes>` — never raw keys.
 //!
+//! ## Diagnostic logging
+//!
+//! When `TRACE` level is enabled, the system logs every frame where a
+//! modifier shortcut fires or movement is suppressed, helping diagnose
+//! input conflicts.
+//!
 //! ## Modifier-key suppression
 //!
 //! When a modifier shortcut fires (e.g. Ctrl+S → SaveView), the base key (S)
@@ -134,11 +140,9 @@ pub fn update_action_state(
     // -- Global shortcuts (work even when egui has keyboard focus) -----------
     // These require a modifier so they can't conflict with text input.
 
-    if ctrl && !shift && keyboard.just_pressed(KeyCode::KeyS) {
-        active.insert(Action::SaveView);
-        input_map.consumed_keys.insert(KeyCode::KeyS);
-        shortcut_fired = true;
-    }
+    // Ctrl+S removed — autosave handles persistence automatically.
+    // Keeping S out of the shortcut path so it never conflicts with
+    // MoveBackward.
     if ctrl && !shift && keyboard.just_pressed(KeyCode::KeyC) {
         active.insert(Action::CenterOnMesh);
         input_map.consumed_keys.insert(KeyCode::KeyC);

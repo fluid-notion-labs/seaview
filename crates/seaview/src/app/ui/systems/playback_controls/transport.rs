@@ -13,7 +13,8 @@ use crate::lib::sequence::{
     LoadingPhase, LoadingPhaseState, SequenceManager, Timeline, WatchConfig,
 };
 use crate::lib::series::SeriesSummary;
-use crate::lib::settings::{CameraSettings, SaveViewEvent, SavedCameras};
+use crate::app::autosave::AutosaveRes;
+use crate::lib::settings::{CameraSettings, SavedCameras};
 
 /// Actions the transport row can request that must be applied *after* the UI
 /// closure finishes (to satisfy borrow-checker constraints on camera queries).
@@ -41,7 +42,7 @@ pub fn draw_transport_row(
     watch_config: &mut WatchConfig,
     loading_phase: &mut LoadingPhase,
     center_events: &mut MessageWriter<CenterOnMeshEvent>,
-    save_view_events: &mut MessageWriter<SaveViewEvent>,
+    autosave: &mut ResMut<AutosaveRes>,
     saved_cameras: &Option<ResMut<SavedCameras>>,
     series_summaries: &[SeriesSummary],
     display_current_frame: usize,
@@ -137,11 +138,11 @@ pub fn draw_transport_row(
 
         if ui
             .button("💾")
-            .on_hover_text("Save view (camera + environment) to seaview.toml")
+            .on_hover_text("Save now (autosave also runs automatically)")
             .clicked()
         {
-            debug!("💾 Save view button clicked!");
-            save_view_events.write(SaveViewEvent);
+            debug!("💾 Save now button clicked!");
+            autosave.state.save_now();
         }
 
         // -- Camera switching dropdown ----------------------------------------
@@ -301,7 +302,6 @@ pub fn apply_camera_actions(
         &mut Transform,
         (With<Camera3d>, With<crate::app::systems::camera::FpsCamera>),
     >,
-    save_view_events: &mut MessageWriter<SaveViewEvent>,
 ) {
     // Switch to a named camera
     if let Some(ref name) = actions.switch_to_camera {
@@ -327,7 +327,7 @@ pub fn apply_camera_actions(
                 sc.cameras.insert(name.clone(), cam_settings);
                 sc.active = name.clone();
                 debug!("📷+ Saved current camera as '{}'", name);
-                save_view_events.write(SaveViewEvent);
+                // Autosave will pick up the change via SavedCameras mutation
             }
         } else {
             warn!("No camera found to save as '{}'", name);

@@ -27,7 +27,8 @@ use crate::app::systems::camera::{CenterOnMeshEvent, FpsCamera};
 use crate::app::ui::state::UiState;
 use crate::lib::memory_budget::MemoryBudget;
 use crate::lib::sequence::{LoadingPhase, SequenceManager, SeriesManagerRes, Timeline, WatchConfig};
-use crate::lib::settings::{SaveViewEvent, SavedCameras};
+use crate::app::autosave::AutosaveRes;
+use crate::lib::settings::SavedCameras;
 
 use load_section_bar::LoadSectionDragState;
 
@@ -40,7 +41,7 @@ pub fn playback_controls_system(
     mut contexts: EguiContexts,
     ui_state: ResMut<UiState>,
     mut center_events: MessageWriter<CenterOnMeshEvent>,
-    mut save_view_events: MessageWriter<SaveViewEvent>,
+    mut autosave: ResMut<AutosaveRes>,
     time: Res<Time>,
     mut sequence_manager: ResMut<SequenceManager>,
     mut timeline: ResMut<Timeline>,
@@ -94,7 +95,7 @@ pub fn playback_controls_system(
                     &mut watch_config,
                     &mut loading_phase,
                     &mut center_events,
-                    &mut save_view_events,
+                    &mut autosave,
                     &saved_cameras,
                     &series_summaries,
                     display_current_frame,
@@ -143,6 +144,5 @@ pub fn playback_controls_system(
         &transport_actions,
         &mut saved_cameras,
         &mut camera_query,
-        &mut save_view_events,
     );
 }

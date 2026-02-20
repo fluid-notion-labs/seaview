@@ -1635,9 +1635,7 @@ pub fn resolve_settings_dir(path: &Path) -> Option<PathBuf> {
     }
 }
 
-/// Event sent when the user requests to save the current view
-#[derive(Message)]
-pub struct SaveViewEvent;
+
 
 // ---------------------------------------------------------------------------
 // Helper: extract (r, g, b, a) without relying on a method that may not exist
