@@ -33,6 +33,7 @@ use std::path::PathBuf;
 
 use crate::app::ui::state::UiState;
 use crate::lib::memory_budget::MemoryBudget;
+use crate::lib::series::SeriesManager;
 
 // Re-export commonly used types from loader
 pub use loader::{
@@ -783,6 +784,37 @@ pub fn frames_to_load(sections: &[LoadSection], total_frames: usize) -> Vec<usiz
 // Bevy plugin + systems (thin wrappers)
 // ---------------------------------------------------------------------------
 
+/// Bevy resource wrapper for [`SeriesManager`] (which is a pure lib type
+/// without Bevy derives).
+///
+/// Access the inner manager via `Deref` / `DerefMut`:
+/// ```ignore
+/// fn my_system(mgr: Res<SeriesManagerRes>) {
+///     for series in mgr.iter() { /* ... */ }
+/// }
+/// ```
+#[derive(Resource, Debug, Clone)]
+pub struct SeriesManagerRes(pub SeriesManager);
+
+impl Default for SeriesManagerRes {
+    fn default() -> Self {
+        Self(SeriesManager::new())
+    }
+}
+
+impl std::ops::Deref for SeriesManagerRes {
+    type Target = SeriesManager;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for SeriesManagerRes {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
 pub struct SequencePlugin;
 
 impl Plugin for SequencePlugin {
@@ -795,6 +827,7 @@ impl Plugin for SequencePlugin {
         ))
         .init_resource::<SequenceManager>()
         .init_resource::<Timeline>()
+        .init_resource::<SeriesManagerRes>()
         .add_message::<SequenceEvent>()
         .add_systems(
             Update,

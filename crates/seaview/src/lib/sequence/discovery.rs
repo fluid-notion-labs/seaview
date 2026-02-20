@@ -11,6 +11,8 @@
 //!    events and kicks off asset loading.
 
 use super::{loader::LoadSequenceRequest, FrameInfo, Sequence, SequenceEvent, SequenceManager};
+use crate::lib::memory_budget::MemoryBudget;
+use super::SeriesManagerRes;
 use bevy::prelude::*;
 use bevy::tasks::{block_on, IoTaskPool, Task};
 use regex::Regex;
@@ -27,11 +29,30 @@ pub struct SequenceDiscoveryPlugin;
 
 impl Plugin for SequenceDiscoveryPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(
-            Update,
-            (start_async_discovery, poll_async_discovery).chain(),
-        );
+        app.add_message::<AllSequencesDiscovered>()
+            .add_systems(
+                Update,
+                (
+                    start_async_discovery,
+                    poll_async_discovery,
+                    register_discovered_series,
+                )
+                    .chain(),
+            );
     }
+}
+
+/// Event fired when async discovery completes, carrying **all** discovered
+/// sequences (not just the first).
+///
+/// Downstream systems can read this to populate [`SeriesManager`] or present
+/// a selection UI.
+#[derive(Message, Debug, Clone)]
+pub struct AllSequencesDiscovered {
+    /// All sequences found in the scanned directory.
+    pub sequences: Vec<Sequence>,
+    /// Source orientation requested for these sequences.
+    pub source_orientation: crate::lib::coordinates::SourceOrientation,
 }
 
 // ---------------------------------------------------------------------------
@@ -180,12 +201,21 @@ fn start_async_discovery(
 
 /// System that polls in-flight discovery tasks each frame and, when one
 /// completes, fires events and triggers asset loading.
+/// System that polls in-flight discovery tasks each frame and, when one
+/// completes, fires events and kicks off asset loading.
+///
+/// **Multi-series change:** emits [`AllSequencesDiscovered`] with the full
+/// list of found sequences.  For backward compatibility the *first*
+/// sequence is still loaded immediately into `SequenceManager` +
+/// `LoadSequenceRequest`.  The [`register_discovered_series`] system
+/// picks up `AllSequencesDiscovered` to populate [`SeriesManager`].
 fn poll_async_discovery(
     mut commands: Commands,
     mut pending_query: Query<(Entity, &mut PendingDiscovery)>,
     mut sequence_manager: ResMut<SequenceManager>,
     mut events: MessageWriter<SequenceEvent>,
     mut load_events: MessageWriter<LoadSequenceRequest>,
+    mut all_discovered: MessageWriter<AllSequencesDiscovered>,
 ) {
     for (entity, mut pending) in pending_query.iter_mut() {
         if !pending.task.is_finished() {
@@ -201,36 +231,100 @@ fn poll_async_discovery(
 
         match result {
             Ok(sequences) => {
-                debug!("Async discovery found {} sequences", sequences.len());
+                let count = sequences.len();
+                info!(
+                    "Async discovery found {} sequence(s): [{}]",
+                    count,
+                    sequences
+                        .iter()
+                        .map(|s| format!("'{}' ({} frames)", s.name, s.frame_count()))
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                );
 
-                if let Some(sequence) = sequences.into_iter().next() {
-                    let frame_count = sequence.frame_count();
-                    let sequence_name = sequence.name.clone();
-
-                    // Trigger mesh loading via the loader system
-                    let frame_paths: Vec<_> =
-                        sequence.frames.iter().map(|f| f.path.clone()).collect();
-                    if !frame_paths.is_empty() {
-                        debug!(
-                            "Triggering load of {} mesh frames for sequence '{}'",
-                            frame_paths.len(),
-                            sequence_name,
-                        );
-                        load_events.write(LoadSequenceRequest { frame_paths });
-                    }
-
-                    sequence_manager.load_sequence(sequence);
-                    events.write(SequenceEvent::SequenceLoaded(sequence_name));
-                    events.write(SequenceEvent::DiscoveryCompleted(frame_count));
-                } else {
+                if sequences.is_empty() {
                     events.write(SequenceEvent::Error("No sequences found".to_string()));
+                    continue;
                 }
+
+                // Emit the full list for SeriesManager / multi-series UI.
+                // We need to infer source_orientation from the first seq —
+                // it was set during construction.
+                let source_orientation = sequences[0].source_orientation;
+                all_discovered.write(AllSequencesDiscovered {
+                    sequences: sequences.clone(),
+                    source_orientation,
+                });
+
+                // Backward compat: load the first sequence immediately
+                // into the legacy single-sequence path.
+                let first = sequences.into_iter().next().unwrap();
+                let frame_count = first.frame_count();
+                let sequence_name = first.name.clone();
+
+                let frame_paths: Vec<_> =
+                    first.frames.iter().map(|f| f.path.clone()).collect();
+                if !frame_paths.is_empty() {
+                    debug!(
+                        "Triggering load of {} mesh frames for sequence '{}'",
+                        frame_paths.len(),
+                        sequence_name,
+                    );
+                    load_events.write(LoadSequenceRequest { frame_paths });
+                }
+
+                sequence_manager.load_sequence(first);
+                events.write(SequenceEvent::SequenceLoaded(sequence_name));
+                events.write(SequenceEvent::DiscoveryCompleted(frame_count));
             }
             Err(e) => {
                 error!("Async discovery failed: {}", e);
                 events.write(SequenceEvent::Error(format!("Discovery failed: {e}")));
             }
         }
+    }
+}
+
+/// System that picks up [`AllSequencesDiscovered`] events and registers
+/// every discovered sequence into [`SeriesManager`].
+///
+/// The first sequence in each event becomes the active series (matching
+/// the legacy behavior of loading the first discovered sequence).
+fn register_discovered_series(
+    mut discovered: MessageReader<AllSequencesDiscovered>,
+    mut series_manager: ResMut<SeriesManagerRes>,
+    memory_budget: Res<MemoryBudget>,
+) {
+    let mgr = &mut *series_manager;
+
+    for event in discovered.read() {
+        let max_frames = if memory_budget.max_frames < usize::MAX {
+            memory_budget.max_frames
+        } else {
+            // No budget known yet — use total frames as ceiling.
+            event
+                .sequences
+                .first()
+                .map(|s| s.frame_count())
+                .unwrap_or(usize::MAX)
+        };
+
+        for sequence in &event.sequences {
+            let id = mgr.add(sequence.clone(), max_frames);
+            info!(
+                "Registered series '{}' as {} ({} frames, max_budget={})",
+                sequence.name,
+                id,
+                sequence.frame_count(),
+                max_frames,
+            );
+        }
+
+        info!(
+            "SeriesManager now has {} series, active: {:?}",
+            mgr.len(),
+            mgr.active_id(),
+        );
     }
 }
 
