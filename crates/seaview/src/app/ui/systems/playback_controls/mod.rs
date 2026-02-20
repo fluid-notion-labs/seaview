@@ -26,7 +26,7 @@ use bevy_egui::{egui, EguiContexts};
 use crate::app::systems::camera::{CenterOnMeshEvent, FpsCamera};
 use crate::app::ui::state::UiState;
 use crate::lib::memory_budget::MemoryBudget;
-use crate::lib::sequence::{LoadingPhase, SequenceManager, Timeline, WatchConfig};
+use crate::lib::sequence::{LoadingPhase, SequenceManager, SeriesManagerRes, Timeline, WatchConfig};
 use crate::lib::settings::{SaveViewEvent, SavedCameras};
 
 use load_section_bar::LoadSectionDragState;
@@ -49,6 +49,7 @@ pub fn playback_controls_system(
     mut saved_cameras: Option<ResMut<SavedCameras>>,
     mut camera_query: Query<&mut Transform, (With<Camera3d>, With<FpsCamera>)>,
     memory_budget: Res<MemoryBudget>,
+    mut series_mgr: ResMut<SeriesManagerRes>,
     mut section_drag: Local<Option<LoadSectionDragState>>,
 ) {
     if !ui_state.show_playback_controls {
@@ -71,6 +72,10 @@ pub fn playback_controls_system(
         display_total_frames
     };
 
+    // Snapshot series summaries for the transport row (avoids borrowing
+    // series_mgr inside the egui closure while we also need it mutable).
+    let series_summaries = series_mgr.summary();
+
     // Collect transport actions to apply after the panel closure
     let mut transport_actions = transport::TransportActions::default();
 
@@ -91,6 +96,7 @@ pub fn playback_controls_system(
                     &mut center_events,
                     &mut save_view_events,
                     &saved_cameras,
+                    &series_summaries,
                     display_current_frame,
                     display_total_frames,
                     display_is_playing,
@@ -119,6 +125,18 @@ pub fn playback_controls_system(
                 );
             });
         });
+
+    // -- Apply deferred series cycle actions ----------------------------------
+    if transport_actions.cycle_series_prev {
+        if let Some(new_id) = series_mgr.cycle_prev() {
+            debug!("◀ Cycled to previous series: {}", new_id);
+        }
+    }
+    if transport_actions.cycle_series_next {
+        if let Some(new_id) = series_mgr.cycle_next() {
+            debug!("▶ Cycled to next series: {}", new_id);
+        }
+    }
 
     // -- Apply deferred camera actions outside the egui closure ---------------
     transport::apply_camera_actions(

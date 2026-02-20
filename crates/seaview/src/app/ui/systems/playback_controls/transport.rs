@@ -12,6 +12,7 @@ use crate::app::systems::camera::CenterOnMeshEvent;
 use crate::lib::sequence::{
     LoadingPhase, LoadingPhaseState, SequenceManager, Timeline, WatchConfig,
 };
+use crate::lib::series::SeriesSummary;
 use crate::lib::settings::{CameraSettings, SaveViewEvent, SavedCameras};
 
 /// Actions the transport row can request that must be applied *after* the UI
@@ -22,6 +23,10 @@ pub struct TransportActions {
     pub switch_to_camera: Option<String>,
     /// Save the current camera transform under a new name.
     pub save_camera_as: Option<String>,
+    /// Switch to the previous series.
+    pub cycle_series_prev: bool,
+    /// Switch to the next series.
+    pub cycle_series_next: bool,
 }
 
 /// Draw the transport controls row.
@@ -38,6 +43,7 @@ pub fn draw_transport_row(
     center_events: &mut MessageWriter<CenterOnMeshEvent>,
     save_view_events: &mut MessageWriter<SaveViewEvent>,
     saved_cameras: &Option<ResMut<SavedCameras>>,
+    series_summaries: &[SeriesSummary],
     display_current_frame: usize,
     display_total_frames: usize,
     display_is_playing: bool,
@@ -65,6 +71,52 @@ pub fn draw_transport_row(
 
         if ui.button("⏭").on_hover_text("Next frame").clicked() {
             timeline.next_frame();
+        }
+
+        // -- Series selector (only when multiple series loaded) ---------------
+
+        if series_summaries.len() > 1 {
+            ui.separator();
+
+            if ui
+                .button("◀")
+                .on_hover_text("Previous series")
+                .clicked()
+            {
+                actions.cycle_series_prev = true;
+            }
+
+            let active_label = series_summaries
+                .iter()
+                .find(|s| s.is_active)
+                .map(|s| s.label.as_str())
+                .unwrap_or("—");
+            let active_idx = series_summaries
+                .iter()
+                .position(|s| s.is_active)
+                .map(|i| i + 1)
+                .unwrap_or(0);
+            ui.label(
+                egui::RichText::new(format!(
+                    "📂 {} ({}/{})",
+                    active_label,
+                    active_idx,
+                    series_summaries.len()
+                ))
+                .strong(),
+            )
+            .on_hover_text("Active series");
+
+            if ui.button("▶").on_hover_text("Next series").clicked() {
+                actions.cycle_series_next = true;
+            }
+        } else if series_summaries.len() == 1 {
+            // Single series — just show the name, no cycle buttons
+            ui.separator();
+            ui.label(
+                egui::RichText::new(format!("📂 {}", series_summaries[0].label)).weak(),
+            )
+            .on_hover_text("Loaded series");
         }
 
         ui.separator();
