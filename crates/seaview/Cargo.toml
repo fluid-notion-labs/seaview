@@ -3,6 +3,7 @@ name = "seaview"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
+default-run = "seaview"
 
 [lib]
 name = "seaview"
