@@ -100,25 +100,52 @@ fn discover_hdr_environment_maps(mut catalog: ResMut<EnvironmentMapCatalog>) {
     // Replicate Bevy's asset base path resolution:
     //   BEVY_ASSET_ROOT > CARGO_MANIFEST_DIR > exe parent directory
     // Then join "assets" (Bevy's default file_path).
-    let base = if let Ok(dir) = std::env::var("BEVY_ASSET_ROOT") {
-        std::path::PathBuf::from(dir)
+    let (base, source) = if let Ok(dir) = std::env::var("BEVY_ASSET_ROOT") {
+        (std::path::PathBuf::from(dir), "BEVY_ASSET_ROOT")
     } else if let Ok(dir) = std::env::var("CARGO_MANIFEST_DIR") {
-        std::path::PathBuf::from(dir)
+        (std::path::PathBuf::from(dir), "CARGO_MANIFEST_DIR")
     } else {
-        std::env::current_exe()
-            .map(|p| p.parent().map(|p| p.to_owned()).unwrap_or_default())
-            .unwrap_or_default()
+        (
+            std::env::current_exe()
+                .map(|p| p.parent().map(|p| p.to_owned()).unwrap_or_default())
+                .unwrap_or_default(),
+            "exe parent",
+        )
     };
 
     let assets_dir = base.join("assets");
+    let env_maps_dir = assets_dir.join("environment_maps");
+
+    debug!(
+        "HDR discovery: base='{}' (from {}), assets='{}', env_maps='{}'",
+        base.display(),
+        source,
+        assets_dir.display(),
+        env_maps_dir.display(),
+    );
+    debug!(
+        "HDR discovery: assets dir exists={}, env_maps dir exists={}",
+        assets_dir.exists(),
+        env_maps_dir.exists(),
+    );
 
     let discovered = discover_hdr_files(&assets_dir);
     let count = discovered.len();
 
+    debug!("HDR discovery: found {} .hdr/.exr files", count);
+
     for (name, asset_path) in discovered {
+        debug!("  registering '{}' → {}", name, asset_path);
         info!("Discovered HDR environment map: '{}' → {}", name, asset_path);
         catalog.register_hdr(name, asset_path);
     }
+
+    debug!(
+        "HDR discovery complete: catalog now has {} total entries ({} KTX2, {} HDR/EXR)",
+        catalog.entries.len(),
+        catalog.entries.iter().filter(|e| matches!(e.source, EnvironmentMapSource::Ktx2 { .. })).count(),
+        catalog.entries.iter().filter(|e| matches!(e.source, EnvironmentMapSource::Hdr { .. })).count(),
+    );
 
     if count > 0 {
         info!(

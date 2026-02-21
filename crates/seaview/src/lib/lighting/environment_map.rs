@@ -386,6 +386,12 @@ pub fn process_pending_hdr_cubemaps(
         return;
     }
 
+    debug!(
+        "process_pending_hdr_cubemaps: {} pending, {} already converted",
+        pending.pending.len(),
+        pending.converted.len(),
+    );
+
     // Collect work items first (immutable borrow of pending.pending) so we
     // can mutate pending.converted afterwards without a borrow conflict.
     let work: Vec<(usize, usize, Handle<Image>)> = pending
@@ -397,8 +403,10 @@ pub fn process_pending_hdr_cubemaps(
                 return Some((i, *catalog_idx, handle.clone())); // will be removed as completed
             }
             if asset_server.load_state(handle).is_loaded() {
+                debug!("  pending[{}] catalog_idx={} — asset loaded, ready to convert", i, catalog_idx);
                 Some((i, *catalog_idx, handle.clone()))
             } else {
+                debug!("  pending[{}] catalog_idx={} — still loading", i, catalog_idx);
                 None
             }
         })
@@ -413,11 +421,13 @@ pub fn process_pending_hdr_cubemaps(
     for (i, catalog_idx, handle) in &work {
         // Already converted — just mark for removal from pending list.
         if pending.converted.contains(catalog_idx) {
+            debug!("  catalog_idx={} already converted, removing from pending", catalog_idx);
             completed_indices.push(*i);
             continue;
         }
 
         let Some(image) = images.get_mut(handle) else {
+            debug!("  catalog_idx={} handle exists but image not in Assets — skipping", catalog_idx);
             continue;
         };
 
@@ -444,14 +454,24 @@ pub fn process_pending_hdr_cubemaps(
         // We need Rgba32Float data for the conversion.  The HDR/EXR loaders
         // produce this format.
         let format = image.texture_descriptor.format;
+        debug!(
+            "  catalog_idx={} source format={:?}, dimensions={}×{}, data_len={}",
+            catalog_idx,
+            format,
+            src_width,
+            src_height,
+            image.data.as_ref().map(|d| d.len()).unwrap_or(0),
+        );
         let src_floats = match format {
             bevy::render::render_resource::TextureFormat::Rgba32Float => {
                 // Data is already f32s — reinterpret the byte slice.
+                debug!("  Rgba32Float — zero-copy reinterpret to &[f32]");
                 let bytes = image.data.as_ref().expect("image has no data");
                 bytemuck::cast_slice::<u8, f32>(bytes).to_vec()
             }
             bevy::render::render_resource::TextureFormat::Rgba16Float => {
                 // Convert f16 → f32
+                debug!("  Rgba16Float — converting f16 → f32");
                 let bytes = image.data.as_ref().expect("image has no data");
                 let halfs = bytemuck::cast_slice::<u8, u16>(bytes);
                 halfs.iter().map(|&h| half_to_f32(h)).collect()
@@ -468,10 +488,21 @@ pub fn process_pending_hdr_cubemaps(
         };
 
         let face_size = choose_face_size(src_width);
+        debug!(
+            "  catalog_idx={} chose face_size={} (from src_width={}), converting {} source pixels → 6×{}×{} cubemap",
+            catalog_idx, face_size, src_width, src_floats.len() / 4, face_size, face_size,
+        );
         let cubemap_data = equirect_to_cubemap_faces(&src_floats, src_width, src_height, face_size);
 
         // Convert f32 data back to bytes
         let cubemap_bytes: Vec<u8> = bytemuck::cast_slice(&cubemap_data).to_vec();
+        debug!(
+            "  catalog_idx={} cubemap produced {} bytes ({} floats, {} pixels)",
+            catalog_idx,
+            cubemap_bytes.len(),
+            cubemap_data.len(),
+            cubemap_data.len() / 4,
+        );
 
         // Overwrite the image in-place: 6 faces as array layers
         image.texture_descriptor.size.width = face_size;
@@ -568,11 +599,16 @@ pub fn sync_environment_map(
         // Always update when config changes (handles intensity/brightness tweaks
         // and map switches). Bevy deduplicates identical asset loads internally.
         if config.is_changed() {
+            debug!(
+                "sync_environment_map: config changed — entry='{}' idx={} intensity={} skybox_brightness={}",
+                entry.name, idx, config.intensity, config.skybox_brightness,
+            );
             match &entry.source {
                 EnvironmentMapSource::Ktx2 {
                     diffuse_path,
                     specular_path,
                 } => {
+                    debug!("  KTX2 pair: diffuse='{}', specular='{}'", diffuse_path, specular_path);
                     let specular_handle: Handle<Image> = asset_server.load(specular_path);
                     let diffuse_handle: Handle<Image> = asset_server.load(diffuse_path);
 
@@ -592,13 +628,21 @@ pub fn sync_environment_map(
                     ));
                 }
                 EnvironmentMapSource::Hdr { asset_path } => {
+                    debug!("  HDR/EXR panorama: '{}'", asset_path);
                     let handle: Handle<Image> = asset_server.load(asset_path);
 
                     // Register for cubemap conversion if not already done
                     if !pending.converted.contains(&idx)
                         && !pending.pending.iter().any(|(ci, _)| *ci == idx)
                     {
+                        debug!("  Queued for cubemap conversion (catalog_idx={})", idx);
                         pending.pending.push((idx, handle.clone()));
+                    } else {
+                        debug!(
+                            "  Already queued or converted (converted={}, pending={})",
+                            pending.converted.contains(&idx),
+                            pending.pending.iter().any(|(ci, _)| *ci == idx),
+                        );
                     }
 
                     // Use the same handle for both diffuse and specular.
@@ -622,6 +666,7 @@ pub fn sync_environment_map(
             }
         }
     } else if has_marker {
+        debug!("sync_environment_map: removing env map components (enabled={}, selected={:?})", config.enabled, config.selected);
         // Remove env map components
         commands
             .entity(camera_entity)
