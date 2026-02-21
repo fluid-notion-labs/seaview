@@ -33,6 +33,8 @@ bevy = { version = "0.18.0", default-features = false, features = [
     "tonemapping_luts",
     "default_font",
     "png",
+    "exr",
+    "hdr",
     "bevy_remote",
     "bevy_mesh",
     "bevy_image",
