@@ -20,7 +20,7 @@ use std::sync::mpsc;
 use bevy_egui::egui;
 
 use crate::app::environment_objects::EnvironmentObjectStoreRes;
-use crate::app::ui::widgets::section_header_tracked;
+use crate::app::ui::widgets::{section_header_tracked, transform_editor};
 use crate::lib::coordinates::WindingOrder;
 use crate::lib::environment_objects::{
     AxisSign, CoordinatePreset, CustomMaterial, EnvironmentObjectId, MaterialOverride,
@@ -203,12 +203,11 @@ pub fn render_objects_section(
                         ui.add_space(4.0);
 
                         // ── Transform ──────────────────────────────
-                        egui::CollapsingHeader::new("Transform")
-                            .id_salt(header_id.with("transform"))
-                            .default_open(false)
-                            .show(ui, |ui| {
-                                mutated |= render_transform_controls(ui, &mut obj.transform);
-                            });
+                        mutated |= transform_editor::transform_editor_collapsible(
+                            ui,
+                            header_id.with("transform"),
+                            &mut obj.transform,
+                        );
 
                         // ── Coordinate Preset + Winding Order ──────
                         ui.horizontal(|ui| {
@@ -476,49 +475,6 @@ fn render_material_controls(
         });
     }
 
-    changed
-}
-
-// ---------------------------------------------------------------------------
-// Transform controls
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// Transform controls
-// ---------------------------------------------------------------------------
-
-/// Renders position / rotation / scale sliders.  Returns `true` if any value
-/// changed.
-fn render_transform_controls(
-    ui: &mut egui::Ui,
-    transform: &mut crate::lib::environment_objects::Transform3D,
-) -> bool {
-    let mut changed = false;
-
-    ui.label("Position");
-    changed |= drag_vec3(ui, &mut transform.position, "pos", 0.1);
-
-    ui.add_space(2.0);
-    ui.label("Rotation (degrees)");
-    changed |= drag_vec3(ui, &mut transform.rotation_degrees, "rot", 1.0);
-
-    ui.add_space(2.0);
-    ui.label("Scale");
-    changed |= drag_vec3(ui, &mut transform.scale, "scale", 0.01);
-
-    changed
-}
-
-/// Three-component drag-value row labelled X / Y / Z.
-fn drag_vec3(ui: &mut egui::Ui, values: &mut [f32; 3], _id_prefix: &str, speed: f32) -> bool {
-    let mut changed = false;
-    ui.horizontal(|ui| {
-        for (label, value) in ["X: ", "Y: ", "Z: "].iter().zip(values.iter_mut()) {
-            changed |= ui
-                .add(egui::DragValue::new(value).speed(speed).prefix(*label))
-                .changed();
-        }
-    });
     changed
 }
 
