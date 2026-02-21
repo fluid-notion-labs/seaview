@@ -72,8 +72,9 @@ use bevy::prelude::*;
 use loadfu::MeshFormat;
 use std::path::PathBuf;
 
-use super::{frames_to_load, Timeline};
+use super::{frames_to_load, SeriesManagerRes, Timeline};
 use crate::lib::memory_budget::MemoryBudget;
+use crate::lib::settings::SettingsResource;
 
 // ---------------------------------------------------------------------------
 // Tuning constants
@@ -278,6 +279,8 @@ fn handle_load_requests(
     memory_budget: Res<MemoryBudget>,
     mut load_queue: ResMut<LoadQueue>,
     mut spatial_index: Option<ResMut<SpatialIndex>>,
+    series_mgr: Res<SeriesManagerRes>,
+    settings_res: Res<SettingsResource>,
 ) {
     for request in load_requests.read() {
         info!(
@@ -335,6 +338,12 @@ fn handle_load_requests(
         // Store all paths for on-demand loading
         frame_store.frame_paths = request.frame_paths.clone();
 
+        // Store base path from first frame (needed before restore_saved_timeline
+        // so the series base_dir match works).
+        if let Some(first_path) = request.frame_paths.first() {
+            frame_store.base_path = first_path.parent().map(|p| p.to_path_buf());
+        }
+
         // Initialize Timeline for the new sequence.
         // If the real budget isn't known yet (first load, no vertex data),
         // pre-estimate from file sizes on disk so we don't blast out thousands
@@ -345,16 +354,44 @@ fn handle_load_requests(
             pre_estimate_max_frames(&request.frame_paths, &memory_budget, 5).unwrap_or(n)
         };
         timeline.init_sequence(n, max_frames);
-        info!(
-            "Timeline initialized: frames 0..{} (total: {}, budget max: {})",
-            timeline.section().end,
-            n,
-            max_frames
-        );
 
-        // Store base path from first frame
-        if let Some(first_path) = request.frame_paths.first() {
-            frame_store.base_path = first_path.parent().map(|p| p.to_path_buf());
+        // ── Restore saved sections / playhead ───────────────────────────
+        //
+        // `init_sequence` resets the timeline to a single default section
+        // [0..max_frames] with playhead=0.  If the user had saved
+        // per-series load sections (via autosave / seaview.toml), we need
+        // to overlay them here.
+        //
+        // There is a race between this system and `sync_series_manager`:
+        // both run in Update with no ordering constraint.  If
+        // `register_discovered_series` already ran (same frame), the
+        // SeriesManager will have restored sections.  If not, we fall
+        // back to the raw settings file.  Either way, the restored
+        // sections replace the default `init_sequence` output so saved
+        // state is not lost.
+        let restored = restore_saved_timeline(
+            &mut timeline,
+            &series_mgr,
+            &settings_res,
+            &frame_store,
+            n,
+            max_frames,
+        );
+        if restored {
+            info!(
+                "Timeline restored from saved state: {} section(s), playhead={} (total: {}, budget max: {})",
+                timeline.sections.len(),
+                timeline.playhead,
+                n,
+                max_frames,
+            );
+        } else {
+            info!(
+                "Timeline initialized (default): frames 0..{} (total: {}, budget max: {})",
+                timeline.section().end,
+                n,
+                max_frames,
+            );
         }
 
         // Enqueue frames for throttled loading instead of blasting them all
@@ -374,6 +411,89 @@ fn handle_load_requests(
             frame_store.base_path
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Saved-state restoration helper
+// ---------------------------------------------------------------------------
+
+/// Try to restore saved load sections and playhead into the timeline,
+/// returning `true` if saved state was applied.
+///
+/// Resolution order:
+/// 1. Active series in [`SeriesManagerRes`] (if `restore_from_saved` already
+///    ran and populated per-series sections).
+/// 2. Top-level `load_sections` / `load_section` from [`SettingsResource`]
+///    (legacy single-series path, or if the series manager hasn't been
+///    populated yet).
+///
+/// Sections are clamped to `total_frames` and filtered to non-empty.
+fn restore_saved_timeline(
+    timeline: &mut Timeline,
+    series_mgr: &SeriesManagerRes,
+    settings_res: &SettingsResource,
+    frame_store: &FrameStore,
+    total_frames: usize,
+    max_frames: usize,
+) -> bool {
+    use crate::lib::sequence::LoadSection;
+
+    // --- Strategy 1: active series in SeriesManager --------------------------
+    if let Some(active) = series_mgr.active() {
+        // Match by base_dir to make sure we're restoring for the right sequence.
+        let base_matches = frame_store
+            .base_path
+            .as_deref()
+            .map(|bp| bp == active.base_dir)
+            .unwrap_or(false);
+
+        if base_matches && !active.timeline.sections.is_empty() {
+            let mut sections: Vec<LoadSection> = active
+                .timeline
+                .sections
+                .iter()
+                .cloned()
+                .map(|mut s| {
+                    s.clamp(total_frames, max_frames);
+                    s
+                })
+                .filter(|s| s.frame_count() > 0)
+                .collect();
+
+            if !sections.is_empty() {
+                sections.sort_by_key(|s| s.start);
+                timeline.sections = sections;
+                let max_playhead = total_frames.saturating_sub(1);
+                if active.timeline.playhead > 0 {
+                    timeline.playhead = active.timeline.playhead.min(max_playhead);
+                }
+                return true;
+            }
+        }
+    }
+
+    // --- Strategy 2: top-level settings (legacy / fallback) ------------------
+    let saved_sections = settings_res.settings.get_load_sections();
+    if !saved_sections.is_empty() {
+        let mut sections: Vec<LoadSection> = saved_sections
+            .into_iter()
+            .map(|mut s| {
+                s.clamp(total_frames, max_frames);
+                s
+            })
+            .filter(|s| s.frame_count() > 0)
+            .collect();
+
+        if !sections.is_empty() {
+            sections.sort_by_key(|s| s.start);
+            timeline.sections = sections;
+            // Legacy path doesn't have a separate playhead in settings,
+            // so leave the default (0) from init_sequence.
+            return true;
+        }
+    }
+
+    false
 }
 
 // ---------------------------------------------------------------------------
