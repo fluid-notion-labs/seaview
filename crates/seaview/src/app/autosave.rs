@@ -187,6 +187,7 @@ impl Snapshot {
         for section in &timeline.sections {
             section.start.hash(&mut h);
             section.end.hash(&mut h);
+            section.active.hash(&mut h);
         }
 
         // Environment objects — use the generation counter (bumped on every mutation)
@@ -414,10 +415,19 @@ fn autosave_system(
         .set_lighting_rig(&resources.lighting_rig);
 
     // Load sections / series
+    //
+    // When multi-series is active, use set_series_from_manager_with_timeline
+    // so the active series' sections come from the authoritative global
+    // Timeline resource (which the UI mutates directly in PostUpdate) rather
+    // than the per-series copy in SeriesManager (only synced back in Update,
+    // so it may be one frame stale).
     if resources.series_mgr.len() > 0 {
         settings_res
             .settings
-            .set_series_from_manager(&resources.series_mgr);
+            .set_series_from_manager_with_timeline(
+                &resources.series_mgr,
+                &resources.timeline,
+            );
     } else {
         settings_res
             .settings

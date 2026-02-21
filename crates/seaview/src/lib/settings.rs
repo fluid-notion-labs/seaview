@@ -1326,6 +1326,47 @@ impl Settings {
         }
     }
 
+    /// Like [`set_series_from_manager`], but uses the authoritative global
+    /// [`Timeline`] for the active series' sections and playhead.
+    ///
+    /// The global `Timeline` resource is the single source of truth — it is
+    /// mutated directly by the UI (drag handles, keyboard, playback).  The
+    /// per-series copy inside `SeriesManager` is only synced back during
+    /// `Update`, so by the time the autosave system runs in `PostUpdate` the
+    /// manager's copy may be one frame stale.  This method avoids that race
+    /// by substituting the global timeline data for the active series entry.
+    pub fn set_series_from_manager_with_timeline(
+        &mut self,
+        mgr: &SeriesManager,
+        global_timeline: &crate::lib::sequence::Timeline,
+    ) {
+        let active_id = mgr.active_id();
+
+        self.series = mgr
+            .iter()
+            .map(|state| {
+                let mut s = SeriesSettings::from(state);
+                let is_active = active_id == Some(state.id);
+                s.active = is_active;
+                // For the active series, use the authoritative global
+                // timeline instead of the potentially-stale per-series copy.
+                if is_active {
+                    s.playhead = global_timeline.playhead;
+                    s.load_sections = global_timeline
+                        .sections
+                        .iter()
+                        .map(LoadSectionSettings::from)
+                        .collect();
+                }
+                s
+            })
+            .collect();
+
+        // Backward compat: mirror the active series' load sections into
+        // the top-level fields so older seaview versions still work.
+        self.set_load_sections(&global_timeline.sections);
+    }
+
     /// Check whether this settings file has multi-series entries.
     pub fn has_series(&self) -> bool {
         !self.series.is_empty()
@@ -3176,6 +3217,86 @@ end = 200
         assert_eq!(top_level.len(), 1);
         assert_eq!(top_level[0].start, 0);
         assert_eq!(top_level[0].end, 40);
+    }
+
+    #[test]
+    fn test_set_series_from_manager_with_timeline_overrides_active() {
+        use crate::lib::coordinates::SourceOrientation;
+        use crate::lib::sequence::{FrameInfo, LoadSection, Sequence, Timeline};
+        use crate::lib::series::SeriesManager;
+
+        let mut mgr = SeriesManager::new();
+
+        // Create two sequences
+        let mut seq1 = Sequence::new(
+            "alpha".to_string(),
+            std::path::PathBuf::from("/tmp/alpha"),
+            "frame_*.stl".to_string(),
+            SourceOrientation::default(),
+        );
+        for i in 0..100 {
+            seq1.frames.push(FrameInfo {
+                path: std::path::PathBuf::from(format!("/tmp/alpha/frame_{:04}.stl", i)),
+                frame_number: i,
+                filename: format!("frame_{:04}.stl", i),
+                file_size: 1024,
+            });
+        }
+
+        let mut seq2 = Sequence::new(
+            "beta".to_string(),
+            std::path::PathBuf::from("/tmp/beta"),
+            "frame_*.stl".to_string(),
+            SourceOrientation::default(),
+        );
+        for i in 0..200 {
+            seq2.frames.push(FrameInfo {
+                path: std::path::PathBuf::from(format!("/tmp/beta/frame_{:04}.stl", i)),
+                frame_number: i,
+                filename: format!("frame_{:04}.stl", i),
+                file_size: 1024,
+            });
+        }
+
+        let _id1 = mgr.add(seq1, 40);
+        let _id2 = mgr.add(seq2, 60);
+
+        // The series manager has stale sections for the active series (alpha):
+        // section 0..40.  Simulate the UI having resized it to 10..80 in the
+        // global Timeline resource (which hasn't been synced back yet).
+        let mut global_timeline = Timeline::default();
+        global_timeline.total_frames = 100;
+        global_timeline.playhead = 42;
+        global_timeline.sections = vec![
+            LoadSection { start: 10, end: 80, active: true },
+        ];
+
+        let mut settings = Settings::default();
+        settings.set_series_from_manager_with_timeline(&mgr, &global_timeline);
+
+        assert_eq!(settings.series.len(), 2);
+
+        // Active series (alpha) should use the global timeline's sections
+        // and playhead, NOT the stale per-series copy.
+        assert_eq!(settings.series[0].name, "alpha");
+        assert!(settings.series[0].active);
+        assert_eq!(settings.series[0].playhead, 42);
+        assert_eq!(settings.series[0].load_sections.len(), 1);
+        assert_eq!(settings.series[0].load_sections[0].start, 10);
+        assert_eq!(settings.series[0].load_sections[0].end, 80);
+        assert!(settings.series[0].load_sections[0].active);
+
+        // Inactive series (beta) should still use its own per-series data.
+        assert_eq!(settings.series[1].name, "beta");
+        assert!(!settings.series[1].active);
+        assert_eq!(settings.series[1].playhead, 0);
+        assert_eq!(settings.series[1].load_sections[0].end, 60);
+
+        // Backward compat: top-level load_section mirrors the global timeline
+        let top_level = settings.get_load_sections();
+        assert_eq!(top_level.len(), 1);
+        assert_eq!(top_level[0].start, 10);
+        assert_eq!(top_level[0].end, 80);
     }
 
     #[test]
