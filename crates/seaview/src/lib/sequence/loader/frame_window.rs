@@ -185,10 +185,30 @@ pub(super) fn manage_frame_window(
         );
     }
 
-    // 2. Spawn entities that are in new windows but were NOT in old windows.
+    // 2. Spawn entities that are in new windows but were NOT in old windows,
+    //    PLUS retry any window frames that weren't ready on previous ticks.
     //    Capped at SPAWNS_PER_FRAME to spread GPU upload work.
+    //
+    //    Build the full set of candidate indices: delta.to_spawn first (new
+    //    window entries), then all window frames that still lack entities
+    //    (retry for assets that weren't ready when the window was created).
+    let mut spawn_candidates: Vec<usize> = delta.to_spawn.clone();
+    for &(start, end) in &new_windows {
+        for idx in start..end {
+            if !spawn_candidates.contains(&idx)
+                && frame_store
+                    .frame_entities
+                    .get(idx)
+                    .and_then(|e| e.as_ref())
+                    .is_none()
+            {
+                spawn_candidates.push(idx);
+            }
+        }
+    }
+
     let mut spawns_this_frame = 0usize;
-    for &idx in &delta.to_spawn {
+    for &idx in &spawn_candidates {
         if spawns_this_frame >= SPAWNS_PER_FRAME {
             break;
         }
