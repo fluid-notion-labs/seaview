@@ -14,6 +14,7 @@ use bevy::mesh::Mesh;
 use bevy::prelude::*;
 
 use super::assets::{AssetIndex, FrameStore, LoaderConfig};
+use super::mesh_cache::MeshCache;
 use super::FrameLoadedEvent;
 use crate::lib::memory_budget::{estimate_mesh_gpu_bytes_from_vertices, MemoryBudget};
 use crate::lib::sequence::SequenceManager;
@@ -109,6 +110,7 @@ pub(super) fn track_asset_loading(
     meshes: Res<Assets<Mesh>>,
     mut memory_budget: ResMut<MemoryBudget>,
     material_config: Res<crate::app::ui::state::MaterialConfig>,
+    mut mesh_cache: ResMut<MeshCache>,
 ) {
     if !frame_store.loading {
         return;
@@ -148,6 +150,11 @@ pub(super) fn track_asset_loading(
                     success: true,
                 });
 
+                // Dual-write: mark MeshCache entry as loaded (Phase 1).
+                if let Some(cache_entry) = mesh_cache.get_by_asset_id_mut(id) {
+                    cache_entry.loaded = true;
+                }
+
                 // Create shared material on first loaded frame, using the
                 // current MaterialConfig so persisted values (color, roughness,
                 // etc.) are applied immediately — not the hardcoded defaults.
@@ -181,6 +188,13 @@ pub(super) fn track_asset_loading(
                             estimated_bytes as f64 / 1_048_576.0,
                             memory_budget.max_frames
                         );
+                    }
+
+                    // Dual-write: store estimated bytes in MeshCache entry.
+                    if let Some(cache_entry) = mesh_cache.get_by_asset_id_mut(id) {
+                        let estimated =
+                            estimate_mesh_gpu_bytes_from_vertices(mesh.count_vertices());
+                        cache_entry.estimated_bytes = estimated;
                     }
 
                     // Flag degenerate frames: <10% of expected vertex count

@@ -57,6 +57,7 @@ mod assets;
 mod frame_window;
 mod load_queue;
 mod loading_tracker;
+pub(crate) mod mesh_cache;
 pub(crate) mod spatial_index;
 
 // ── Public re-exports ─────────────────────────────────────────────────────
@@ -65,6 +66,7 @@ pub use assets::{FrameStore, LoaderConfig, LoadingStats};
 pub use frame_window::{compute_window_delta, WindowDelta};
 pub use load_queue::LoadQueue;
 pub use loading_tracker::default_material_properties;
+pub use mesh_cache::{CacheEntry, MeshCache};
 pub use spatial_index::SpatialIndex;
 
 use bevy::mesh::Mesh;
@@ -121,6 +123,7 @@ impl Plugin for SequenceLoaderPlugin {
             .init_resource::<LoaderConfig>()
             .init_resource::<AssetIndex>()
             .init_resource::<LoadQueue>()
+            .init_resource::<MeshCache>()
             .add_message::<FrameLoadedEvent>()
             .add_message::<LoadSequenceRequest>()
             .add_systems(
@@ -285,6 +288,7 @@ fn handle_load_requests(
     memory_budget: Res<MemoryBudget>,
     mut load_queue: ResMut<LoadQueue>,
     mut spatial_index: Option<ResMut<SpatialIndex>>,
+    mut mesh_cache: ResMut<MeshCache>,
     series_mgr: Res<SeriesManagerRes>,
     settings_res: Res<SettingsResource>,
 ) {
@@ -328,6 +332,7 @@ fn handle_load_requests(
         loader_config.reset();
         asset_index.reset();
         load_queue.clear();
+        mesh_cache.reset();
 
         let n = request.frame_paths.len();
         if let Some(ref mut si) = spatial_index {

@@ -20,6 +20,7 @@ use bevy::prelude::*;
 use std::collections::{HashSet, VecDeque};
 
 use super::assets::{AssetIndex, FrameStore};
+use super::mesh_cache::{CacheEntry, MeshCache};
 use super::{load_mesh_handle, rss_mb, LOADS_PER_FRAME};
 use crate::lib::sequence::{frames_to_load, Timeline};
 
@@ -138,6 +139,7 @@ pub(super) fn sync_section_loads(
     mut load_queue: ResMut<LoadQueue>,
     mut prev_sections: Local<Vec<crate::lib::sequence::LoadSection>>,
     mut meshes: ResMut<Assets<Mesh>>,
+    mut mesh_cache: ResMut<MeshCache>,
 ) {
     // Early-out: nothing to do if no sequence loaded.
     if frame_store.total_frames == 0 {
@@ -194,6 +196,11 @@ pub(super) fn sync_section_loads(
                 meshes_removed += 1;
             }
         }
+        // Dual-write: release from MeshCache (Phase 1 — mirrors FrameStore).
+        if idx < frame_store.frame_paths.len() {
+            let path = frame_store.frame_paths[idx].clone();
+            mesh_cache.release(&path);
+        }
         frame_store.frame_handles[idx] = None;
         if frame_store.loaded_frames[idx] {
             frame_store.loaded_frames[idx] = false;
@@ -248,6 +255,7 @@ pub(super) fn drain_load_queue(
     mut frame_store: ResMut<FrameStore>,
     mut asset_index: ResMut<AssetIndex>,
     asset_server: Res<AssetServer>,
+    mut mesh_cache: ResMut<MeshCache>,
 ) {
     if load_queue.is_empty() {
         return;
@@ -284,7 +292,19 @@ pub(super) fn drain_load_queue(
         let handle = load_mesh_handle(&asset_server, &filename);
         // Populate the reverse index for O(1) event lookup.
         asset_index.asset_id_to_frame.insert(handle.id(), idx);
-        frame_store.frame_handles[idx] = Some(vec![handle]);
+        frame_store.frame_handles[idx] = Some(vec![handle.clone()]);
+
+        // Dual-write: insert into MeshCache (Phase 1 — mirrors FrameStore).
+        let path = frame_store.frame_paths[idx].clone();
+        if mesh_cache.contains(&path) {
+            // Another frame index maps to the same path (e.g. cloned series
+            // in a future phase).  Just bump the refcount.
+            if let Some(entry) = mesh_cache.get_mut(&path) {
+                entry.add_ref();
+            }
+        } else {
+            mesh_cache.insert(path, CacheEntry::new(vec![handle]));
+        }
 
         loaded_this_frame += 1;
         trace!("Kicked load for frame {} ('{}')", idx, filename);
