@@ -336,6 +336,12 @@ pub fn environment_panel_system(
                                 state.transform = transform;
                             }
                         }
+                        for (id, swizzle, preset) in series_actions.swizzle_changes {
+                            if let Some(state) = series_mgr.get_mut(id) {
+                                state.swizzle = swizzle;
+                                state.coordinate_preset = preset;
+                            }
+                        }
                         if let Some(id) = series_actions.clone {
                             series_mgr.clone_series(id);
                         }

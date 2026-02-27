@@ -21,7 +21,7 @@ use bevy_egui::egui;
 
 use crate::app::ui::widgets::{section_header_tracked, transform_editor};
 use crate::lib::coordinates::SourceOrientation;
-use crate::lib::environment_objects::Transform3D;
+use crate::lib::environment_objects::{AxisSign, AxisSwizzle, CoordinatePreset, Transform3D};
 use crate::lib::sequence::discovery::{discover_sequences, SequencePatterns};
 use crate::lib::sequence::SeriesManagerRes;
 use crate::lib::series::{SeriesId, SeriesSummary};
@@ -52,6 +52,8 @@ pub struct SeriesPanelActions {
     pub rename: Option<(SeriesId, String)>,
     /// Per-series transforms that changed: (id, new_transform).
     pub transform_changes: Vec<(SeriesId, Transform3D)>,
+    /// Per-series swizzle changes: (id, new_swizzle, new_coordinate_preset).
+    pub swizzle_changes: Vec<(SeriesId, AxisSwizzle, CoordinatePreset)>,
     /// Clone a series (source ID).
     pub clone: Option<SeriesId>,
     /// Remove a series by ID.
@@ -244,6 +246,84 @@ pub fn render_series_section(
 
                     if transform_changed {
                         actions.transform_changes.push((id, t));
+                    }
+
+                    // ── Axis swizzle (flip X/Y/Z + coordinate preset) ──
+                    let (mut current_swizzle, mut current_preset) = series_mgr
+                        .get(id)
+                        .map(|s| (s.swizzle.clone(), s.coordinate_preset))
+                        .unwrap_or_default();
+
+                    let mut swizzle_changed = false;
+
+                    egui::CollapsingHeader::new("Coordinates")
+                        .id_salt(("series_coords", id.raw()))
+                        .default_open(false)
+                        .show(ui, |ui| {
+                            // Coordinate preset dropdown
+                            ui.horizontal(|ui| {
+                                ui.label("Preset:");
+                                egui::ComboBox::from_id_salt(("series_coord_preset", id.raw()))
+                                    .width(140.0)
+                                    .selected_text(current_preset.label())
+                                    .show_ui(ui, |ui| {
+                                        for preset in CoordinatePreset::ALL {
+                                            let is_selected = current_preset == *preset;
+                                            if ui
+                                                .selectable_label(is_selected, preset.label())
+                                                .clicked()
+                                                && !is_selected
+                                            {
+                                                current_preset = *preset;
+                                                if let Some(swizzle) = preset.to_swizzle() {
+                                                    current_swizzle = swizzle;
+                                                }
+                                                swizzle_changed = true;
+                                            }
+                                        }
+                                    });
+                            });
+
+                            // Flip checkboxes
+                            ui.horizontal(|ui| {
+                                ui.label("Flip");
+                                let mut flip_x = current_swizzle.x.sign == AxisSign::Negative;
+                                let mut flip_y = current_swizzle.y.sign == AxisSign::Negative;
+                                let mut flip_z = current_swizzle.z.sign == AxisSign::Negative;
+                                if ui.checkbox(&mut flip_x, "X").changed() {
+                                    current_swizzle.x.sign = if flip_x {
+                                        AxisSign::Negative
+                                    } else {
+                                        AxisSign::Positive
+                                    };
+                                    current_preset = CoordinatePreset::Custom;
+                                    swizzle_changed = true;
+                                }
+                                if ui.checkbox(&mut flip_y, "Y").changed() {
+                                    current_swizzle.y.sign = if flip_y {
+                                        AxisSign::Negative
+                                    } else {
+                                        AxisSign::Positive
+                                    };
+                                    current_preset = CoordinatePreset::Custom;
+                                    swizzle_changed = true;
+                                }
+                                if ui.checkbox(&mut flip_z, "Z").changed() {
+                                    current_swizzle.z.sign = if flip_z {
+                                        AxisSign::Negative
+                                    } else {
+                                        AxisSign::Positive
+                                    };
+                                    current_preset = CoordinatePreset::Custom;
+                                    swizzle_changed = true;
+                                }
+                            });
+                        });
+
+                    if swizzle_changed {
+                        actions
+                            .swizzle_changes
+                            .push((id, current_swizzle, current_preset));
                     }
 
                     ui.add_space(4.0);

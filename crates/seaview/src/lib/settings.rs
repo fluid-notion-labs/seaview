@@ -306,6 +306,24 @@ pub struct SeriesSettings {
     /// Per-series scale `[x, y, z]`.
     #[serde(default = "default_scale", skip_serializing_if = "is_identity_scale")]
     pub scale: [f32; 3],
+
+    /// Source coordinate system preset (Y-up, Z-up, or Custom).
+    #[serde(default, skip_serializing_if = "is_default_series_coord_preset")]
+    pub coordinate_preset: CoordinatePreset,
+
+    /// Per-axis sign flips `[flip_x, flip_y, flip_z]`.
+    /// Stored as booleans for TOML readability; converted to/from
+    /// [`AxisSwizzle`] at runtime.
+    #[serde(default, skip_serializing_if = "is_no_flips")]
+    pub flip_axes: [bool; 3],
+}
+
+fn is_default_series_coord_preset(p: &CoordinatePreset) -> bool {
+    *p == CoordinatePreset::default()
+}
+
+fn is_no_flips(v: &[bool; 3]) -> bool {
+    *v == [false, false, false]
 }
 
 fn default_scale() -> [f32; 3] {
@@ -327,6 +345,8 @@ impl Default for SeriesSettings {
             position: [0.0, 0.0, 0.0],
             rotation_degrees: [0.0, 0.0, 0.0],
             scale: [1.0, 1.0, 1.0],
+            coordinate_preset: CoordinatePreset::default(),
+            flip_axes: [false, false, false],
         }
     }
 }
@@ -347,6 +367,12 @@ impl From<&SeriesState> for SeriesSettings {
             position: state.transform.position,
             rotation_degrees: state.transform.rotation_degrees,
             scale: state.transform.scale,
+            coordinate_preset: state.coordinate_preset,
+            flip_axes: [
+                state.swizzle.x.sign == AxisSign::Negative,
+                state.swizzle.y.sign == AxisSign::Negative,
+                state.swizzle.z.sign == AxisSign::Negative,
+            ],
         }
     }
 }
@@ -360,6 +386,27 @@ impl SeriesSettings {
 
 impl From<&SeriesSettings> for crate::lib::series::SavedSeriesEntry {
     fn from(s: &SeriesSettings) -> Self {
+        use crate::lib::environment_objects::AxisMapping;
+
+        // Reconstruct AxisSwizzle from the coordinate preset + per-axis flips.
+        let base_swizzle = s.coordinate_preset.to_swizzle().unwrap_or_default();
+
+        let apply_flip = |mut mapping: AxisMapping, flip: bool| -> AxisMapping {
+            if flip {
+                mapping.sign = match mapping.sign {
+                    AxisSign::Positive => AxisSign::Negative,
+                    AxisSign::Negative => AxisSign::Positive,
+                };
+            }
+            mapping
+        };
+
+        let swizzle = AxisSwizzle {
+            x: apply_flip(base_swizzle.x, s.flip_axes[0]),
+            y: apply_flip(base_swizzle.y, s.flip_axes[1]),
+            z: apply_flip(base_swizzle.z, s.flip_axes[2]),
+        };
+
         Self {
             name: s.name.clone(),
             path: s.path.as_ref().map(std::path::PathBuf::from),
@@ -371,6 +418,8 @@ impl From<&SeriesSettings> for crate::lib::series::SavedSeriesEntry {
                 rotation_degrees: s.rotation_degrees,
                 scale: s.scale,
             },
+            swizzle,
+            coordinate_preset: s.coordinate_preset,
         }
     }
 }
@@ -3215,6 +3264,145 @@ playhead = 10
         assert_eq!(settings.position, [10.0, 20.0, 30.0]);
         assert_eq!(settings.rotation_degrees, [0.0, 180.0, 0.0]);
         assert_eq!(settings.scale, [1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn test_series_settings_swizzle_roundtrip() {
+        use crate::lib::environment_objects::CoordinatePreset;
+
+        let series = SeriesSettings {
+            name: "flipped".to_string(),
+            path: Some("/data/flipped".to_string()),
+            coordinate_preset: CoordinatePreset::Custom,
+            flip_axes: [true, false, true],
+            ..Default::default()
+        };
+
+        let toml_str = toml::to_string_pretty(&series).unwrap();
+        assert!(
+            toml_str.contains("coordinate_preset"),
+            "Custom preset should be serialized:\n{toml_str}"
+        );
+        assert!(
+            toml_str.contains("flip_axes"),
+            "Non-default flip_axes should be serialized:\n{toml_str}"
+        );
+
+        let recovered: SeriesSettings = toml::from_str(&toml_str).unwrap();
+        assert_eq!(recovered.coordinate_preset, CoordinatePreset::Custom);
+        assert_eq!(recovered.flip_axes, [true, false, true]);
+    }
+
+    #[test]
+    fn test_series_settings_swizzle_identity_skipped() {
+        let series = SeriesSettings {
+            name: "default_swizzle".to_string(),
+            path: Some("/data/default".to_string()),
+            ..Default::default()
+        };
+
+        let toml_str = toml::to_string_pretty(&series).unwrap();
+        assert!(
+            !toml_str.contains("coordinate_preset"),
+            "Default YUp preset should be skipped:\n{toml_str}"
+        );
+        assert!(
+            !toml_str.contains("flip_axes"),
+            "No-flip axes should be skipped:\n{toml_str}"
+        );
+    }
+
+    #[test]
+    fn test_series_settings_swizzle_backward_compat() {
+        // Old TOML without swizzle fields should deserialize with defaults
+        let toml_str = r#"
+name = "old_series"
+path = "/data/old"
+active = true
+playhead = 5
+"#;
+        let recovered: SeriesSettings = toml::from_str(toml_str).unwrap();
+        assert_eq!(
+            recovered.coordinate_preset,
+            crate::lib::environment_objects::CoordinatePreset::YUp
+        );
+        assert_eq!(recovered.flip_axes, [false, false, false]);
+    }
+
+    #[test]
+    fn test_series_settings_to_saved_entry_preserves_swizzle() {
+        use crate::lib::environment_objects::{AxisSign, CoordinatePreset};
+        use crate::lib::series::SavedSeriesEntry;
+
+        let series = SeriesSettings {
+            name: "flipped_y".to_string(),
+            path: Some("/data/flipped_y".to_string()),
+            coordinate_preset: CoordinatePreset::YUp,
+            flip_axes: [false, true, false],
+            ..Default::default()
+        };
+
+        let entry = SavedSeriesEntry::from(&series);
+        assert_eq!(entry.coordinate_preset, CoordinatePreset::YUp);
+        // Y axis should be negative (flipped)
+        assert_eq!(entry.swizzle.y.sign, AxisSign::Negative);
+        // X and Z should remain positive
+        assert_eq!(entry.swizzle.x.sign, AxisSign::Positive);
+        assert_eq!(entry.swizzle.z.sign, AxisSign::Positive);
+    }
+
+    #[test]
+    fn test_series_state_to_settings_preserves_swizzle() {
+        use crate::lib::environment_objects::{
+            AxisMapping, AxisSign, AxisSwizzle, CoordinatePreset, SourceAxis, Transform3D,
+        };
+        use crate::lib::sequence::FrameInfo;
+        use crate::lib::series::{SeriesId, SeriesState};
+
+        let seq = crate::lib::sequence::Sequence {
+            name: "swizzled".to_string(),
+            base_dir: "/data/swizzled".into(),
+            frames: vec![FrameInfo::new("/data/swizzled/frame_0000.obj".into(), 0)],
+            source_orientation: crate::lib::coordinates::SourceOrientation::default(),
+            pattern: String::new(),
+        };
+        let mut state = SeriesState::new(SeriesId::from_raw(0), seq, 100);
+        state.coordinate_preset = CoordinatePreset::Custom;
+        state.swizzle = AxisSwizzle {
+            x: AxisMapping::neg(SourceAxis::X),
+            y: AxisMapping::pos(SourceAxis::Y),
+            z: AxisMapping::neg(SourceAxis::Z),
+        };
+
+        let settings = SeriesSettings::from(&state);
+        assert_eq!(settings.coordinate_preset, CoordinatePreset::Custom);
+        assert_eq!(settings.flip_axes, [true, false, true]);
+    }
+
+    #[test]
+    fn test_series_settings_zup_preset_with_flip() {
+        use crate::lib::environment_objects::{AxisSign, CoordinatePreset, SourceAxis};
+        use crate::lib::series::SavedSeriesEntry;
+
+        // Z-up preset with an additional X flip
+        let series = SeriesSettings {
+            name: "zup_flipped".to_string(),
+            path: Some("/data/zup".to_string()),
+            coordinate_preset: CoordinatePreset::ZUp,
+            flip_axes: [true, false, false],
+            ..Default::default()
+        };
+
+        let entry = SavedSeriesEntry::from(&series);
+        assert_eq!(entry.coordinate_preset, CoordinatePreset::ZUp);
+        // Z-up base swizzle: X→+X, Y→+Z, Z→-Y
+        // With X flipped: X→-X, Y→+Z, Z→-Y
+        assert_eq!(entry.swizzle.x.sign, AxisSign::Negative);
+        assert_eq!(entry.swizzle.x.source, SourceAxis::X);
+        assert_eq!(entry.swizzle.y.sign, AxisSign::Positive);
+        assert_eq!(entry.swizzle.y.source, SourceAxis::Z);
+        assert_eq!(entry.swizzle.z.sign, AxisSign::Negative);
+        assert_eq!(entry.swizzle.z.source, SourceAxis::Y);
     }
 
     #[test]

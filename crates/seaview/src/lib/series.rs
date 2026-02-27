@@ -30,7 +30,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::path::PathBuf;
 
-use crate::lib::environment_objects::Transform3D;
+use crate::lib::environment_objects::{AxisSwizzle, CoordinatePreset, Transform3D};
 use crate::lib::sequence::{LoadSection, Sequence, Timeline};
 
 // ---------------------------------------------------------------------------
@@ -97,6 +97,16 @@ pub struct SeriesState {
     /// Applied to all spawned frame entities for this series.
     /// Defaults to identity.
     pub transform: Transform3D,
+
+    /// Axis remapping applied *before* position/rotation/scale.
+    /// Allows flipping individual axes or swapping coordinate systems
+    /// (e.g. Y-up ↔ Z-up) per series.
+    pub swizzle: AxisSwizzle,
+
+    /// Source coordinate system preset.  Selecting a preset auto-configures
+    /// the [`swizzle`](Self::swizzle).  `Custom` means the user controls
+    /// the swizzle directly.
+    pub coordinate_preset: CoordinatePreset,
 }
 
 impl SeriesState {
@@ -119,6 +129,8 @@ impl SeriesState {
             label,
             base_dir,
             transform: Transform3D::default(),
+            swizzle: AxisSwizzle::default(),
+            coordinate_preset: CoordinatePreset::default(),
         }
     }
 
@@ -424,6 +436,8 @@ impl SeriesManager {
         let timeline = source.timeline.clone();
         let base_dir = source.base_dir.clone();
         let transform = source.transform.clone();
+        let swizzle = source.swizzle.clone();
+        let coordinate_preset = source.coordinate_preset;
 
         let new_id = self.alloc_id();
 
@@ -434,6 +448,8 @@ impl SeriesManager {
             label,
             base_dir,
             transform,
+            swizzle,
+            coordinate_preset,
         };
 
         self.series.insert(new_id, clone);
@@ -497,6 +513,10 @@ pub struct SavedSeriesEntry {
     pub load_sections: Vec<LoadSection>,
     /// Per-series transform (position, rotation, scale).
     pub transform: Transform3D,
+    /// Axis remapping (flip X/Y/Z, coordinate system swap).
+    pub swizzle: AxisSwizzle,
+    /// Source coordinate system preset.
+    pub coordinate_preset: CoordinatePreset,
 }
 
 impl SeriesManager {
@@ -546,8 +566,10 @@ impl SeriesManager {
                 state.apply_saved_sections(entry.load_sections.clone(), max_frames);
             }
 
-            // Apply transform
+            // Apply transform + swizzle
             state.transform = entry.transform.clone();
+            state.swizzle = entry.swizzle.clone();
+            state.coordinate_preset = entry.coordinate_preset;
 
             // Apply playhead (clamped to valid range)
             if entry.playhead > 0 {
@@ -1439,6 +1461,8 @@ mod tests {
                 .with_position(5.0, 10.0, -3.0)
                 .with_rotation_degrees(0.0, 90.0, 0.0)
                 .with_scale(2.0, 2.0, 2.0),
+            swizzle: AxisSwizzle::default(),
+            coordinate_preset: CoordinatePreset::default(),
         }];
 
         let matched = mgr.restore_from_saved(&saved, 100);

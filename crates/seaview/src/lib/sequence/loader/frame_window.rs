@@ -21,6 +21,7 @@
 //! are kept in sync as **mirrors** so that existing consumers (UI, spatial
 //! index, etc.) continue to work without changes.
 
+use bevy::math::{Mat3, Vec3};
 use bevy::mesh::Mesh;
 use bevy::prelude::*;
 
@@ -29,7 +30,7 @@ use super::mesh_cache::MeshCache;
 use super::series_frame_store::SeriesFrameStore;
 use super::{rss_mb, SequenceMeshDisplay, SPAWNS_PER_FRAME};
 use crate::app::ui::state::RenderConfig;
-use crate::lib::environment_objects::Transform3D;
+use crate::lib::environment_objects::{AxisSwizzle, Transform3D};
 use crate::lib::memory_budget::MemoryBudget;
 use crate::lib::sequence::{compute_spawn_windows, SeriesManagerRes, Timeline};
 
@@ -153,13 +154,14 @@ pub(super) fn manage_frame_window(
         frame_store.total_frames,
     );
 
-    // Compose series transform (user position/rotation/scale) with the
-    // coordinate-system transform.  Series transform is the "parent" —
-    // it positions the whole series in world space.  Coord transform is
-    // the "child" — it fixes axis orientation per-mesh.
-    let series_transform = active_series
-        .map(|s| s.transform.to_bevy_transform())
+    // Compose series transform: user_transform * swizzle * coord_transform.
+    // - coord_transform fixes source file axis orientation (set once at load)
+    // - swizzle remaps/flips axes per-series (user-editable)
+    // - user_transform positions the series in world space
+    let (series_swizzle, series_t3d) = active_series
+        .map(|s| (s.swizzle.clone(), s.transform.clone()))
         .unwrap_or_default();
+    let series_transform = compose_series_transform(&series_t3d, &series_swizzle);
     let transform = series_transform * loader_config.coord_transform;
     let frame_bytes = frame_store.estimated_frame_bytes;
 
@@ -582,19 +584,25 @@ pub(super) fn sync_series_transform(
     series_mgr: Res<SeriesManagerRes>,
     series_fs: Res<SeriesFrameStore>,
     mut transform_query: Query<&mut Transform, With<SequenceMeshDisplay>>,
-    mut prev_transform: Local<Option<Transform3D>>,
+    mut prev_transform: Local<Option<(Transform3D, AxisSwizzle)>>,
 ) {
     let current_t3d = series_mgr
         .active()
         .map(|s| s.transform.clone())
         .unwrap_or_default();
 
-    // Early out if transform hasn't changed
+    let current_swizzle = series_mgr
+        .active()
+        .map(|s| s.swizzle.clone())
+        .unwrap_or_default();
+
+    // Early out if neither transform nor swizzle has changed
     let changed = match prev_transform.as_ref() {
-        Some(prev) => {
-            prev.position != current_t3d.position
-                || prev.rotation_degrees != current_t3d.rotation_degrees
-                || prev.scale != current_t3d.scale
+        Some((prev_t, prev_s)) => {
+            prev_t.position != current_t3d.position
+                || prev_t.rotation_degrees != current_t3d.rotation_degrees
+                || prev_t.scale != current_t3d.scale
+                || *prev_s != current_swizzle
         }
         None => true, // first run — always apply
     };
@@ -603,7 +611,8 @@ pub(super) fn sync_series_transform(
         return;
     }
 
-    let composed = current_t3d.to_bevy_transform() * loader_config.coord_transform;
+    let composed =
+        compose_series_transform(&current_t3d, &current_swizzle) * loader_config.coord_transform;
 
     let active_id = series_mgr.active_id();
 
@@ -639,7 +648,57 @@ pub(super) fn sync_series_transform(
         }
     }
 
-    *prev_transform = Some(current_t3d);
+    *prev_transform = Some((current_t3d, current_swizzle));
+}
+
+// ---------------------------------------------------------------------------
+// Transform composition helper
+// ---------------------------------------------------------------------------
+
+/// Compose a series' user transform (position/rotation/scale) with its axis
+/// swizzle into a single Bevy `Transform`.
+///
+/// The swizzle is applied *before* the user transform — it remaps the mesh's
+/// source axes, then the user transform positions/rotates/scales in world
+/// space.  This matches the composition order used by environment objects.
+///
+/// When the swizzle is identity (the common case), this is just
+/// `t3d.to_bevy_transform()` with no extra work.
+pub(super) fn compose_series_transform(t3d: &Transform3D, swizzle: &AxisSwizzle) -> Transform {
+    let user_transform = t3d.to_bevy_transform();
+
+    if swizzle.is_identity() {
+        return user_transform;
+    }
+
+    // Build the swizzle as a 3×3 signed permutation matrix.
+    let m = swizzle.to_matrix();
+    let swizzle_mat = Mat3::from_cols(
+        Vec3::new(m[0][0], m[0][1], m[0][2]),
+        Vec3::new(m[1][0], m[1][1], m[1][2]),
+        Vec3::new(m[2][0], m[2][1], m[2][2]),
+    );
+
+    // Decompose into rotation (quaternion) + scale.
+    // det = +1 → proper rotation, Quat::from_mat3 works directly.
+    // det = -1 → improper rotation (reflection); absorb one axis flip into
+    //            scale so the remaining matrix is a proper rotation.
+    let det = swizzle_mat.determinant();
+    let (rot_mat, swizzle_scale) = if det < 0.0 {
+        let flipped = Mat3::from_cols(swizzle_mat.col(0), swizzle_mat.col(1), -swizzle_mat.col(2));
+        (flipped, Vec3::new(1.0, 1.0, -1.0))
+    } else {
+        (swizzle_mat, Vec3::ONE)
+    };
+    let swizzle_rot = Quat::from_mat3(&rot_mat);
+
+    // Compose: user_transform * swizzle.
+    // Swizzle is applied to the mesh first, then user transform on top.
+    Transform {
+        translation: user_transform.translation,
+        rotation: user_transform.rotation * swizzle_rot,
+        scale: user_transform.scale * swizzle_scale,
+    }
 }
 
 // ---------------------------------------------------------------------------
