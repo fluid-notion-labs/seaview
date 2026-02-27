@@ -22,7 +22,7 @@ use std::collections::{HashSet, VecDeque};
 use super::assets::{AssetIndex, FrameStore};
 use super::mesh_cache::{CacheEntry, MeshCache};
 use super::{load_mesh_handle, rss_mb, LOADS_PER_FRAME};
-use crate::lib::sequence::{frames_to_load, Timeline};
+use crate::lib::sequence::{frames_to_load, union_frames_to_load, SeriesManagerRes, Timeline};
 
 // ---------------------------------------------------------------------------
 // LoadQueue
@@ -140,6 +140,7 @@ pub(super) fn sync_section_loads(
     mut prev_sections: Local<Vec<crate::lib::sequence::LoadSection>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut mesh_cache: ResMut<MeshCache>,
+    series_mgr: Res<SeriesManagerRes>,
 ) {
     // Early-out: nothing to do if no sequence loaded.
     if frame_store.total_frames == 0 {
@@ -161,7 +162,24 @@ pub(super) fn sync_section_loads(
 
     let rss_before = rss_mb();
 
-    let needed = frames_to_load(&timeline.sections, frame_store.total_frames);
+    // Phase 3: compute the UNION of needed frames across all series.
+    // If multiple series share the same files, each file is loaded once
+    // into MeshCache and shared via Handle cloning.
+    //
+    // For now all series share the same FrameStore (same file set), so
+    // total_frames is the same.  The union just ensures we load the
+    // superset of all series' section ranges.
+    let needed = if series_mgr.len() > 1 {
+        let all_sections: Vec<(&[crate::lib::sequence::LoadSection], usize)> = series_mgr
+            .iter()
+            .map(|s| (s.timeline.sections.as_slice(), frame_store.total_frames))
+            .collect();
+        union_frames_to_load(&all_sections)
+    } else {
+        // Single series (common case) — use the global timeline directly,
+        // avoiding the overhead of collecting section slices.
+        frames_to_load(&timeline.sections, frame_store.total_frames)
+    };
 
     // Use the pure reconciliation function to decide what to load/unload.
     let reconciliation = reconcile_section_loads(&needed, frame_store.total_frames, |idx| {

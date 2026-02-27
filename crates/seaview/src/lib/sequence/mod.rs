@@ -781,6 +781,48 @@ pub fn frames_to_load(sections: &[LoadSection], total_frames: usize) -> Vec<usiz
     out
 }
 
+/// Compute the **union** of needed frame indices across multiple series'
+/// section lists.
+///
+/// Each entry in `all_sections` is the `(sections, total_frames)` pair for
+/// one series.  The result is a sorted, deduplicated `Vec<usize>` of all
+/// frame indices that any series needs loaded.
+///
+/// This is the multi-series generalisation of [`frames_to_load`] — the
+/// loader calls this to determine which files [`MeshCache`] should hold.
+///
+/// ```ignore
+/// // Series A wants [0..100], series B wants [80..200]
+/// // Union: [0..200]
+/// let union = union_frames_to_load(&[
+///     (&series_a.sections, 300),
+///     (&series_b.sections, 300),
+/// ]);
+/// ```
+pub fn union_frames_to_load(all_sections: &[(&[LoadSection], usize)]) -> Vec<usize> {
+    // For a single series, skip the dedup overhead.
+    if all_sections.len() == 1 {
+        let (sections, total) = all_sections[0];
+        return frames_to_load(sections, total);
+    }
+
+    // Collect all frame indices, then sort + dedup.
+    let mut out = Vec::new();
+    for &(sections, total_frames) in all_sections {
+        for section in sections {
+            if !section.active {
+                continue;
+            }
+            let end = section.end.min(total_frames);
+            let start = section.start.min(end);
+            out.extend(start..end);
+        }
+    }
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
 // ---------------------------------------------------------------------------
 // Bevy plugin + systems (thin wrappers)
 // ---------------------------------------------------------------------------
@@ -2354,5 +2396,108 @@ mod tests {
         let sections = vec![LoadSection::new(0, 100)];
         let indices = frames_to_load(&sections, 0);
         assert!(indices.is_empty());
+    }
+
+    // ── union_frames_to_load ──────────────────────────────────────────
+
+    #[test]
+    fn test_union_single_series() {
+        let sections = vec![LoadSection::new(0, 10)];
+        let result = union_frames_to_load(&[(&sections, 100)]);
+        assert_eq!(result, (0..10).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn test_union_two_series_overlapping() {
+        // Series A: [0..100], Series B: [80..200]
+        // Union should be [0..200] with no duplicates.
+        let a = vec![LoadSection::new(0, 100)];
+        let b = vec![LoadSection::new(80, 200)];
+        let result = union_frames_to_load(&[(&a, 300), (&b, 300)]);
+        assert_eq!(result.len(), 200);
+        assert_eq!(result[0], 0);
+        assert_eq!(*result.last().unwrap(), 199);
+        // Verify no duplicates
+        let mut deduped = result.clone();
+        deduped.dedup();
+        assert_eq!(result, deduped);
+    }
+
+    #[test]
+    fn test_union_two_series_disjoint() {
+        let a = vec![LoadSection::new(0, 50)];
+        let b = vec![LoadSection::new(100, 150)];
+        let result = union_frames_to_load(&[(&a, 200), (&b, 200)]);
+        assert_eq!(result.len(), 100);
+        assert_eq!(result[0], 0);
+        assert_eq!(result[49], 49);
+        assert_eq!(result[50], 100);
+        assert_eq!(result[99], 149);
+    }
+
+    #[test]
+    fn test_union_two_series_identical() {
+        let a = vec![LoadSection::new(10, 20)];
+        let b = vec![LoadSection::new(10, 20)];
+        let result = union_frames_to_load(&[(&a, 100), (&b, 100)]);
+        assert_eq!(result.len(), 10);
+        assert_eq!(result, (10..20).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn test_union_empty_sections() {
+        let result = union_frames_to_load(&[]);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_union_one_series_empty_sections() {
+        let a = vec![LoadSection::new(0, 50)];
+        let b: Vec<LoadSection> = vec![];
+        let result = union_frames_to_load(&[(&a, 100), (&b, 100)]);
+        assert_eq!(result.len(), 50);
+    }
+
+    #[test]
+    fn test_union_clamps_to_total_frames() {
+        // Series A has total_frames=50 but section goes to 100
+        let a = vec![LoadSection::new(0, 100)];
+        let result = union_frames_to_load(&[(&a, 50)]);
+        assert_eq!(result.len(), 50);
+        assert_eq!(*result.last().unwrap(), 49);
+    }
+
+    #[test]
+    fn test_union_different_total_frames() {
+        // Series A: 100 frames, section [0..100]
+        // Series B: 200 frames, section [50..200]
+        // Union: [0..200] but A clamps to 100, B clamps to 200
+        let a = vec![LoadSection::new(0, 100)];
+        let b = vec![LoadSection::new(50, 200)];
+        let result = union_frames_to_load(&[(&a, 100), (&b, 200)]);
+        assert_eq!(result.len(), 200);
+        assert_eq!(result[0], 0);
+        assert_eq!(*result.last().unwrap(), 199);
+    }
+
+    #[test]
+    fn test_union_inactive_sections_skipped() {
+        let a = vec![LoadSection::new(0, 50)];
+        let mut inactive = LoadSection::new(50, 100);
+        inactive.active = false;
+        let b = vec![inactive];
+        let result = union_frames_to_load(&[(&a, 200), (&b, 200)]);
+        assert_eq!(result.len(), 50);
+    }
+
+    #[test]
+    fn test_union_multi_section_per_series() {
+        let a = vec![LoadSection::new(0, 30), LoadSection::new(70, 100)];
+        let b = vec![LoadSection::new(20, 80)];
+        let result = union_frames_to_load(&[(&a, 200), (&b, 200)]);
+        // Union: 0..100
+        assert_eq!(result.len(), 100);
+        assert_eq!(result[0], 0);
+        assert_eq!(*result.last().unwrap(), 99);
     }
 }
