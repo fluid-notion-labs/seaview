@@ -410,6 +410,44 @@ impl SeriesManager {
         }
     }
 
+    /// Clone a series, creating a new entry with the same sequence data
+    /// but an independent ID, label, timeline, and transform.
+    ///
+    /// The clone is inserted immediately after the source in display order.
+    /// Returns `None` if the source ID doesn't exist.
+    pub fn clone_series(&mut self, source_id: SeriesId) -> Option<SeriesId> {
+        let source = self.series.get(&source_id)?;
+
+        // Clone all needed data before mutating self (alloc_id borrows &mut self).
+        let label = format!("{} (copy)", source.label);
+        let sequence = source.sequence.clone();
+        let timeline = source.timeline.clone();
+        let base_dir = source.base_dir.clone();
+        let transform = source.transform.clone();
+
+        let new_id = self.alloc_id();
+
+        let clone = SeriesState {
+            id: new_id,
+            sequence,
+            timeline,
+            label,
+            base_dir,
+            transform,
+        };
+
+        self.series.insert(new_id, clone);
+
+        // Insert right after the source in display order
+        if let Some(pos) = self.order.iter().position(|id| *id == source_id) {
+            self.order.insert(pos + 1, new_id);
+        } else {
+            self.order.push(new_id);
+        }
+
+        Some(new_id)
+    }
+
     /// Total loaded frames across *all* series (for global budget display).
     pub fn total_loaded_all(&self) -> usize {
         self.series.values().map(|s| s.total_loaded()).sum()
@@ -1294,6 +1332,89 @@ mod tests {
         mgr.restore_from_saved(&saved, 100);
         let after = mgr.find_by_dir(Path::new("/data/alpha")).unwrap();
         assert_eq!(after.timeline.playhead, 55);
+    }
+
+    // ── clone_series ─────────────────────────────────────────────────
+
+    #[test]
+    fn clone_series_basic() {
+        let mut mgr = SeriesManager::new();
+        let seq = dummy_sequence_in_dir("splash", 100, "/data/splash");
+        let original_id = mgr.add(seq, 100);
+
+        let clone_id = mgr.clone_series(original_id).unwrap();
+        assert_ne!(original_id, clone_id);
+
+        let clone = mgr.get(clone_id).unwrap();
+        assert_eq!(clone.label, "splash (copy)");
+        assert_eq!(clone.base_dir, Path::new("/data/splash"));
+        assert_eq!(clone.frame_count(), 100);
+    }
+
+    #[test]
+    fn clone_series_inserted_after_source() {
+        let mut mgr = SeriesManager::new();
+        let seq_a = dummy_sequence_in_dir("alpha", 50, "/data/a");
+        let seq_b = dummy_sequence_in_dir("beta", 50, "/data/b");
+        let id_a = mgr.add(seq_a, 50);
+        let id_b = mgr.add(seq_b, 50);
+
+        let clone_id = mgr.clone_series(id_a).unwrap();
+
+        // Order should be: alpha, alpha (copy), beta
+        let ids: Vec<SeriesId> = mgr.ids().to_vec();
+        assert_eq!(ids, vec![id_a, clone_id, id_b]);
+    }
+
+    #[test]
+    fn clone_series_independent_transform() {
+        use crate::lib::environment_objects::Transform3D;
+
+        let mut mgr = SeriesManager::new();
+        let seq = dummy_sequence_in_dir("splash", 100, "/data/splash");
+        let original_id = mgr.add(seq, 100);
+
+        // Set a transform on the original
+        mgr.get_mut(original_id).unwrap().transform =
+            Transform3D::default().with_position(5.0, 0.0, 0.0);
+
+        let clone_id = mgr.clone_series(original_id).unwrap();
+
+        // Clone starts with same transform
+        assert_eq!(
+            mgr.get(clone_id).unwrap().transform.position,
+            [5.0, 0.0, 0.0]
+        );
+
+        // Mutating clone doesn't affect original
+        mgr.get_mut(clone_id).unwrap().transform.position = [99.0, 0.0, 0.0];
+        assert_eq!(
+            mgr.get(original_id).unwrap().transform.position,
+            [5.0, 0.0, 0.0]
+        );
+    }
+
+    #[test]
+    fn clone_series_independent_timeline() {
+        let mut mgr = SeriesManager::new();
+        let seq = dummy_sequence_in_dir("splash", 100, "/data/splash");
+        let original_id = mgr.add(seq, 100);
+        mgr.get_mut(original_id).unwrap().timeline.playhead = 42;
+
+        let clone_id = mgr.clone_series(original_id).unwrap();
+
+        // Clone starts with same playhead
+        assert_eq!(mgr.get(clone_id).unwrap().timeline.playhead, 42);
+
+        // Mutating clone doesn't affect original
+        mgr.get_mut(clone_id).unwrap().timeline.playhead = 99;
+        assert_eq!(mgr.get(original_id).unwrap().timeline.playhead, 42);
+    }
+
+    #[test]
+    fn clone_series_nonexistent_returns_none() {
+        let mut mgr = SeriesManager::new();
+        assert!(mgr.clone_series(SeriesId::from_raw(999)).is_none());
     }
 
     #[test]

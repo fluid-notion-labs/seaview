@@ -332,6 +332,12 @@ pub fn environment_panel_system(
                                 state.transform = transform;
                             }
                         }
+                        if let Some(id) = series_actions.clone {
+                            series_mgr.clone_series(id);
+                        }
+                        if let Some(id) = series_actions.remove {
+                            series_mgr.remove(id);
+                        }
                     }
 
                     ui.add_space(5.0);

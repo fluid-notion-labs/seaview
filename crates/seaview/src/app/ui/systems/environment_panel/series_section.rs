@@ -18,8 +18,8 @@ use bevy_egui::egui;
 
 use crate::app::ui::widgets::{section_header_tracked, transform_editor};
 use crate::lib::environment_objects::Transform3D;
-use crate::lib::series::{SeriesId, SeriesSummary};
 use crate::lib::sequence::SeriesManagerRes;
+use crate::lib::series::{SeriesId, SeriesSummary};
 
 // ---------------------------------------------------------------------------
 // Deferred actions
@@ -35,6 +35,10 @@ pub struct SeriesPanelActions {
     pub rename: Option<(SeriesId, String)>,
     /// Per-series transforms that changed: (id, new_transform).
     pub transform_changes: Vec<(SeriesId, Transform3D)>,
+    /// Clone a series (source ID).
+    pub clone: Option<SeriesId>,
+    /// Remove a series by ID.
+    pub remove: Option<SeriesId>,
 }
 
 // ---------------------------------------------------------------------------
@@ -102,92 +106,118 @@ pub fn render_series_section(
 
             let collapsing_id = ui.id().with(("series_row", id.raw()));
 
-            egui::CollapsingHeader::new(
-                egui::RichText::new(&header_text).color(header_color),
-            )
-            .id_salt(collapsing_id)
-            .default_open(is_active)
-            .show(ui, |ui| {
-                // ── Click to activate ─────────────────────────
-                if !is_active {
-                    if ui
-                        .button("⏵ Set Active")
-                        .on_hover_text("Switch to this series")
-                        .clicked()
-                    {
-                        actions.switch_to = Some(id);
+            egui::CollapsingHeader::new(egui::RichText::new(&header_text).color(header_color))
+                .id_salt(collapsing_id)
+                .default_open(is_active)
+                .show(ui, |ui| {
+                    // ── Click to activate ─────────────────────────
+                    if !is_active {
+                        if ui
+                            .button("⏵ Set Active")
+                            .on_hover_text("Switch to this series")
+                            .clicked()
+                        {
+                            actions.switch_to = Some(id);
+                        }
+                        ui.add_space(2.0);
                     }
+
+                    // ── Rename ────────────────────────────────────
+                    let rename_buf_id = ui.id().with(("series_rename", id.raw()));
+                    let mut name_buf: String = ui
+                        .data_mut(|d| d.get_temp::<String>(rename_buf_id))
+                        .unwrap_or_else(|| summary.label.clone());
+
+                    ui.horizontal(|ui| {
+                        ui.label("Name:");
+                        let response = ui.text_edit_singleline(&mut name_buf);
+
+                        if response.lost_focus()
+                            && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                            && !name_buf.trim().is_empty()
+                            && name_buf.trim() != summary.label
+                        {
+                            actions.rename = Some((id, name_buf.trim().to_string()));
+                            // Reset buffer to the new name
+                            let trimmed = name_buf.trim().to_string();
+                            ui.data_mut(|d| d.insert_temp(rename_buf_id, trimmed));
+                        } else {
+                            ui.data_mut(|d| d.insert_temp(rename_buf_id, name_buf));
+                        }
+                    });
+
                     ui.add_space(2.0);
-                }
 
-                // ── Rename ────────────────────────────────────
-                let rename_buf_id = ui.id().with(("series_rename", id.raw()));
-                let mut name_buf: String = ui
-                    .data_mut(|d| d.get_temp::<String>(rename_buf_id))
-                    .unwrap_or_else(|| summary.label.clone());
-
-                ui.horizontal(|ui| {
-                    ui.label("Name:");
-                    let response = ui.text_edit_singleline(&mut name_buf);
-
-                    if response.lost_focus()
-                        && ui.input(|i| i.key_pressed(egui::Key::Enter))
-                        && !name_buf.trim().is_empty()
-                        && name_buf.trim() != summary.label
-                    {
-                        actions.rename = Some((id, name_buf.trim().to_string()));
-                        // Reset buffer to the new name
-                        let trimmed = name_buf.trim().to_string();
-                        ui.data_mut(|d| d.insert_temp(rename_buf_id, trimmed));
+                    // ── Progress bar ──────────────────────────────
+                    let loaded = summary.loaded_frames;
+                    let total = summary.total_frames;
+                    let fraction = if total > 0 {
+                        loaded as f32 / total as f32
                     } else {
-                        ui.data_mut(|d| d.insert_temp(rename_buf_id, name_buf));
+                        0.0
+                    };
+
+                    ui.horizontal(|ui| {
+                        ui.label("Frames:");
+                        let bar = egui::ProgressBar::new(fraction)
+                            .text(format!("{loaded} / {total}"))
+                            .desired_width(ui.available_width() - 4.0);
+                        ui.add(bar);
+                    });
+
+                    if summary.total_frames > 0 {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "Playhead: {} / {}",
+                                summary.playhead, summary.total_frames
+                            ))
+                            .small()
+                            .color(egui::Color32::from_gray(140)),
+                        );
                     }
-                });
 
-                ui.add_space(2.0);
+                    ui.add_space(4.0);
 
-                // ── Progress bar ──────────────────────────────
-                let loaded = summary.loaded_frames;
-                let total = summary.total_frames;
-                let fraction = if total > 0 {
-                    loaded as f32 / total as f32
-                } else {
-                    0.0
-                };
-
-                ui.horizontal(|ui| {
-                    ui.label("Frames:");
-                    let bar = egui::ProgressBar::new(fraction)
-                        .text(format!("{loaded} / {total}"))
-                        .desired_width(ui.available_width() - 4.0);
-                    ui.add(bar);
-                });
-
-                if summary.total_frames > 0 {
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "Playhead: {} / {}",
-                            summary.playhead, summary.total_frames
-                        ))
-                        .small()
-                        .color(egui::Color32::from_gray(140)),
+                    // ── Per-series transform ──────────────────────
+                    let mut t = current_transform.clone();
+                    let transform_changed = transform_editor::transform_editor_collapsible(
+                        ui,
+                        ("series_transform", id.raw()),
+                        &mut t,
                     );
-                }
 
-                ui.add_space(4.0);
+                    if transform_changed {
+                        actions.transform_changes.push((id, t));
+                    }
 
-                // ── Per-series transform ──────────────────────
-                let mut t = current_transform.clone();
-                let transform_changed = transform_editor::transform_editor_collapsible(
-                    ui,
-                    ("series_transform", id.raw()),
-                    &mut t,
-                );
+                    ui.add_space(4.0);
 
-                if transform_changed {
-                    actions.transform_changes.push((id, t));
-                }
-            });
+                    // ── Clone / Remove buttons ────────────────────
+                    ui.horizontal(|ui| {
+                        if ui
+                            .button("⧉ Clone")
+                            .on_hover_text("Duplicate this series with independent transform")
+                            .clicked()
+                        {
+                            actions.clone = Some(id);
+                        }
+
+                        if !is_active {
+                            if ui
+                                .button("🗑 Remove")
+                                .on_hover_text("Unload this series")
+                                .clicked()
+                            {
+                                actions.remove = Some(id);
+                            }
+                        } else {
+                            ui.add_enabled_ui(false, |ui| {
+                                ui.button("🗑 Remove")
+                                    .on_hover_text("Cannot remove the active series");
+                            });
+                        }
+                    });
+                });
 
             ui.add_space(2.0);
         }
