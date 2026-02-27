@@ -220,33 +220,42 @@ pub struct LoadingState {
     /// Number of frames loaded
     pub loaded_frames: usize,
 
-    /// Total frames to load
+    /// Total frames in the sequence (on disk).
     pub total_frames: usize,
+
+    /// Number of frames the load sections actually want to load.
+    /// This is the meaningful denominator for progress display.
+    pub target_frames: usize,
 
     /// Name of the sequence being loaded
     pub sequence_name: Option<String>,
 }
 
 impl LoadingState {
-    /// Get loading progress as a percentage (0.0 to 1.0)
+    /// Get loading progress as a percentage (0.0 to 1.0).
+    ///
+    /// Uses `target_frames` (load-section total) as the denominator so
+    /// progress reflects how much of the *requested* work is done, not
+    /// a fraction of all frames on disk.
     pub fn progress(&self) -> f32 {
-        if self.total_frames == 0 {
+        if self.target_frames == 0 {
             0.0
         } else {
-            self.loaded_frames as f32 / self.total_frames as f32
+            (self.loaded_frames as f32 / self.target_frames as f32).min(1.0)
         }
     }
 
     /// Check if loading is complete
     pub fn is_complete(&self) -> bool {
-        self.total_frames > 0 && self.loaded_frames >= self.total_frames
+        self.target_frames > 0 && self.loaded_frames >= self.target_frames
     }
 
-    /// Update from [`FrameStore`] resource.
-    pub fn update_from_frame_store(&mut self, store: &FrameStore) {
+    /// Update from [`FrameStore`] resource and the active timeline.
+    pub fn update_from_frame_store(&mut self, store: &FrameStore, target_frames: usize) {
         self.is_loading = store.loading;
         self.loaded_frames = store.loaded_count;
         self.total_frames = store.total_frames;
+        self.target_frames = target_frames;
     }
 }
 

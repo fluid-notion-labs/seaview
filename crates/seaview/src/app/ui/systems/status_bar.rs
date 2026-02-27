@@ -142,7 +142,7 @@ fn render_loading_status(ui: &mut egui::Ui, ui_state: &UiState) {
     if ui_state.loading.is_loading && !ui_state.loading.is_complete() {
         let progress = ui_state.loading.progress();
         let loaded = ui_state.loading.loaded_frames;
-        let total = ui_state.loading.total_frames;
+        let total = ui_state.loading.target_frames;
         let pct = (progress * 100.0) as u32;
 
         let text = if let Some(ref name) = ui_state.loading.sequence_name {
@@ -163,9 +163,9 @@ fn render_loading_status(ui: &mut egui::Ui, ui_state: &UiState) {
                 .fill(egui::Color32::from_rgb(40, 100, 180)),
         );
     } else if ui_state.loading.is_complete() {
-        let total = ui_state.loading.total_frames;
-        let status = if total > 0 {
-            format!("\u{2713} {total} frames loaded")
+        let target = ui_state.loading.target_frames;
+        let status = if target > 0 {
+            format!("\u{2713} {target} frames loaded")
         } else {
             "Ready".to_string()
         };

@@ -32,8 +32,8 @@ use bevy::prelude::*;
 use std::path::PathBuf;
 
 use crate::app::ui::state::UiState;
-use crate::lib::memory_budget::MemoryBudget;
 use crate::lib::actions::Action;
+use crate::lib::memory_budget::MemoryBudget;
 use crate::lib::series::{SeriesId, SeriesManager};
 
 // Re-export commonly used types from loader
@@ -832,8 +832,7 @@ impl Plugin for SequencePlugin {
         .add_message::<SequenceEvent>()
         .add_systems(
             Update,
-            (advance_playback, playback::handle_keyboard_playback)
-                .before(sync_series_manager),
+            (advance_playback, playback::handle_keyboard_playback).before(sync_series_manager),
         )
         .add_systems(
             Update,
@@ -1085,11 +1084,17 @@ fn sync_series_manager(
     // -- Keyboard-driven series switching (Ctrl+PageDown / Ctrl+PageUp) ------
     if actions.0.just_activated(Action::NextSeries) {
         series_mgr.cycle_next();
-        debug!("▶ NextSeries action — cycled to {:?}", series_mgr.active_id());
+        debug!(
+            "▶ NextSeries action — cycled to {:?}",
+            series_mgr.active_id()
+        );
     }
     if actions.0.just_activated(Action::PrevSeries) {
         series_mgr.cycle_prev();
-        debug!("◀ PrevSeries action — cycled to {:?}", series_mgr.active_id());
+        debug!(
+            "◀ PrevSeries action — cycled to {:?}",
+            series_mgr.active_id()
+        );
     }
 
     let current_active = series_mgr.active_id();
@@ -1123,16 +1128,14 @@ fn sync_series_manager(
                 // the global Timeline so the UI reflects saved state.
                 info!(
                     "Initial series registration: {} '{}' (syncing timeline, skipping reload)",
-                    active.id,
-                    active.label,
+                    active.id, active.label,
                 );
                 *timeline = active.timeline.clone();
             } else if is_initial_registration && sequence_manager.current_sequence.is_none() {
                 // No legacy sequence loaded yet — skip reload entirely.
                 info!(
                     "Initial series registration: {} '{}' (no legacy sequence, skipping reload)",
-                    active.id,
-                    active.label,
+                    active.id, active.label,
                 );
             } else if is_initial_registration {
                 // Active series differs from what legacy path loaded — reload.
@@ -1163,9 +1166,7 @@ fn sync_series_manager(
             } else {
                 info!(
                     "Series switch: {:?} → {} '{}'",
-                    sync_state.prev_active,
-                    active.id,
-                    active.label,
+                    sync_state.prev_active, active.id, active.label,
                 );
 
                 // Push active series' timeline into the global resource.
@@ -1224,8 +1225,10 @@ fn sync_ui_from_sequence_manager(
     ui_state.playback.speed = sm.speed;
     ui_state.playback.loop_enabled = sm.loop_enabled;
 
-    // Sync loading state
-    ui_state.loading.update_from_frame_store(&frame_store);
+    // Sync loading state — use total_loaded() (load-section target) as denominator
+    ui_state
+        .loading
+        .update_from_frame_store(&frame_store, timeline.total_loaded());
 
     // Sync series state — UI reads from these instead of SeriesManagerRes directly
     ui_state.series = series_mgr.summary();
