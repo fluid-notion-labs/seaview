@@ -9,6 +9,7 @@ use uuid::Uuid;
 
 use crate::lib::fade::FadeEffect;
 use crate::lib::sequence::FrameStore;
+use crate::lib::series::{SeriesId, SeriesSummary};
 use crate::lib::toast::ToastQueue;
 
 /// Configuration for the rendering frame window (ring buffer).
@@ -161,6 +162,13 @@ pub struct UiState {
     /// Fire-and-fade animation for the save indicator in the status bar.
     /// Set on each successful save; expires after its duration.
     pub save_fade: Option<FadeEffect>,
+
+    /// Snapshot of all loaded series for UI display.
+    /// Updated each frame by `sync_ui_from_sequence_manager`.
+    pub series: Vec<SeriesSummary>,
+
+    /// The currently active series ID (if any).
+    pub active_series_id: Option<SeriesId>,
 }
 
 /// Which edge of the load section the user is dragging in the timeline UI
@@ -310,6 +318,9 @@ pub struct CollapsibleState {
 
     /// Whether the environment objects section is open
     pub environment_objects_open: bool,
+
+    /// Whether the mesh series section is open
+    pub series_open: bool,
 }
 
 impl Default for CollapsibleState {
@@ -324,6 +335,7 @@ impl Default for CollapsibleState {
             rendering_open: false,
             spatial_open: false,
             environment_objects_open: false,
+            series_open: true,
         }
     }
 }

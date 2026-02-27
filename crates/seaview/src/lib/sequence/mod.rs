@@ -1216,6 +1216,7 @@ fn sync_ui_from_sequence_manager(
     timeline: Res<Timeline>,
     mut ui_state: ResMut<UiState>,
     frame_store: Res<FrameStore>,
+    series_mgr: Res<SeriesManagerRes>,
 ) {
     ui_state.playback.total_frames = timeline.total_frames;
     ui_state.playback.current_frame = timeline.playhead;
@@ -1225,6 +1226,10 @@ fn sync_ui_from_sequence_manager(
 
     // Sync loading state
     ui_state.loading.update_from_frame_store(&frame_store);
+
+    // Sync series state — UI reads from these instead of SeriesManagerRes directly
+    ui_state.series = series_mgr.summary();
+    ui_state.active_series_id = series_mgr.active_id();
 }
 
 // ---------------------------------------------------------------------------

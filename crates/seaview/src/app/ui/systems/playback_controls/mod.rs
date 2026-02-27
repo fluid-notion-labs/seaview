@@ -73,9 +73,9 @@ pub fn playback_controls_system(
         display_total_frames
     };
 
-    // Snapshot series summaries for the transport row (avoids borrowing
-    // series_mgr inside the egui closure while we also need it mutable).
-    let series_summaries = series_mgr.summary();
+    // Read series summaries from UiState (mirrored each frame by
+    // sync_ui_from_sequence_manager) instead of directly from SeriesManagerRes.
+    let series_summaries = &ui_state.series;
 
     // Collect transport actions to apply after the panel closure
     let mut transport_actions = transport::TransportActions::default();
@@ -97,7 +97,7 @@ pub fn playback_controls_system(
                     &mut center_events,
                     &mut autosave,
                     &saved_cameras,
-                    &series_summaries,
+                    series_summaries,
                     display_current_frame,
                     display_total_frames,
                     display_is_playing,
