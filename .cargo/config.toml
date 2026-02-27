@@ -2,3 +2,7 @@
 w = "watch -x check"
 wr = "watch -x 'build --release'"
 wc = ["watch", "-s", "mkdir -p tmp && cargo check --color always 2>&1 | tee tmp/build.log && cargo build --release --color always 2>&1 | tee -a tmp/build.log"]
+
+[target.x86_64-unknown-linux-gnu]
+linker = "clang"
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]
