@@ -13,6 +13,7 @@ mod material_section;
 mod objects_section;
 mod perf_section;
 mod rendering_section;
+mod series_section;
 mod spatial_section;
 
 pub use environment_light_section::render_environment_light_controls;
@@ -21,6 +22,7 @@ pub use material_section::render_material_controls;
 pub use objects_section::{render_objects_section, FileDialogReceiver};
 pub use perf_section::render_perf_section;
 pub use rendering_section::render_rendering_section;
+pub use series_section::render_series_section;
 pub use spatial_section::render_spatial_section;
 
 use std::path::PathBuf;
@@ -43,6 +45,7 @@ use crate::lib::mesh_info::MeshDimensions;
 use crate::lib::sequence::loader::spatial_index::SpatialIndex;
 use crate::lib::sequence::loader::LoaderConfig;
 use crate::lib::sequence::FrameStore;
+use crate::lib::sequence::SeriesManagerRes;
 
 // ---------------------------------------------------------------------------
 // Bundled system params (keeps us under Bevy's 16-parameter limit)
@@ -94,6 +97,7 @@ pub fn environment_panel_system(
     mut ui_state: ResMut<UiState>,
     mut panel: EnvironmentPanelParams,
     mut env_objs: EnvObjectParams,
+    mut series_mgr: ResMut<SeriesManagerRes>,
 ) {
     if !ui_state.show_environment_panel {
         return;
@@ -303,6 +307,32 @@ pub fn environment_panel_system(
                         &panel.diagnostics,
                         &panel.rendering_stats,
                     );
+
+                    ui.add_space(5.0);
+
+                    // ── Mesh Series ────────────────────────────────────
+                    {
+                        let summaries = ui_state.series.clone();
+                        let series_actions = render_series_section(
+                            ui,
+                            &mut ui_state.collapsible.series_open,
+                            &summaries,
+                            &mut series_mgr,
+                        );
+
+                        // Apply deferred actions
+                        if let Some(id) = series_actions.switch_to {
+                            series_mgr.set_active(id);
+                        }
+                        if let Some((id, new_name)) = series_actions.rename {
+                            series_mgr.rename(id, new_name);
+                        }
+                        for (id, transform) in series_actions.transform_changes {
+                            if let Some(state) = series_mgr.get_mut(id) {
+                                state.transform = transform;
+                            }
+                        }
+                    }
 
                     ui.add_space(5.0);
 
