@@ -133,7 +133,13 @@ impl Plugin for SequenceLoaderPlugin {
                 )
                     .chain(),
             )
-            .add_systems(PostUpdate, frame_window::manage_frame_window);
+            .add_systems(
+                PostUpdate,
+                (
+                    frame_window::manage_frame_window,
+                    frame_window::sync_series_transform,
+                ),
+            );
     }
 }
 

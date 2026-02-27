@@ -30,6 +30,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::path::PathBuf;
 
+use crate::lib::environment_objects::Transform3D;
 use crate::lib::sequence::{LoadSection, Sequence, Timeline};
 
 // ---------------------------------------------------------------------------
@@ -91,6 +92,11 @@ pub struct SeriesState {
 
     /// Base directory for this series (convenience — mirrors `sequence.base_dir`).
     pub base_dir: PathBuf,
+
+    /// Per-series transform (position, rotation, scale).
+    /// Applied to all spawned frame entities for this series.
+    /// Defaults to identity.
+    pub transform: Transform3D,
 }
 
 impl SeriesState {
@@ -112,6 +118,7 @@ impl SeriesState {
             timeline,
             label,
             base_dir,
+            transform: Transform3D::default(),
         }
     }
 
@@ -437,7 +444,7 @@ impl SeriesManager {
 /// restoration logic testable in `lib/`.  Callers (e.g. the discovery
 /// system) convert from [`SeriesSettings`] into this before calling
 /// [`SeriesManager::restore_from_saved`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct SavedSeriesEntry {
     /// Human-readable label (matched against `SeriesState::label` or
     /// `Sequence::name`).
@@ -450,6 +457,8 @@ pub struct SavedSeriesEntry {
     pub playhead: usize,
     /// Saved per-series load sections.
     pub load_sections: Vec<LoadSection>,
+    /// Per-series transform (position, rotation, scale).
+    pub transform: Transform3D,
 }
 
 impl SeriesManager {
@@ -463,11 +472,7 @@ impl SeriesManager {
     /// - Active flag (the last entry with `active = true` wins)
     ///
     /// Returns the number of entries that were successfully matched.
-    pub fn restore_from_saved(
-        &mut self,
-        saved: &[SavedSeriesEntry],
-        max_frames: usize,
-    ) -> usize {
+    pub fn restore_from_saved(&mut self, saved: &[SavedSeriesEntry], max_frames: usize) -> usize {
         let mut matched = 0usize;
         let mut active_id: Option<SeriesId> = None;
 
@@ -502,6 +507,9 @@ impl SeriesManager {
             if !entry.load_sections.is_empty() {
                 state.apply_saved_sections(entry.load_sections.clone(), max_frames);
             }
+
+            // Apply transform
+            state.transform = entry.transform.clone();
 
             // Apply playhead (clamped to valid range)
             if entry.playhead > 0 {
@@ -547,8 +555,8 @@ pub struct SeriesSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
     use crate::lib::coordinates::SourceOrientation;
+    use std::path::Path;
 
     /// Helper: create a dummy sequence with `n` frames in a specific directory.
     fn dummy_sequence_in_dir(name: &str, n: usize, base_dir: &str) -> Sequence {
@@ -651,10 +659,7 @@ mod tests {
         let seq = dummy_sequence("splash", 200);
         let mut state = SeriesState::new(SeriesId(0), seq, 200);
 
-        let sections = vec![
-            LoadSection::new(10, 50),
-            LoadSection::new(100, 150),
-        ];
+        let sections = vec![LoadSection::new(10, 50), LoadSection::new(100, 150)];
         state.apply_saved_sections(sections, 200);
 
         assert_eq!(state.timeline.sections.len(), 2);
@@ -695,10 +700,7 @@ mod tests {
         let mut state = SeriesState::new(SeriesId(0), seq, 200);
 
         // Provide sections out of order
-        let sections = vec![
-            LoadSection::new(100, 150),
-            LoadSection::new(10, 50),
-        ];
+        let sections = vec![LoadSection::new(100, 150), LoadSection::new(10, 50)];
         state.apply_saved_sections(sections, 200);
 
         assert_eq!(state.timeline.sections[0].start, 10);
@@ -969,10 +971,7 @@ mod tests {
     fn manager_add_with_sections() {
         let mut mgr = SeriesManager::new();
         let seq = dummy_sequence("splash", 200);
-        let sections = vec![
-            LoadSection::new(10, 50),
-            LoadSection::new(100, 150),
-        ];
+        let sections = vec![LoadSection::new(10, 50), LoadSection::new(100, 150)];
 
         let id = mgr.add_with_sections(seq, 200, sections);
         let state = mgr.get(id).unwrap();
@@ -1090,6 +1089,7 @@ mod tests {
                 active: false,
                 playhead: 42,
                 load_sections: vec![LoadSection::new(10, 50)],
+                ..Default::default()
             },
             SavedSeriesEntry {
                 name: "Beta Renamed".into(),
@@ -1097,6 +1097,7 @@ mod tests {
                 active: true,
                 playhead: 99,
                 load_sections: vec![LoadSection::new(0, 80)],
+                ..Default::default()
             },
         ];
 
@@ -1130,6 +1131,7 @@ mod tests {
             active: true,
             playhead: 25,
             load_sections: vec![],
+            ..Default::default()
         }];
 
         let matched = mgr.restore_from_saved(&saved, 50);
@@ -1151,6 +1153,7 @@ mod tests {
                 active: false,
                 playhead: 10,
                 load_sections: vec![],
+                ..Default::default()
             },
             SavedSeriesEntry {
                 name: "nonexistent".into(),
@@ -1158,6 +1161,7 @@ mod tests {
                 active: true,
                 playhead: 0,
                 load_sections: vec![],
+                ..Default::default()
             },
         ];
 
@@ -1180,6 +1184,7 @@ mod tests {
             active: true,
             playhead: 9999, // way out of range
             load_sections: vec![],
+            ..Default::default()
         }];
 
         let matched = mgr.restore_from_saved(&saved, 10);
@@ -1216,6 +1221,7 @@ mod tests {
                 active: true,
                 playhead: 0,
                 load_sections: vec![],
+                ..Default::default()
             },
             SavedSeriesEntry {
                 name: "b".into(),
@@ -1223,6 +1229,7 @@ mod tests {
                 active: true,
                 playhead: 0,
                 load_sections: vec![],
+                ..Default::default()
             },
         ];
 
@@ -1251,6 +1258,7 @@ mod tests {
             active: false,
             playhead: 0,
             load_sections: vec![], // empty — should keep existing
+            ..Default::default()
         }];
 
         mgr.restore_from_saved(&saved, 100);
@@ -1280,10 +1288,64 @@ mod tests {
             active: false,
             playhead: 0, // zero — should NOT overwrite
             load_sections: vec![],
+            ..Default::default()
         }];
 
         mgr.restore_from_saved(&saved, 100);
         let after = mgr.find_by_dir(Path::new("/data/alpha")).unwrap();
         assert_eq!(after.timeline.playhead, 55);
+    }
+
+    #[test]
+    fn restore_applies_transform() {
+        use crate::lib::environment_objects::Transform3D;
+
+        let mut mgr = SeriesManager::new();
+        let seq = dummy_sequence_in_dir("splash", 100, "/data/splash");
+        mgr.add(seq, 100);
+
+        // Verify default is identity
+        let before = mgr.find_by_dir(Path::new("/data/splash")).unwrap();
+        assert!(before.transform.is_identity());
+
+        let saved = vec![SavedSeriesEntry {
+            name: "splash".into(),
+            path: Some(PathBuf::from("/data/splash")),
+            active: true,
+            playhead: 0,
+            load_sections: vec![],
+            transform: Transform3D::default()
+                .with_position(5.0, 10.0, -3.0)
+                .with_rotation_degrees(0.0, 90.0, 0.0)
+                .with_scale(2.0, 2.0, 2.0),
+        }];
+
+        let matched = mgr.restore_from_saved(&saved, 100);
+        assert_eq!(matched, 1);
+
+        let after = mgr.find_by_dir(Path::new("/data/splash")).unwrap();
+        assert_eq!(after.transform.position, [5.0, 10.0, -3.0]);
+        assert_eq!(after.transform.rotation_degrees, [0.0, 90.0, 0.0]);
+        assert_eq!(after.transform.scale, [2.0, 2.0, 2.0]);
+    }
+
+    #[test]
+    fn restore_identity_transform_stays_identity() {
+        let mut mgr = SeriesManager::new();
+        let seq = dummy_sequence_in_dir("alpha", 50, "/data/alpha");
+        mgr.add(seq, 50);
+
+        let saved = vec![SavedSeriesEntry {
+            name: "alpha".into(),
+            path: Some(PathBuf::from("/data/alpha")),
+            active: true,
+            playhead: 10,
+            load_sections: vec![],
+            ..Default::default()
+        }];
+
+        mgr.restore_from_saved(&saved, 50);
+        let after = mgr.find_by_dir(Path::new("/data/alpha")).unwrap();
+        assert!(after.transform.is_identity());
     }
 }

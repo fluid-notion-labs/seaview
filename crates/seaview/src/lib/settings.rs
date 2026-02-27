@@ -294,6 +294,26 @@ pub struct SeriesSettings {
     /// Per-series load sections.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub load_sections: Vec<LoadSectionSettings>,
+
+    /// Per-series position `[x, y, z]`.
+    #[serde(default, skip_serializing_if = "is_zero_vec3")]
+    pub position: [f32; 3],
+
+    /// Per-series rotation in degrees `[pitch, yaw, roll]` (XYZ order).
+    #[serde(default, skip_serializing_if = "is_zero_vec3")]
+    pub rotation_degrees: [f32; 3],
+
+    /// Per-series scale `[x, y, z]`.
+    #[serde(default = "default_scale", skip_serializing_if = "is_identity_scale")]
+    pub scale: [f32; 3],
+}
+
+fn default_scale() -> [f32; 3] {
+    [1.0, 1.0, 1.0]
+}
+
+fn is_identity_scale(v: &[f32; 3]) -> bool {
+    *v == [1.0, 1.0, 1.0]
 }
 
 impl Default for SeriesSettings {
@@ -304,6 +324,9 @@ impl Default for SeriesSettings {
             active: false,
             playhead: 0,
             load_sections: Vec::new(),
+            position: [0.0, 0.0, 0.0],
+            rotation_degrees: [0.0, 0.0, 0.0],
+            scale: [1.0, 1.0, 1.0],
         }
     }
 }
@@ -321,6 +344,9 @@ impl From<&SeriesState> for SeriesSettings {
                 .iter()
                 .map(LoadSectionSettings::from)
                 .collect(),
+            position: state.transform.position,
+            rotation_degrees: state.transform.rotation_degrees,
+            scale: state.transform.scale,
         }
     }
 }
@@ -340,6 +366,11 @@ impl From<&SeriesSettings> for crate::lib::series::SavedSeriesEntry {
             active: s.active,
             playhead: s.playhead,
             load_sections: s.load_sections.iter().map(LoadSection::from).collect(),
+            transform: Transform3D {
+                position: s.position,
+                rotation_degrees: s.rotation_degrees,
+                scale: s.scale,
+            },
         }
     }
 }
@@ -1676,8 +1707,6 @@ pub fn resolve_settings_dir(path: &Path) -> Option<PathBuf> {
     }
 }
 
-
-
 // ---------------------------------------------------------------------------
 // Helper: extract (r, g, b, a) without relying on a method that may not exist
 // ---------------------------------------------------------------------------
@@ -2125,8 +2154,14 @@ rotation = [-89.0, 0.0, 0.0]
         settings.save_to_dir(dir.path()).unwrap();
 
         let loaded = Settings::load_from_dir(dir.path()).unwrap().unwrap();
-        let env = loaded.environment.as_ref().expect("environment section missing");
-        let els = env.environment_light.as_ref().expect("environment_light missing");
+        let env = loaded
+            .environment
+            .as_ref()
+            .expect("environment section missing");
+        let els = env
+            .environment_light
+            .as_ref()
+            .expect("environment_light missing");
 
         assert!(!els.enabled);
         assert!((els.ambient_brightness - 1234.5).abs() < 0.1);
@@ -3046,6 +3081,7 @@ rotation = [0.0, 0.0, 0.0]
                 LoadSectionSettings::new(0, 100),
                 LoadSectionSettings::new(200, 350),
             ],
+            ..Default::default()
         };
 
         let toml_str = toml::to_string_pretty(&series).unwrap();
@@ -3054,7 +3090,10 @@ rotation = [0.0, 0.0, 0.0]
 
         let recovered: SeriesSettings = toml::from_str(&toml_str).unwrap();
         assert_eq!(recovered.name, "splash_v3");
-        assert_eq!(recovered.path.as_deref(), Some("/data/sims/splash_v3/meshes"));
+        assert_eq!(
+            recovered.path.as_deref(),
+            Some("/data/sims/splash_v3/meshes")
+        );
         assert!(recovered.active);
         assert_eq!(recovered.playhead, 42);
         assert_eq!(recovered.load_sections.len(), 2);
@@ -3062,6 +3101,120 @@ rotation = [0.0, 0.0, 0.0]
         assert_eq!(recovered.load_sections[0].end, 100);
         assert_eq!(recovered.load_sections[1].start, 200);
         assert_eq!(recovered.load_sections[1].end, 350);
+    }
+
+    #[test]
+    fn test_series_settings_transform_roundtrip() {
+        // Non-identity transform should survive TOML roundtrip
+        let series = SeriesSettings {
+            name: "offset_run".to_string(),
+            path: Some("/data/offset".to_string()),
+            position: [1.0, 2.5, -3.0],
+            rotation_degrees: [0.0, 90.0, 0.0],
+            scale: [2.0, 2.0, 2.0],
+            ..Default::default()
+        };
+
+        let toml_str = toml::to_string_pretty(&series).unwrap();
+        assert!(
+            toml_str.contains("position"),
+            "position should be serialized:\n{toml_str}"
+        );
+        assert!(
+            toml_str.contains("rotation_degrees"),
+            "rotation should be serialized:\n{toml_str}"
+        );
+        assert!(
+            toml_str.contains("scale"),
+            "scale should be serialized:\n{toml_str}"
+        );
+
+        let recovered: SeriesSettings = toml::from_str(&toml_str).unwrap();
+        assert_eq!(recovered.position, [1.0, 2.5, -3.0]);
+        assert_eq!(recovered.rotation_degrees, [0.0, 90.0, 0.0]);
+        assert_eq!(recovered.scale, [2.0, 2.0, 2.0]);
+    }
+
+    #[test]
+    fn test_series_settings_identity_transform_skipped() {
+        // Identity transform fields should be omitted from TOML
+        let series = SeriesSettings {
+            name: "default_pos".to_string(),
+            path: Some("/data/default".to_string()),
+            ..Default::default()
+        };
+
+        let toml_str = toml::to_string_pretty(&series).unwrap();
+        assert!(
+            !toml_str.contains("position"),
+            "identity position should be skipped:\n{toml_str}"
+        );
+        assert!(
+            !toml_str.contains("rotation"),
+            "identity rotation should be skipped:\n{toml_str}"
+        );
+        assert!(
+            !toml_str.contains("scale"),
+            "identity scale should be skipped:\n{toml_str}"
+        );
+    }
+
+    #[test]
+    fn test_series_settings_transform_backward_compat() {
+        // Old TOML without transform fields should deserialize with identity defaults
+        let toml_str = r#"
+name = "legacy_run"
+path = "/data/legacy"
+active = true
+playhead = 10
+"#;
+        let recovered: SeriesSettings = toml::from_str(toml_str).unwrap();
+        assert_eq!(recovered.position, [0.0, 0.0, 0.0]);
+        assert_eq!(recovered.rotation_degrees, [0.0, 0.0, 0.0]);
+        assert_eq!(recovered.scale, [1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn test_series_settings_to_saved_entry_preserves_transform() {
+        use crate::lib::series::SavedSeriesEntry;
+
+        let series = SeriesSettings {
+            name: "moved".to_string(),
+            path: Some("/data/moved".to_string()),
+            position: [5.0, 0.0, -2.0],
+            rotation_degrees: [45.0, 0.0, 0.0],
+            scale: [1.0, 1.0, 3.0],
+            ..Default::default()
+        };
+
+        let entry = SavedSeriesEntry::from(&series);
+        assert_eq!(entry.transform.position, [5.0, 0.0, -2.0]);
+        assert_eq!(entry.transform.rotation_degrees, [45.0, 0.0, 0.0]);
+        assert_eq!(entry.transform.scale, [1.0, 1.0, 3.0]);
+    }
+
+    #[test]
+    fn test_series_state_to_settings_preserves_transform() {
+        use crate::lib::environment_objects::Transform3D;
+        use crate::lib::sequence::FrameInfo;
+        use crate::lib::series::{SeriesId, SeriesState};
+
+        let seq = crate::lib::sequence::Sequence {
+            name: "test".to_string(),
+            base_dir: "/data/test".into(),
+            frames: vec![FrameInfo::new("/data/test/frame_0000.obj".into(), 0)],
+            source_orientation: crate::lib::coordinates::SourceOrientation::default(),
+            pattern: String::new(),
+        };
+        let mut state = SeriesState::new(SeriesId::from_raw(0), seq, 100);
+        state.transform = Transform3D::default()
+            .with_position(10.0, 20.0, 30.0)
+            .with_rotation_degrees(0.0, 180.0, 0.0);
+
+        let settings = SeriesSettings::from(&state);
+        assert_eq!(settings.position, [10.0, 20.0, 30.0]);
+        assert_eq!(settings.rotation_degrees, [0.0, 180.0, 0.0]);
+        assert_eq!(settings.scale, [1.0, 1.0, 1.0]);
     }
 
     #[test]
@@ -3074,6 +3227,7 @@ rotation = [0.0, 0.0, 0.0]
                 active: true,
                 playhead: 10,
                 load_sections: vec![LoadSectionSettings::new(0, 50)],
+                ..Default::default()
             },
             SeriesSettings {
                 name: "beta".to_string(),
@@ -3081,11 +3235,15 @@ rotation = [0.0, 0.0, 0.0]
                 active: false,
                 playhead: 0,
                 load_sections: vec![LoadSectionSettings::new(0, 200)],
+                ..Default::default()
             },
         ];
 
         let toml_str = toml::to_string_pretty(&settings).unwrap();
-        assert!(toml_str.contains("[[series]]"), "should have [[series]] tables:\n{toml_str}");
+        assert!(
+            toml_str.contains("[[series]]"),
+            "should have [[series]] tables:\n{toml_str}"
+        );
         assert!(toml_str.contains("alpha"));
         assert!(toml_str.contains("beta"));
 
@@ -3267,9 +3425,11 @@ end = 200
         let mut global_timeline = Timeline::default();
         global_timeline.total_frames = 100;
         global_timeline.playhead = 42;
-        global_timeline.sections = vec![
-            LoadSection { start: 10, end: 80, active: true },
-        ];
+        global_timeline.sections = vec![LoadSection {
+            start: 10,
+            end: 80,
+            active: true,
+        }];
 
         let mut settings = Settings::default();
         settings.set_series_from_manager_with_timeline(&mgr, &global_timeline);
@@ -3350,15 +3510,14 @@ end = 200
         // Ensure [[series]] survives a full Settings save/load cycle
         let dir = tempfile::tempdir().unwrap();
         let mut settings = Settings::default();
-        settings.series = vec![
-            SeriesSettings {
-                name: "run_a".to_string(),
-                path: Some("/sims/run_a".to_string()),
-                active: true,
-                playhead: 50,
-                load_sections: vec![LoadSectionSettings::new(0, 100)],
-            },
-        ];
+        settings.series = vec![SeriesSettings {
+            name: "run_a".to_string(),
+            path: Some("/sims/run_a".to_string()),
+            active: true,
+            playhead: 50,
+            load_sections: vec![LoadSectionSettings::new(0, 100)],
+            ..Default::default()
+        }];
         // Also set backward-compat top-level sections
         settings.load_section = Some(LoadSectionSettings::new(0, 100));
 
@@ -3436,7 +3595,7 @@ end = 200
         // Verify in-memory state before write
         assert_eq!(settings.series.len(), 2);
         assert!(!settings.series[0].active); // A is not active
-        assert!(settings.series[1].active);  // B is active
+        assert!(settings.series[1].active); // B is active
         assert_eq!(settings.series[0].name, "Splash (renamed)");
         assert_eq!(settings.series[1].name, "flow_v7");
         assert_eq!(settings.series[0].playhead, 42);
@@ -3481,10 +3640,7 @@ end = 200
         fresh_mgr.add(fresh_b, 500);
 
         // Before restore: A is active (first added), default sections
-        assert_eq!(
-            fresh_mgr.active().unwrap().label,
-            "splash_v3",
-        );
+        assert_eq!(fresh_mgr.active().unwrap().label, "splash_v3",);
 
         // -- Step 5: Restore from loaded settings ----------------------------
         let entries: Vec<SavedSeriesEntry> = loaded
@@ -3552,6 +3708,7 @@ end = 200
                 active: false,
                 playhead: 10,
                 load_sections: vec![LoadSectionSettings::new(0, 50)],
+                ..Default::default()
             },
             SeriesSettings {
                 name: "gone".to_string(),
@@ -3559,6 +3716,7 @@ end = 200
                 active: true, // was active but no longer discovered
                 playhead: 99,
                 load_sections: vec![],
+                ..Default::default()
             },
             SeriesSettings {
                 name: "also_here".to_string(),
@@ -3566,6 +3724,7 @@ end = 200
                 active: false,
                 playhead: 5,
                 load_sections: vec![],
+                ..Default::default()
             },
         ];
         settings.save_to_dir(dir.path()).unwrap();

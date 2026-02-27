@@ -15,8 +15,9 @@ use bevy::prelude::*;
 use super::assets::{FrameStore, LoaderConfig};
 use super::{rss_mb, SequenceMeshDisplay, SPAWNS_PER_FRAME};
 use crate::app::ui::state::RenderConfig;
+use crate::lib::environment_objects::Transform3D;
 use crate::lib::memory_budget::MemoryBudget;
-use crate::lib::sequence::{compute_spawn_windows, Timeline};
+use crate::lib::sequence::{compute_spawn_windows, SeriesManagerRes, Timeline};
 
 // ---------------------------------------------------------------------------
 // Pure functions
@@ -93,6 +94,7 @@ pub(super) fn manage_frame_window(
     mut prev_windows: Local<Vec<(usize, usize)>>,
     mut memory_budget: ResMut<MemoryBudget>,
     mut meshes: ResMut<Assets<Mesh>>,
+    series_mgr: Res<SeriesManagerRes>,
 ) {
     if frame_store.total_frames == 0 {
         return;
@@ -115,7 +117,15 @@ pub(super) fn manage_frame_window(
         frame_store.total_frames,
     );
 
-    let transform = loader_config.coord_transform;
+    // Compose series transform (user position/rotation/scale) with the
+    // coordinate-system transform.  Series transform is the "parent" —
+    // it positions the whole series in world space.  Coord transform is
+    // the "child" — it fixes axis orientation per-mesh.
+    let series_transform = series_mgr
+        .active()
+        .map(|s| s.transform.to_bevy_transform())
+        .unwrap_or_default();
+    let transform = series_transform * loader_config.coord_transform;
     let frame_bytes = frame_store.estimated_frame_bytes;
 
     // Use the pure delta function to decide what to despawn/spawn.
@@ -352,6 +362,53 @@ pub(super) fn manage_frame_window(
 
     frame_store.displayed_frame = Some(display_frame);
     *prev_windows = new_windows;
+}
+
+/// Sync the transform of all spawned sequence-mesh entities when the active
+/// series' transform changes.
+///
+/// Runs in `PostUpdate` alongside `manage_frame_window`.  Tracks the last
+/// applied composed transform and, when it differs, bulk-updates every
+/// spawned entity.
+pub(super) fn sync_series_transform(
+    frame_store: Res<FrameStore>,
+    loader_config: Res<LoaderConfig>,
+    series_mgr: Res<SeriesManagerRes>,
+    mut transform_query: Query<&mut Transform, With<SequenceMeshDisplay>>,
+    mut prev_transform: Local<Option<Transform3D>>,
+) {
+    let current_t3d = series_mgr
+        .active()
+        .map(|s| s.transform.clone())
+        .unwrap_or_default();
+
+    // Early out if transform hasn't changed
+    let changed = match prev_transform.as_ref() {
+        Some(prev) => {
+            prev.position != current_t3d.position
+                || prev.rotation_degrees != current_t3d.rotation_degrees
+                || prev.scale != current_t3d.scale
+        }
+        None => true, // first run — always apply
+    };
+
+    if !changed {
+        return;
+    }
+
+    let composed = current_t3d.to_bevy_transform() * loader_config.coord_transform;
+
+    for entity_opt in frame_store.frame_entities.iter() {
+        if let Some(entities) = entity_opt {
+            for entity in entities {
+                if let Ok(mut transform) = transform_query.get_mut(*entity) {
+                    *transform = composed;
+                }
+            }
+        }
+    }
+
+    *prev_transform = Some(current_t3d);
 }
 
 // ---------------------------------------------------------------------------

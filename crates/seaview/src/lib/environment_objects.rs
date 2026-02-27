@@ -99,6 +99,33 @@ impl Transform3D {
         self.scale = [s, s, s];
         self
     }
+
+    /// Returns `true` if position is zero, rotation is zero, and scale is one
+    /// (i.e. this transform has no effect).
+    pub fn is_identity(&self) -> bool {
+        self.position == [0.0, 0.0, 0.0]
+            && self.rotation_degrees == [0.0, 0.0, 0.0]
+            && self.scale == [1.0, 1.0, 1.0]
+    }
+
+    /// Convert to a Bevy `Transform`.
+    ///
+    /// Rotation is interpreted as Euler angles in XYZ order (degrees → radians).
+    /// This is a plain conversion with no swizzle — use `bevy_transform_from`
+    /// in the app layer if axis remapping is needed.
+    pub fn to_bevy_transform(&self) -> bevy::prelude::Transform {
+        use bevy::prelude::*;
+        Transform {
+            translation: Vec3::new(self.position[0], self.position[1], self.position[2]),
+            rotation: Quat::from_euler(
+                EulerRot::XYZ,
+                self.rotation_degrees[0].to_radians(),
+                self.rotation_degrees[1].to_radians(),
+                self.rotation_degrees[2].to_radians(),
+            ),
+            scale: Vec3::new(self.scale[0], self.scale[1], self.scale[2]),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
