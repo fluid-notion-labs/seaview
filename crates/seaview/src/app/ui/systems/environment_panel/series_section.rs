@@ -125,6 +125,17 @@ pub fn render_series_section(
                 .color(egui::Color32::from_gray(150)),
         );
 
+        if total_series > 1 {
+            ui.label(
+                egui::RichText::new(
+                    "ℹ Only the active series is visible. Use 'Set Active' to switch.",
+                )
+                .small()
+                .italics()
+                .color(egui::Color32::from_gray(120)),
+            );
+        }
+
         ui.add_space(4.0);
 
         // ── Per-series rows ───────────────────────────────────────
