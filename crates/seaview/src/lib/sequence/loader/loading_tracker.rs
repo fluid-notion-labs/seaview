@@ -79,6 +79,7 @@ pub fn material_from_config(
         reflectance,
         emissive: emissive_linear,
         cull_mode,
+        double_sided,
         alpha_mode,
         ..default()
     }

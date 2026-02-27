@@ -38,6 +38,7 @@ pub fn apply_material_config(
             }
 
             // Double-sided rendering
+            material.double_sided = config.double_sided;
             material.cull_mode = if config.double_sided {
                 None
             } else {
