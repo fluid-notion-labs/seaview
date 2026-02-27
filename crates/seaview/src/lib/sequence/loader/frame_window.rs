@@ -8,11 +8,25 @@
 //! [`manage_frame_window`] is the **sole owner of visibility** for sequence
 //! mesh entities.  It runs in `PostUpdate` so that `timeline.playhead` is
 //! finalised for the current tick.
+//!
+//! ## Per-series entity tracking (Phase 2)
+//!
+//! Entity spawning and despawning now goes through [`SeriesFrameStore`] —
+//! each series independently tracks its spawned entities, displayed frame,
+//! and previous spawn windows.  In Phase 2 only the active series has
+//! entities spawned (behaviour unchanged from before).  Phase 3 will
+//! extend this to iterate all visible series simultaneously.
+//!
+//! The global `FrameStore.frame_entities` and `FrameStore.displayed_frame`
+//! are kept in sync as **mirrors** so that existing consumers (UI, spatial
+//! index, etc.) continue to work without changes.
 
 use bevy::mesh::Mesh;
 use bevy::prelude::*;
 
 use super::assets::{FrameStore, LoaderConfig};
+use super::mesh_cache::MeshCache;
+use super::series_frame_store::SeriesFrameStore;
 use super::{rss_mb, SequenceMeshDisplay, SPAWNS_PER_FRAME};
 use crate::app::ui::state::RenderConfig;
 use crate::lib::environment_objects::Transform3D;
@@ -84,6 +98,13 @@ pub fn compute_window_delta(
 ///
 /// Entity spawns are capped at [`SPAWNS_PER_FRAME`](super::SPAWNS_PER_FRAME)
 /// to avoid stalling the render thread with a sudden batch of GPU uploads.
+///
+/// ## Per-series tracking (Phase 2)
+///
+/// Entity state is read/written via [`SeriesFrameStore`] for the active
+/// series.  `FrameStore.frame_entities` and `FrameStore.displayed_frame`
+/// are kept in sync as mirrors for backward compatibility with UI and
+/// spatial-index consumers.
 pub(super) fn manage_frame_window(
     mut commands: Commands,
     mut frame_store: ResMut<FrameStore>,
@@ -91,10 +112,11 @@ pub(super) fn manage_frame_window(
     timeline: Res<Timeline>,
     render_config: Res<RenderConfig>,
     mut visibility_query: Query<&mut Visibility, With<SequenceMeshDisplay>>,
-    mut prev_windows: Local<Vec<(usize, usize)>>,
     mut memory_budget: ResMut<MemoryBudget>,
     mut meshes: ResMut<Assets<Mesh>>,
     series_mgr: Res<SeriesManagerRes>,
+    mut series_fs: ResMut<SeriesFrameStore>,
+    mut mesh_cache: ResMut<MeshCache>,
 ) {
     if frame_store.total_frames == 0 {
         return;
@@ -103,6 +125,20 @@ pub(super) fn manage_frame_window(
     let Some(material) = loader_config.shared_material.clone() else {
         return;
     };
+
+    // Determine the active series.  If there's no active series, or it
+    // isn't registered in SeriesFrameStore yet, fall back to the legacy
+    // FrameStore path (prev_windows stored in FrameStore.displayed_frame
+    // won't apply, but the system still works for single-series).
+    let active_id = series_mgr.active_id();
+    let active_series = series_mgr.active();
+
+    // Ensure the active series is registered in SeriesFrameStore.
+    if let Some(id) = active_id {
+        if !series_fs.contains(&id) {
+            series_fs.register(id, frame_store.total_frames);
+        }
+    }
 
     let current = timeline.playhead;
 
@@ -121,12 +157,18 @@ pub(super) fn manage_frame_window(
     // coordinate-system transform.  Series transform is the "parent" —
     // it positions the whole series in world space.  Coord transform is
     // the "child" — it fixes axis orientation per-mesh.
-    let series_transform = series_mgr
-        .active()
+    let series_transform = active_series
         .map(|s| s.transform.to_bevy_transform())
         .unwrap_or_default();
     let transform = series_transform * loader_config.coord_transform;
     let frame_bytes = frame_store.estimated_frame_bytes;
+
+    // Get the previous windows from the per-series state (or empty if no
+    // series registered yet — first frame after load).
+    let prev_windows: Vec<(usize, usize)> = active_id
+        .and_then(|id| series_fs.get(&id))
+        .map(|state| state.prev_windows.clone())
+        .unwrap_or_default();
 
     // Use the pure delta function to decide what to despawn/spawn.
     let delta = compute_window_delta(&prev_windows, &new_windows);
@@ -138,7 +180,9 @@ pub(super) fn manage_frame_window(
     //
     //    IMPORTANT: defer despawning the previously displayed frame — we may
     //    need it as a visual fallback if the new playhead frame isn't ready.
-    let prev_displayed = frame_store.displayed_frame;
+    let prev_displayed = active_id
+        .and_then(|id| series_fs.get(&id))
+        .and_then(|state| state.displayed_frame);
     let rss_before_despawn = rss_mb();
     let mut despawns = 0usize;
     let mut demote_ok = 0usize;
@@ -151,28 +195,62 @@ pub(super) fn manage_frame_window(
             deferred_despawn = Some(idx);
             continue;
         }
-        if let Some(entities) = frame_store.frame_entities[idx].take() {
+
+        // Take entities from the per-series store.
+        let entities = active_id
+            .and_then(|id| series_fs.get_mut(&id))
+            .and_then(|state| state.take_entities(idx));
+        if let Some(entities) = entities {
             for entity in &entities {
                 if let Ok(mut vis) = visibility_query.get_mut(*entity) {
                     *vis = Visibility::Hidden;
                 }
                 commands.entity(*entity).despawn();
             }
-            let has_handle = frame_store.frame_handles[idx].is_some();
-            if frame_store.demote_from_gpu(idx, &mut meshes) {
+
+            // GPU residency: try MeshCache refcounted demote first, fall
+            // back to FrameStore direct demote for backward compat.
+            let path = frame_store.frame_paths.get(idx).cloned();
+            let demoted_via_cache = if let Some(ref p) = path {
+                if let Some(cache_entry) = mesh_cache.get_mut(p) {
+                    let should_demote = cache_entry.remove_gpu_consumer();
+                    if should_demote {
+                        cache_entry.demote_from_gpu(&mut meshes)
+                    } else {
+                        true // another series still using it — skip demote
+                    }
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+
+            if demoted_via_cache {
                 demote_ok += 1;
             } else {
-                demote_fail += 1;
-                if demote_fail <= 3 {
-                    warn!(
-                        "demote_from_gpu FAILED for frame {} (handle present: {})",
-                        idx, has_handle
-                    );
+                // Fallback: direct demote via FrameStore (Phase 1 compat)
+                let has_handle = frame_store.frame_handles[idx].is_some();
+                if frame_store.demote_from_gpu(idx, &mut meshes) {
+                    demote_ok += 1;
+                } else {
+                    demote_fail += 1;
+                    if demote_fail <= 3 {
+                        warn!(
+                            "demote_from_gpu FAILED for frame {} (handle present: {})",
+                            idx, has_handle
+                        );
+                    }
                 }
             }
+
             if frame_bytes > 0 {
                 memory_budget.record_frame_unloaded(frame_bytes);
             }
+
+            // Mirror: keep FrameStore.frame_entities in sync.
+            frame_store.frame_entities[idx] = None;
+
             despawns += 1;
         }
     }
@@ -195,14 +273,21 @@ pub(super) fn manage_frame_window(
     let mut spawn_candidates: Vec<usize> = delta.to_spawn.clone();
     for &(start, end) in &new_windows {
         for idx in start..end {
-            if !spawn_candidates.contains(&idx)
-                && frame_store
-                    .frame_entities
-                    .get(idx)
-                    .and_then(|e| e.as_ref())
-                    .is_none()
-            {
-                spawn_candidates.push(idx);
+            if !spawn_candidates.contains(&idx) {
+                // Check per-series store first, fall back to FrameStore mirror.
+                let is_spawned = active_id
+                    .and_then(|id| series_fs.get(&id))
+                    .map(|state| state.is_spawned(idx))
+                    .unwrap_or_else(|| {
+                        frame_store
+                            .frame_entities
+                            .get(idx)
+                            .and_then(|e| e.as_ref())
+                            .is_some()
+                    });
+                if !is_spawned {
+                    spawn_candidates.push(idx);
+                }
             }
         }
     }
@@ -212,8 +297,13 @@ pub(super) fn manage_frame_window(
         if spawns_this_frame >= SPAWNS_PER_FRAME {
             break;
         }
-        if frame_store.frame_entities[idx].is_some() {
-            continue; // already spawned
+        // Check if already spawned in per-series store.
+        let already_spawned = active_id
+            .and_then(|id| series_fs.get(&id))
+            .map(|state| state.is_spawned(idx))
+            .unwrap_or(false);
+        if already_spawned {
+            continue;
         }
         if !frame_store.is_frame_loaded(idx) {
             continue; // asset not ready yet
@@ -223,7 +313,19 @@ pub(super) fn manage_frame_window(
         };
         let mesh_handles: Vec<Handle<Mesh>> = mesh_handles.to_vec();
 
-        frame_store.promote_to_gpu(idx, &mut meshes);
+        // GPU residency: promote via MeshCache refcount, fall back to
+        // FrameStore direct promote.
+        let path = frame_store.frame_paths.get(idx).cloned();
+        if let Some(ref p) = path {
+            if let Some(cache_entry) = mesh_cache.get_mut(p) {
+                cache_entry.add_gpu_consumer();
+                cache_entry.promote_to_gpu(&mut meshes);
+            } else {
+                frame_store.promote_to_gpu(idx, &mut meshes);
+            }
+        } else {
+            frame_store.promote_to_gpu(idx, &mut meshes);
+        }
 
         let visibility = if idx == current {
             Visibility::Visible
@@ -248,6 +350,14 @@ pub(super) fn manage_frame_window(
 
         debug!("Spawned frame {} — {} entities", idx, entities.len(),);
 
+        // Write to per-series store.
+        if let Some(id) = active_id {
+            if let Some(state) = series_fs.get_mut(&id) {
+                state.set_entities(idx, entities.clone());
+            }
+        }
+
+        // Mirror: keep FrameStore.frame_entities in sync.
         frame_store.frame_entities[idx] = Some(entities);
 
         if frame_bytes > 0 {
@@ -258,21 +368,26 @@ pub(super) fn manage_frame_window(
     }
 
     // Log window changes
-    if new_windows != *prev_windows {
+    if new_windows != prev_windows {
         // Count active handles for the log line.
         let active_handles = frame_store
             .frame_handles
             .iter()
             .filter(|fh| fh.is_some())
             .count();
-        let live_entities = frame_store
-            .frame_entities
-            .iter()
-            .filter(|e| e.is_some())
-            .count();
+        let live_entities = active_id
+            .and_then(|id| series_fs.get(&id))
+            .map(|state| state.spawned_count())
+            .unwrap_or_else(|| {
+                frame_store
+                    .frame_entities
+                    .iter()
+                    .filter(|e| e.is_some())
+                    .count()
+            });
         debug!(
             "Frame windows changed: {:?} → {:?}, current frame: {} | handles: {}, entities: {}, RSS: {:.1} MB",
-            *prev_windows, new_windows, current,
+            prev_windows, new_windows, current,
             active_handles, live_entities, rss_mb(),
         );
     }
@@ -283,11 +398,16 @@ pub(super) fn manage_frame_window(
     //    available non-degenerate spawned frame.  As a last resort, use the
     //    deferred (previously displayed) frame.
     let is_displayable = |idx: usize| -> bool {
-        let has_entity = frame_store
-            .frame_entities
-            .get(idx)
-            .and_then(|e| e.as_ref())
-            .is_some();
+        let has_entity = active_id
+            .and_then(|id| series_fs.get(&id))
+            .map(|state| state.is_spawned(idx))
+            .unwrap_or_else(|| {
+                frame_store
+                    .frame_entities
+                    .get(idx)
+                    .and_then(|e| e.as_ref())
+                    .is_some()
+            });
         let is_degenerate = frame_store
             .degenerate_frames
             .get(idx)
@@ -333,17 +453,45 @@ pub(super) fn manage_frame_window(
     // Now despawn the deferred frame if it's not being used as the display
     if let Some(idx) = deferred_despawn {
         if idx != display_frame {
-            if let Some(entities) = frame_store.frame_entities[idx].take() {
+            let entities = active_id
+                .and_then(|id| series_fs.get_mut(&id))
+                .and_then(|state| state.take_entities(idx));
+            if let Some(entities) = entities {
                 for entity in &entities {
                     if let Ok(mut vis) = visibility_query.get_mut(*entity) {
                         *vis = Visibility::Hidden;
                     }
                     commands.entity(*entity).despawn();
                 }
-                frame_store.demote_from_gpu(idx, &mut meshes);
+
+                // GPU residency: MeshCache refcounted demote.
+                let path = frame_store.frame_paths.get(idx).cloned();
+                let demoted_via_cache = if let Some(ref p) = path {
+                    if let Some(cache_entry) = mesh_cache.get_mut(p) {
+                        let should_demote = cache_entry.remove_gpu_consumer();
+                        if should_demote {
+                            cache_entry.demote_from_gpu(&mut meshes)
+                        } else {
+                            true
+                        }
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+
+                if !demoted_via_cache {
+                    frame_store.demote_from_gpu(idx, &mut meshes);
+                }
+
                 if frame_bytes > 0 {
                     memory_budget.record_frame_unloaded(frame_bytes);
                 }
+
+                // Mirror: keep FrameStore.frame_entities in sync.
+                frame_store.frame_entities[idx] = None;
+
                 debug!(
                     "Deferred despawn of frame {} (replaced by {})",
                     idx, display_frame
@@ -355,33 +503,66 @@ pub(super) fn manage_frame_window(
     // Set visibility: only the display_frame is Visible; everything else Hidden.
     // We iterate ALL spawned entities (across all windows AND the fallback) to
     // ensure exactly one frame is visible.
-    for (idx, entity_opt) in frame_store.frame_entities.iter().enumerate() {
-        if let Some(entities) = entity_opt {
-            let desired = if idx == display_frame {
-                Visibility::Visible
-            } else {
-                Visibility::Hidden
-            };
-            for entity in entities {
-                if let Ok(mut vis) = visibility_query.get_mut(*entity) {
-                    if *vis != desired {
-                        *vis = desired;
-                    }
+    //
+    // Use the per-series store as the source of truth, with FrameStore as
+    // fallback for the transition period.
+    let entity_iter: Vec<(usize, Vec<Entity>)> = if let Some(id) = active_id {
+        if let Some(state) = series_fs.get(&id) {
+            state
+                .frame_entities
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, opt)| opt.as_ref().map(|e| (idx, e.clone())))
+                .collect()
+        } else {
+            frame_store
+                .frame_entities
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, opt)| opt.as_ref().map(|e| (idx, e.clone())))
+                .collect()
+        }
+    } else {
+        frame_store
+            .frame_entities
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, opt)| opt.as_ref().map(|e| (idx, e.clone())))
+            .collect()
+    };
+
+    for (idx, entities) in &entity_iter {
+        let desired = if *idx == display_frame {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
+        for entity in entities {
+            if let Ok(mut vis) = visibility_query.get_mut(*entity) {
+                if *vis != desired {
+                    *vis = desired;
                 }
             }
         }
     }
 
-    // Log frame transitions (only when actually switching what's on screen)
-    if frame_store.displayed_frame != Some(display_frame) {
-        debug!(
-            "▶ display frame {} (playhead: {}, prev: {:?})",
-            display_frame, current, frame_store.displayed_frame,
-        );
+    // Update displayed frame and prev_windows in per-series state.
+    if let Some(id) = active_id {
+        if let Some(state) = series_fs.get_mut(&id) {
+            // Log frame transitions (only when actually switching what's on screen)
+            if state.displayed_frame != Some(display_frame) {
+                debug!(
+                    "▶ display frame {} (playhead: {}, prev: {:?})",
+                    display_frame, current, state.displayed_frame,
+                );
+            }
+            state.displayed_frame = Some(display_frame);
+            state.prev_windows = new_windows;
+        }
     }
 
+    // Mirror: keep FrameStore.displayed_frame in sync.
     frame_store.displayed_frame = Some(display_frame);
-    *prev_windows = new_windows;
 }
 
 /// Sync the transform of all spawned sequence-mesh entities when the active
@@ -390,10 +571,16 @@ pub(super) fn manage_frame_window(
 /// Runs in `PostUpdate` alongside `manage_frame_window`.  Tracks the last
 /// applied composed transform and, when it differs, bulk-updates every
 /// spawned entity.
+///
+/// ## Per-series tracking (Phase 2)
+///
+/// Reads spawned entities from [`SeriesFrameStore`] for the active series,
+/// with a fallback to `FrameStore.frame_entities` for backward compat.
 pub(super) fn sync_series_transform(
     frame_store: Res<FrameStore>,
     loader_config: Res<LoaderConfig>,
     series_mgr: Res<SeriesManagerRes>,
+    series_fs: Res<SeriesFrameStore>,
     mut transform_query: Query<&mut Transform, With<SequenceMeshDisplay>>,
     mut prev_transform: Local<Option<Transform3D>>,
 ) {
@@ -418,11 +605,35 @@ pub(super) fn sync_series_transform(
 
     let composed = current_t3d.to_bevy_transform() * loader_config.coord_transform;
 
-    for entity_opt in frame_store.frame_entities.iter() {
-        if let Some(entities) = entity_opt {
-            for entity in entities {
-                if let Ok(mut transform) = transform_query.get_mut(*entity) {
-                    *transform = composed;
+    let active_id = series_mgr.active_id();
+
+    // Prefer per-series entity store; fall back to FrameStore mirror.
+    let used_series_store = if let Some(id) = active_id {
+        if let Some(state) = series_fs.get(&id) {
+            for entity_opt in state.frame_entities.iter() {
+                if let Some(entities) = entity_opt {
+                    for entity in entities {
+                        if let Ok(mut t) = transform_query.get_mut(*entity) {
+                            *t = composed;
+                        }
+                    }
+                }
+            }
+            true
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
+    if !used_series_store {
+        for entity_opt in frame_store.frame_entities.iter() {
+            if let Some(entities) = entity_opt {
+                for entity in entities {
+                    if let Ok(mut t) = transform_query.get_mut(*entity) {
+                        *t = composed;
+                    }
                 }
             }
         }
@@ -443,8 +654,9 @@ mod tests {
 
     #[test]
     fn test_window_delta_no_change() {
-        let windows = vec![(5, 10)];
-        let delta = compute_window_delta(&windows, &windows);
+        let old = vec![(5, 10)];
+        let new = vec![(5, 10)];
+        let delta = compute_window_delta(&old, &new);
         assert!(delta.to_despawn.is_empty());
         assert!(delta.to_spawn.is_empty());
     }
@@ -478,26 +690,27 @@ mod tests {
 
     #[test]
     fn test_window_delta_empty_to_some() {
-        let delta = compute_window_delta(&[], &[(0, 3)]);
+        let delta = compute_window_delta(&[], &[(5, 10)]);
         assert!(delta.to_despawn.is_empty());
-        assert_eq!(delta.to_spawn, vec![0, 1, 2]);
+        assert_eq!(delta.to_spawn, vec![5, 6, 7, 8, 9]);
     }
 
     #[test]
     fn test_window_delta_some_to_empty() {
-        let delta = compute_window_delta(&[(0, 3)], &[]);
-        assert_eq!(delta.to_despawn, vec![0, 1, 2]);
+        let delta = compute_window_delta(&[(5, 10)], &[]);
+        assert_eq!(delta.to_despawn, vec![5, 6, 7, 8, 9]);
         assert!(delta.to_spawn.is_empty());
     }
 
     #[test]
     fn test_window_delta_multi_window() {
         let old = vec![(0, 5), (10, 15)];
-        let new = vec![(3, 8), (10, 15)];
+        let new = vec![(3, 8), (12, 17)];
         let delta = compute_window_delta(&old, &new);
-        // 0,1,2 leave; 5,6,7 enter; 10..15 unchanged
-        assert_eq!(delta.to_despawn, vec![0, 1, 2]);
-        assert_eq!(delta.to_spawn, vec![5, 6, 7]);
+        // Left out of old: 0,1,2 from first window; 10,11 from second
+        assert_eq!(delta.to_despawn, vec![0, 1, 2, 10, 11]);
+        // New in new: 5,6,7 from first window; 15,16 from second
+        assert_eq!(delta.to_spawn, vec![5, 6, 7, 15, 16]);
     }
 
     #[test]

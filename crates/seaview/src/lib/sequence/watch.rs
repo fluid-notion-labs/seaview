@@ -257,6 +257,8 @@ fn handle_incremental_load(
     mut incremental_requests: MessageReader<IncrementalLoadRequest>,
     mut sequence_manager: ResMut<SequenceManager>,
     mut frame_store: ResMut<FrameStore>,
+    mut series_fs: ResMut<super::loader::SeriesFrameStore>,
+    series_mgr: Res<super::SeriesManagerRes>,
 ) {
     for request in incremental_requests.read() {
         debug!(
@@ -294,6 +296,14 @@ fn handle_incremental_load(
             frame_store.loaded_frames.push(false);
             frame_store.frame_entities.push(None);
             frame_store.degenerate_frames.push(false);
+        }
+
+        // Grow the per-series entity state to match the new total.
+        let new_total = frame_store.total_frames + request.frame_paths.len();
+        if let Some(id) = series_mgr.active_id() {
+            if let Some(state) = series_fs.get_mut(&id) {
+                state.grow_to(new_total);
+            }
         }
 
         // Update total frames and mark as loading so sync_section_loads

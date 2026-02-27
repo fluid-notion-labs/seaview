@@ -58,6 +58,7 @@ mod frame_window;
 mod load_queue;
 mod loading_tracker;
 pub(crate) mod mesh_cache;
+pub(crate) mod series_frame_store;
 pub(crate) mod spatial_index;
 
 // ── Public re-exports ─────────────────────────────────────────────────────
@@ -67,6 +68,7 @@ pub use frame_window::{compute_window_delta, WindowDelta};
 pub use load_queue::LoadQueue;
 pub use loading_tracker::default_material_properties;
 pub use mesh_cache::{CacheEntry, MeshCache};
+pub use series_frame_store::{SeriesEntityState, SeriesFrameStore};
 pub use spatial_index::SpatialIndex;
 
 use bevy::mesh::Mesh;
@@ -124,6 +126,7 @@ impl Plugin for SequenceLoaderPlugin {
             .init_resource::<AssetIndex>()
             .init_resource::<LoadQueue>()
             .init_resource::<MeshCache>()
+            .init_resource::<SeriesFrameStore>()
             .add_message::<FrameLoadedEvent>()
             .add_message::<LoadSequenceRequest>()
             .add_systems(
@@ -289,6 +292,7 @@ fn handle_load_requests(
     mut load_queue: ResMut<LoadQueue>,
     mut spatial_index: Option<ResMut<SpatialIndex>>,
     mut mesh_cache: ResMut<MeshCache>,
+    mut series_fs: ResMut<SeriesFrameStore>,
     series_mgr: Res<SeriesManagerRes>,
     settings_res: Res<SettingsResource>,
 ) {
@@ -318,7 +322,12 @@ fn handle_load_requests(
             }
         };
 
-        // Cleanup old sequence entities before resetting
+        // Cleanup old sequence entities before resetting.
+        // Despawn from SeriesFrameStore first (authoritative), then
+        // fall back to FrameStore mirror for any stragglers.
+        for entity in series_fs.reset() {
+            commands.entity(entity).despawn();
+        }
         for entity_opt in frame_store.frame_entities.iter() {
             if let Some(entities) = entity_opt {
                 for entity in entities {
