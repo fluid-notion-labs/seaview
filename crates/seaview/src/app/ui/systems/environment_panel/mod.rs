@@ -22,7 +22,7 @@ pub use material_section::render_material_controls;
 pub use objects_section::{render_objects_section, FileDialogReceiver};
 pub use perf_section::render_perf_section;
 pub use rendering_section::render_rendering_section;
-pub use series_section::render_series_section;
+pub use series_section::{render_series_section, DirDialogReceiver};
 pub use spatial_section::render_spatial_section;
 
 use std::path::PathBuf;
@@ -98,6 +98,7 @@ pub fn environment_panel_system(
     mut panel: EnvironmentPanelParams,
     mut env_objs: EnvObjectParams,
     mut series_mgr: ResMut<SeriesManagerRes>,
+    mut dir_dialog_rx: Local<Option<DirDialogReceiver>>,
 ) {
     if !ui_state.show_environment_panel {
         return;
@@ -313,11 +314,14 @@ pub fn environment_panel_system(
                     // ── Mesh Series ────────────────────────────────────
                     {
                         let summaries = ui_state.series.clone();
+                        let orientation = *panel.source_orientation;
                         let series_actions = render_series_section(
                             ui,
                             &mut ui_state.collapsible.series_open,
                             &summaries,
                             &mut series_mgr,
+                            &mut dir_dialog_rx,
+                            orientation,
                         );
 
                         // Apply deferred actions
@@ -337,6 +341,14 @@ pub fn environment_panel_system(
                         }
                         if let Some(id) = series_actions.remove {
                             series_mgr.remove(id);
+                        }
+                        for dir in series_actions.add_directories {
+                            series_section::add_series_from_directory(
+                                &dir,
+                                &mut series_mgr,
+                                orientation,
+                                usize::MAX,
+                            );
                         }
                     }
 

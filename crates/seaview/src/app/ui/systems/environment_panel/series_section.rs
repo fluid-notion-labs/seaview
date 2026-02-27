@@ -14,12 +14,29 @@
 //! Write path: switching, renaming, and transform edits go through
 //! `SeriesManagerRes` directly.
 
+use std::path::PathBuf;
+use std::sync::mpsc;
+
 use bevy_egui::egui;
 
 use crate::app::ui::widgets::{section_header_tracked, transform_editor};
+use crate::lib::coordinates::SourceOrientation;
 use crate::lib::environment_objects::Transform3D;
+use crate::lib::sequence::discovery::{discover_sequences, SequencePatterns};
 use crate::lib::sequence::SeriesManagerRes;
 use crate::lib::series::{SeriesId, SeriesSummary};
+
+// ---------------------------------------------------------------------------
+// Async directory-dialog receiver (lives across frames)
+// ---------------------------------------------------------------------------
+
+/// Holds the receiving end of a one-shot channel from an `rfd` directory dialog.
+///
+/// Created when the user clicks "Add Series…" and consumed once a path (or
+/// cancellation) arrives.
+pub struct DirDialogReceiver {
+    pub rx: mpsc::Receiver<Option<PathBuf>>,
+}
 
 // ---------------------------------------------------------------------------
 // Deferred actions
@@ -39,6 +56,8 @@ pub struct SeriesPanelActions {
     pub clone: Option<SeriesId>,
     /// Remove a series by ID.
     pub remove: Option<SeriesId>,
+    /// Directories to discover and add series from.
+    pub add_directories: Vec<PathBuf>,
 }
 
 // ---------------------------------------------------------------------------
@@ -54,10 +73,36 @@ pub fn render_series_section(
     series_open: &mut bool,
     summaries: &[SeriesSummary],
     series_mgr: &mut SeriesManagerRes,
+    dir_dialog_rx: &mut Option<DirDialogReceiver>,
+    source_orientation: SourceOrientation,
 ) -> SeriesPanelActions {
     let mut actions = SeriesPanelActions::default();
 
+    // Poll any in-flight directory dialog.
+    poll_dir_dialog(dir_dialog_rx, &mut actions.add_directories);
+
     section_header_tracked(ui, "Mesh Series", "mesh_series", series_open, |ui| {
+        // ── Add Series button ─────────────────────────────────
+        ui.horizontal(|ui| {
+            let dialog_in_flight = dir_dialog_rx.is_some();
+
+            let button_text = if dialog_in_flight {
+                "Waiting for folder…"
+            } else {
+                "\u{2795} Add Series…"
+            };
+
+            if ui
+                .add_enabled(!dialog_in_flight, egui::Button::new(button_text))
+                .on_hover_text("Add mesh series from a directory")
+                .clicked()
+            {
+                open_dir_dialog(dir_dialog_rx, source_orientation);
+            }
+        });
+
+        ui.add_space(4.0);
+
         if summaries.is_empty() {
             ui.label(
                 egui::RichText::new("No series loaded")
@@ -224,4 +269,95 @@ pub fn render_series_section(
     });
 
     actions
+}
+
+// ---------------------------------------------------------------------------
+// Directory dialog helpers
+// ---------------------------------------------------------------------------
+
+/// Opens a native directory picker on a background thread.
+fn open_dir_dialog(rx_slot: &mut Option<DirDialogReceiver>, _orientation: SourceOrientation) {
+    let (tx, rx) = mpsc::channel();
+    *rx_slot = Some(DirDialogReceiver { rx });
+
+    std::thread::spawn(move || {
+        let result = rfd::FileDialog::new()
+            .set_title("Select Mesh Series Directory")
+            .pick_folder();
+        let _ = tx.send(result);
+    });
+}
+
+/// Polls the in-flight directory dialog.  If a path arrived, appends it to
+/// `pending_dirs` and clears the receiver.
+fn poll_dir_dialog(rx_slot: &mut Option<DirDialogReceiver>, pending_dirs: &mut Vec<PathBuf>) {
+    let Some(dialog) = rx_slot.as_ref() else {
+        return;
+    };
+
+    match dialog.rx.try_recv() {
+        Ok(Some(path)) => {
+            pending_dirs.push(path);
+            *rx_slot = None;
+        }
+        Ok(None) => {
+            // User cancelled.
+            *rx_slot = None;
+        }
+        Err(mpsc::TryRecvError::Empty) => {
+            // Still waiting.
+        }
+        Err(mpsc::TryRecvError::Disconnected) => {
+            *rx_slot = None;
+        }
+    }
+}
+
+/// Discover sequences in a directory and add them to the series manager.
+///
+/// Returns the number of new series added.
+pub fn add_series_from_directory(
+    dir: &std::path::Path,
+    series_mgr: &mut SeriesManagerRes,
+    source_orientation: SourceOrientation,
+    max_frames: usize,
+) -> usize {
+    let patterns = SequencePatterns::default();
+    let sequences = match discover_sequences(dir, true, &patterns, source_orientation) {
+        Ok(seqs) => seqs,
+        Err(e) => {
+            bevy::prelude::warn!("Failed to discover sequences in {}: {}", dir.display(), e);
+            return 0;
+        }
+    };
+
+    if sequences.is_empty() {
+        bevy::prelude::info!("No sequences found in {}", dir.display());
+        return 0;
+    }
+
+    let mut added = 0;
+    for seq in sequences {
+        // Skip if a series with this base_dir already exists
+        if series_mgr.find_by_dir(&seq.base_dir).is_some() {
+            bevy::prelude::info!(
+                "Skipping '{}' — already loaded ({})",
+                seq.name,
+                seq.base_dir.display()
+            );
+            continue;
+        }
+
+        let id = series_mgr.add(seq.clone(), max_frames);
+        bevy::prelude::info!(
+            "Added series '{}' as {} ({} frames) from {}",
+            seq.name,
+            id,
+            seq.frame_count(),
+            dir.display(),
+        );
+        added += 1;
+    }
+
+    added
 }
