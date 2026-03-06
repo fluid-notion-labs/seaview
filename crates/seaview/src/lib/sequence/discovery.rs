@@ -10,11 +10,11 @@
 //!    tasks have completed.  When one finishes it fires the appropriate
 //!    events and kicks off asset loading.
 
+use super::SeriesManagerRes;
 use super::{loader::LoadSequenceRequest, FrameInfo, Sequence, SequenceEvent, SequenceManager};
 use crate::lib::memory_budget::MemoryBudget;
 use crate::lib::series::SavedSeriesEntry;
 use crate::lib::settings::SettingsResource;
-use super::SeriesManagerRes;
 use bevy::prelude::*;
 use bevy::tasks::{block_on, IoTaskPool, Task};
 use regex::Regex;
@@ -31,16 +31,15 @@ pub struct SequenceDiscoveryPlugin;
 
 impl Plugin for SequenceDiscoveryPlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<AllSequencesDiscovered>()
-            .add_systems(
-                Update,
-                (
-                    start_async_discovery,
-                    poll_async_discovery,
-                    register_discovered_series,
-                )
-                    .chain(),
-            );
+        app.add_message::<AllSequencesDiscovered>().add_systems(
+            Update,
+            (
+                start_async_discovery,
+                poll_async_discovery,
+                register_discovered_series,
+            )
+                .chain(),
+        );
     }
 }
 
@@ -262,8 +261,7 @@ fn poll_async_discovery(
                 let frame_count = first.frame_count();
                 let sequence_name = first.name.clone();
 
-                let frame_paths: Vec<_> =
-                    first.frames.iter().map(|f| f.path.clone()).collect();
+                let frame_paths: Vec<_> = first.frames.iter().map(|f| f.path.clone()).collect();
                 if !frame_paths.is_empty() {
                     debug!(
                         "Triggering load of {} mesh frames for sequence '{}'",
@@ -324,10 +322,8 @@ fn register_discovered_series(
         // -- Restore per-series state from saved settings ---------------------
         let saved_series = settings_res.settings.get_series();
         if !saved_series.is_empty() {
-            let entries: Vec<SavedSeriesEntry> = saved_series
-                .iter()
-                .map(SavedSeriesEntry::from)
-                .collect();
+            let entries: Vec<SavedSeriesEntry> =
+                saved_series.iter().map(SavedSeriesEntry::from).collect();
 
             let matched = mgr.restore_from_saved(&entries, max_frames);
             info!(
@@ -371,12 +367,14 @@ pub fn discover_sequences(
     patterns: &SequencePatterns,
     source_orientation: crate::lib::coordinates::SourceOrientation,
 ) -> Result<Vec<Sequence>, std::io::Error> {
+    debug!("discover_sequences: Scanning directory {:?}", directory);
     let mut sequences = Vec::new();
     let mut file_groups: HashMap<(String, String), Vec<(PathBuf, usize)>> = HashMap::new();
 
     // Scan directory for matching files
     scan_directory(directory, recursive, patterns, &mut file_groups)?;
 
+    debug!("discover_sequences: Found {} files", file_groups.len());
     // Convert file groups into sequences
     for ((pattern_name, base_name), mut files) in file_groups {
         if files.len() < 2 {
@@ -414,6 +412,7 @@ fn scan_directory(
     patterns: &SequencePatterns,
     file_groups: &mut HashMap<(String, String), Vec<(PathBuf, usize)>>,
 ) -> Result<(), std::io::Error> {
+    debug!("scan_directory: Scanning directory {:?}", directory);
     let entries = fs::read_dir(directory)?;
 
     for entry in entries {
@@ -438,6 +437,10 @@ fn scan_directory(
                         {
                             let base_name = base_match.as_str().to_string();
                             if let Ok(frame_number) = frame_match.as_str().parse::<usize>() {
+                                debug!(
+                                    "scan_directory: File {:?}, Pattern {}, Base Name {}, Frame Number {}",
+                                    path, pattern.name, base_name, frame_number
+                                );
                                 let key = (pattern.name.clone(), base_name);
                                 file_groups
                                     .entry(key)
