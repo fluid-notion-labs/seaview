@@ -43,6 +43,7 @@ threadpool = "1.8"
 sysinfo = "0.37"
 nvml-wrapper = "0.10"
 libc = { version = "0.2", optional = true }
+fidget = "0.4.2"
 
 [dev-dependencies]
 tempfile = "3.8"

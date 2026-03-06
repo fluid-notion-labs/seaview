@@ -33,6 +33,7 @@ bevy = { version = "0.18.0", default-features = false, features = [
     "tonemapping_luts",
     "default_font",
     "png",
+    "jpeg",
     "exr",
     "hdr",
     "bevy_remote",
