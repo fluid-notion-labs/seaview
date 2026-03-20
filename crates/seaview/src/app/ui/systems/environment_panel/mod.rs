@@ -348,6 +348,9 @@ pub fn environment_panel_system(
                         if let Some(id) = series_actions.remove {
                             series_mgr.remove(id);
                         }
+                        if let Some((id, visible)) = series_actions.set_visible {
+                            series_mgr.set_visible(id, visible);
+                        }
                         for dir in series_actions.add_directories {
                             series_section::add_series_from_directory(
                                 &dir,

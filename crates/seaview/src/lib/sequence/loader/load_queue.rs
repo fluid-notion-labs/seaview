@@ -1,19 +1,13 @@
 //! Throttled load queue and section reconciliation.
 //!
-//! This module contains the [`LoadQueue`] resource that buffers frame indices
-//! waiting to be sent to the asset server, and two systems that populate and
-//! drain it:
-//!
 //! - **[`sync_section_loads`]** — watches for [`Timeline`] section changes and
-//!   reconciles the set of loaded frame assets to match, pushing new indices
-//!   into the queue and dropping handles for frames that left all sections.
-//! - **[`drain_load_queue`]** — pops at most [`LOADS_PER_FRAME`](super::LOADS_PER_FRAME)
-//!   items per tick and issues the actual `asset_server.load()` calls.
+//!   reconciles the set of loaded frame assets to match across all visible
+//!   series.
+//! - **[`drain_load_queue`]** — pops at most [`LOADS_PER_FRAME`] items per
+//!   tick and issues `asset_server.load()` calls.
 //!
-//! The pure function [`reconcile_section_loads`] is extracted for testability.
-//!
-//! With loadfu, **all** formats (STL, OBJ, GLB, glTF) produce `Handle<Mesh>`
-//! directly — there is no longer a two-phase glTF loading path.
+//! The union of load sections across all **visible** series determines which
+//! frames are resident in memory at any given time.
 
 use bevy::mesh::Mesh;
 use bevy::prelude::*;
@@ -29,36 +23,27 @@ use crate::lib::sequence::{frames_to_load, union_frames_to_load, SeriesManagerRe
 // ---------------------------------------------------------------------------
 
 /// A throttled queue of frame indices waiting to be sent to the asset server.
-///
-/// Systems push indices here instead of calling `asset_server.load()` directly.
-/// [`drain_load_queue`] pops at most [`LOADS_PER_FRAME`](super::LOADS_PER_FRAME)
-/// per tick.
 #[derive(Resource, Default)]
 pub struct LoadQueue {
     pub(super) queue: VecDeque<usize>,
-    /// Tracks indices already in the queue to prevent duplicate enqueues.
     pub(super) pending: HashSet<usize>,
 }
 
 impl LoadQueue {
-    /// Push a frame index to be loaded (deduplicates automatically).
     pub(crate) fn push(&mut self, idx: usize) {
         if self.pending.insert(idx) {
             self.queue.push_back(idx);
         }
     }
 
-    /// How many items are waiting.
     pub fn len(&self) -> usize {
         self.queue.len()
     }
 
-    /// Whether the queue is empty.
     pub fn is_empty(&self) -> bool {
         self.queue.is_empty()
     }
 
-    /// Clear all pending loads (used when resetting for a new sequence).
     pub(crate) fn clear(&mut self) {
         self.queue.clear();
         self.pending.clear();
@@ -69,27 +54,12 @@ impl LoadQueue {
 // Pure functions
 // ---------------------------------------------------------------------------
 
-/// Result of reconciling the set of loaded frames against the current sections.
-///
-/// Produced by [`reconcile_section_loads`], consumed by [`sync_section_loads`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SectionReconciliation {
-    /// Frame indices that need to be enqueued for loading (in sections but
-    /// no handle yet).
     pub to_load: Vec<usize>,
-    /// Frame indices that should be unloaded (have a handle but are outside
-    /// all sections).
     pub to_unload: Vec<usize>,
 }
 
-/// Pure logic extracted from [`sync_section_loads`].
-///
-/// Given the set of needed frame indices (from sections) and a per-frame
-/// predicate indicating whether a handle already exists, returns which frames
-/// to enqueue for loading and which to unload.
-///
-/// `has_handle` should return `true` when frame `idx` already has a mesh
-/// handle.
 pub(crate) fn reconcile_section_loads(
     needed: &[usize],
     total_frames: usize,
@@ -124,14 +94,11 @@ pub(crate) fn reconcile_section_loads(
 // ---------------------------------------------------------------------------
 
 /// Watches for timeline section changes and reconciles the set of loaded frame
-/// assets to match.
+/// assets across all **visible** series.
 ///
-/// **Only runs when the [`Timeline`] resource has changed** (Bevy change
-/// detection), avoiding O(n) work every frame during steady-state playback.
-///
-/// Frames entering a section are pushed into the [`LoadQueue`]; frames leaving
-/// all sections have their handle dropped immediately so the asset server can
-/// reclaim memory.
+/// Only runs when the [`Timeline`] resource has changed (Bevy change detection).
+/// Uses the union of load sections across all visible series so that frames
+/// required by any visible series remain loaded.
 pub(super) fn sync_section_loads(
     mut frame_store: ResMut<FrameStore>,
     mut asset_index: ResMut<AssetIndex>,
@@ -142,11 +109,9 @@ pub(super) fn sync_section_loads(
     mut mesh_cache: ResMut<MeshCache>,
     series_mgr: Res<SeriesManagerRes>,
 ) {
-    // Early-out: nothing to do if no sequence loaded.
     if frame_store.total_frames == 0 {
         return;
     }
-    // Only re-sync when sections actually changed (not on every playhead tick).
     if timeline.sections == *prev_sections {
         return;
     }
@@ -155,33 +120,54 @@ pub(super) fn sync_section_loads(
         return;
     };
 
-    // Clear stale queue entries — frames from previously-active sections
-    // would otherwise be picked up by drain_load_queue and re-loaded even
-    // though their section is now inactive.
     load_queue.clear();
 
     let rss_before = rss_mb();
 
-    // Phase 3: compute the UNION of needed frames across all series.
-    // If multiple series share the same files, each file is loaded once
-    // into MeshCache and shared via Handle cloning.
-    //
-    // For now all series share the same FrameStore (same file set), so
-    // total_frames is the same.  The union just ensures we load the
-    // superset of all series' section ranges.
-    let needed = if series_mgr.len() > 1 {
-        let all_sections: Vec<(&[crate::lib::sequence::LoadSection], usize)> = series_mgr
-            .iter()
-            .map(|s| (s.timeline.sections.as_slice(), frame_store.total_frames))
-            .collect();
-        union_frames_to_load(&all_sections)
-    } else {
-        // Single series (common case) — use the global timeline directly,
-        // avoiding the overhead of collecting section slices.
-        frames_to_load(&timeline.sections, frame_store.total_frames)
+    // Compute the UNION of needed frames across all **visible** series.
+    // Hidden series do not contribute to the load set — their frames will be
+    // unloaded naturally as they leave all active sections.
+    let needed = {
+        let visible_ids = series_mgr.visible_ids();
+        if visible_ids.is_empty() {
+            // Nothing visible: fall back to global timeline (avoids empty state
+            // on first load before series manager is fully initialised).
+            frames_to_load(&timeline.sections, frame_store.total_frames)
+        } else if visible_ids.len() == 1 {
+            // Single visible series — common case, no dedup overhead.
+            let id = visible_ids[0];
+            if series_mgr.active_id() == Some(id) {
+                // Active series: use the global timeline (authoritative).
+                frames_to_load(&timeline.sections, frame_store.total_frames)
+            } else {
+                match series_mgr.get(id) {
+                    Some(state) => frames_to_load(
+                        &state.timeline.sections,
+                        frame_store.total_frames,
+                    ),
+                    None => frames_to_load(&timeline.sections, frame_store.total_frames),
+                }
+            }
+        } else {
+            // Multiple visible series — build the union.
+            let active_id = series_mgr.active_id();
+            let all_sections: Vec<(&[crate::lib::sequence::LoadSection], usize)> = visible_ids
+                .iter()
+                .filter_map(|&id| {
+                    if Some(id) == active_id {
+                        // Active series uses the global timeline.
+                        Some((timeline.sections.as_slice(), frame_store.total_frames))
+                    } else {
+                        series_mgr.get(id).map(|state| {
+                            (state.timeline.sections.as_slice(), frame_store.total_frames)
+                        })
+                    }
+                })
+                .collect();
+            union_frames_to_load(&all_sections)
+        }
     };
 
-    // Use the pure reconciliation function to decide what to load/unload.
     let reconciliation = reconcile_section_loads(&needed, frame_store.total_frames, |idx| {
         frame_store.frame_handles[idx].is_some()
     });
@@ -192,7 +178,6 @@ pub(super) fn sync_section_loads(
         loads_enqueued += 1;
     }
 
-    // Unload frames that are outside all sections (drop handle, reclaim memory).
     let mut unloads = 0usize;
     let mut handles_with_entities = 0usize;
     let mut meshes_removed = 0usize;
@@ -200,10 +185,6 @@ pub(super) fn sync_section_loads(
         if frame_store.frame_entities[idx].is_some() {
             handles_with_entities += 1;
         }
-        // Remove all mesh asset IDs from reverse index and force-remove
-        // from Assets<Mesh> immediately.
-        // Collect IDs first to avoid borrowing frame_store immutably
-        // and mutably at the same time.
         let mesh_ids: Vec<AssetId<Mesh>> = frame_store.frame_handles[idx]
             .as_ref()
             .map(|handles| handles.iter().map(|h| h.id()).collect())
@@ -214,7 +195,6 @@ pub(super) fn sync_section_loads(
                 meshes_removed += 1;
             }
         }
-        // Dual-write: release from MeshCache (Phase 1 — mirrors FrameStore).
         if idx < frame_store.frame_paths.len() {
             let path = frame_store.frame_paths[idx].clone();
             mesh_cache.release(&path);
@@ -227,14 +207,6 @@ pub(super) fn sync_section_loads(
         unloads += 1;
     }
 
-    // After bulk unloads, ask glibc to return freed pages to the OS.
-    // Without this, RSS stays high because malloc keeps pages in its arena
-    // for reuse rather than returning them via munmap.
-    //
-    // Gated behind the `mesh_unload_malloc_trim` feature because
-    // malloc_trim() can be expensive on highly-fragmented heaps and may
-    // not be desirable in all workloads.  Enable with:
-    //   cargo build --features mesh_unload_malloc_trim
     #[cfg(feature = "mesh_unload_malloc_trim")]
     if unloads > 0 {
         #[cfg(target_os = "linux")]
@@ -261,13 +233,8 @@ pub(super) fn sync_section_loads(
     }
 }
 
-/// Drains up to [`LOADS_PER_FRAME`](super::LOADS_PER_FRAME) items from the
-/// [`LoadQueue`], issuing `asset_server.load()` for each and populating the
-/// reverse `AssetId → frame` index for O(1) lookups in
-/// [`track_asset_loading`](super::loading_tracker::track_asset_loading).
-///
-/// With loadfu, all formats (STL, OBJ, GLB, glTF) produce `Handle<Mesh>`
-/// directly — the load path is identical regardless of format.
+/// Drains up to [`LOADS_PER_FRAME`] items from the [`LoadQueue`], issuing
+/// `asset_server.load()` for each.
 pub(super) fn drain_load_queue(
     mut load_queue: ResMut<LoadQueue>,
     mut frame_store: ResMut<FrameStore>,
@@ -290,12 +257,10 @@ pub(super) fn drain_load_queue(
             break;
         }
 
-        // Skip if already has a handle.
         if frame_store.frame_handles[idx].is_some() {
             continue;
         }
 
-        // Guard against out-of-bounds (e.g. sequence was reset).
         if idx >= frame_store.frame_paths.len() {
             continue;
         }
@@ -306,17 +271,12 @@ pub(super) fn drain_load_queue(
             .unwrap_or("unknown")
             .to_owned();
 
-        // Unified load path: all formats produce Handle<Mesh> directly via loadfu.
         let handle = load_mesh_handle(&asset_server, &filename);
-        // Populate the reverse index for O(1) event lookup.
         asset_index.asset_id_to_frame.insert(handle.id(), idx);
         frame_store.frame_handles[idx] = Some(vec![handle.clone()]);
 
-        // Dual-write: insert into MeshCache (Phase 1 — mirrors FrameStore).
         let path = frame_store.frame_paths[idx].clone();
         if mesh_cache.contains(&path) {
-            // Another frame index maps to the same path (e.g. cloned series
-            // in a future phase).  Just bump the refcount.
             if let Some(entry) = mesh_cache.get_mut(&path) {
                 entry.add_ref();
             }
@@ -345,8 +305,6 @@ pub(super) fn drain_load_queue(
 mod tests {
     use super::*;
 
-    // ── reconcile_section_loads ────────────────────────────────────────
-
     #[test]
     fn test_reconcile_empty_needed() {
         let r = reconcile_section_loads(&[], 5, |_| false);
@@ -367,19 +325,15 @@ mod tests {
         let needed = vec![0, 1, 2];
         let r = reconcile_section_loads(&needed, 5, |_| true);
         assert!(r.to_load.is_empty());
-        // Frames 3 and 4 have handles but are not needed → unload
         assert_eq!(r.to_unload, vec![3, 4]);
     }
 
     #[test]
     fn test_reconcile_partial_overlap() {
-        // Frames 0..5, needed=[2,3,4], handles at [1,2,3]
         let needed = vec![2, 3, 4];
         let has_handle = |idx: usize| idx >= 1 && idx <= 3;
         let r = reconcile_section_loads(&needed, 5, has_handle);
-        // Frame 4 is needed but has no handle → load
         assert_eq!(r.to_load, vec![4]);
-        // Frame 1 has a handle but is not needed → unload
         assert_eq!(r.to_unload, vec![1]);
     }
 
@@ -392,7 +346,6 @@ mod tests {
 
     #[test]
     fn test_reconcile_needed_subset_of_loaded() {
-        // 10 frames, all loaded, only 2-4 needed
         let needed = vec![2, 3, 4];
         let r = reconcile_section_loads(&needed, 10, |_| true);
         assert!(r.to_load.is_empty());

@@ -3,16 +3,11 @@
 //! Renders a collapsible accordion section listing all loaded mesh series.
 //! Each series row shows:
 //!
-//! - Active indicator + click-to-switch
-//! - Name (editable via double-click)
+//! - Active indicator (click to set as timeline focus)
+//! - Visibility checkbox (toggle rendering without changing active)
+//! - Name (editable)
 //! - Progress bar (loaded / total frames)
-//! - Collapsible per-series transform controls (position, rotation, scale)
-//!
-//! Read path: series summaries come from `UiState.series` (mirrored each
-//! frame by `sync_ui_from_sequence_manager`).
-//!
-//! Write path: switching, renaming, and transform edits go through
-//! `SeriesManagerRes` directly.
+//! - Collapsible per-series transform controls
 
 use std::path::PathBuf;
 use std::sync::mpsc;
@@ -30,10 +25,6 @@ use crate::lib::series::{SeriesId, SeriesSummary};
 // Async directory-dialog receiver (lives across frames)
 // ---------------------------------------------------------------------------
 
-/// Holds the receiving end of a one-shot channel from an `rfd` directory dialog.
-///
-/// Created when the user clicks "Add Series…" and consumed once a path (or
-/// cancellation) arrives.
 pub struct DirDialogReceiver {
     pub rx: mpsc::Receiver<Option<PathBuf>>,
 }
@@ -42,11 +33,9 @@ pub struct DirDialogReceiver {
 // Deferred actions
 // ---------------------------------------------------------------------------
 
-/// Actions collected during rendering that the caller must apply after the
-/// UI closure finishes (to avoid double-borrow issues).
 #[derive(Default)]
 pub struct SeriesPanelActions {
-    /// Switch the active series to this ID.
+    /// Switch the active (timeline focus) series to this ID.
     pub switch_to: Option<SeriesId>,
     /// Rename a series: (id, new_name).
     pub rename: Option<(SeriesId, String)>,
@@ -60,16 +49,14 @@ pub struct SeriesPanelActions {
     pub remove: Option<SeriesId>,
     /// Directories to discover and add series from.
     pub add_directories: Vec<PathBuf>,
+    /// Visibility toggle: (id, new_visible).
+    pub set_visible: Option<(SeriesId, bool)>,
 }
 
 // ---------------------------------------------------------------------------
 // Public render function
 // ---------------------------------------------------------------------------
 
-/// Renders the "Mesh Series" accordion section.
-///
-/// Returns a [`SeriesPanelActions`] struct that the caller must apply to
-/// `SeriesManagerRes` outside the egui closure.
 pub fn render_series_section(
     ui: &mut egui::Ui,
     series_open: &mut bool,
@@ -80,20 +67,17 @@ pub fn render_series_section(
 ) -> SeriesPanelActions {
     let mut actions = SeriesPanelActions::default();
 
-    // Poll any in-flight directory dialog.
     poll_dir_dialog(dir_dialog_rx, &mut actions.add_directories);
 
     section_header_tracked(ui, "Mesh Series", "mesh_series", series_open, |ui| {
         // ── Add Series button ─────────────────────────────────
         ui.horizontal(|ui| {
             let dialog_in_flight = dir_dialog_rx.is_some();
-
             let button_text = if dialog_in_flight {
                 "Waiting for folder…"
             } else {
                 "\u{2795} Add Series…"
             };
-
             if ui
                 .add_enabled(!dialog_in_flight, egui::Button::new(button_text))
                 .on_hover_text("Add mesh series from a directory")
@@ -116,27 +100,19 @@ pub fn render_series_section(
 
         // Summary line
         let total_series = summaries.len();
+        let visible_count = summaries.iter().filter(|s| s.is_visible).count();
         let active_label = summaries
             .iter()
             .find(|s| s.is_active)
             .map(|s| s.label.as_str())
             .unwrap_or("—");
         ui.label(
-            egui::RichText::new(format!("{total_series} series — active: {active_label}"))
-                .small()
-                .color(egui::Color32::from_gray(150)),
+            egui::RichText::new(format!(
+                "{total_series} series — {visible_count} visible — active: {active_label}"
+            ))
+            .small()
+            .color(egui::Color32::from_gray(150)),
         );
-
-        if total_series > 1 {
-            ui.label(
-                egui::RichText::new(
-                    "ℹ Only the active series is visible. Use 'Set Active' to switch.",
-                )
-                .small()
-                .italics()
-                .color(egui::Color32::from_gray(120)),
-            );
-        }
 
         ui.add_space(4.0);
 
@@ -144,10 +120,8 @@ pub fn render_series_section(
         for summary in summaries {
             let id = summary.id;
             let is_active = summary.is_active;
+            let is_visible = summary.is_visible;
 
-            // Get the mutable state for transform editing.  We read the
-            // current transform from the manager (authoritative) and write
-            // back only if the user changed it.
             let current_transform = series_mgr
                 .get(id)
                 .map(|s| s.transform.clone())
@@ -155,8 +129,10 @@ pub fn render_series_section(
 
             let header_color = if is_active {
                 egui::Color32::from_rgb(130, 200, 255)
+            } else if is_visible {
+                egui::Color32::from_gray(220)
             } else {
-                egui::Color32::from_gray(200)
+                egui::Color32::from_gray(140)
             };
 
             let active_prefix = if is_active { "▶ " } else { "   " };
@@ -168,17 +144,32 @@ pub fn render_series_section(
                 .id_salt(collapsing_id)
                 .default_open(is_active)
                 .show(ui, |ui| {
-                    // ── Click to activate ─────────────────────────
-                    if !is_active {
+                    // ── Visibility + Active row ───────────────────
+                    ui.horizontal(|ui| {
+                        // Visibility checkbox — toggles rendering without
+                        // changing the active (timeline focus) series.
+                        let mut vis = is_visible;
                         if ui
-                            .button("⏵ Set Active")
-                            .on_hover_text("Switch to this series")
-                            .clicked()
+                            .checkbox(&mut vis, "Visible")
+                            .on_hover_text("Show/hide this series in the viewport")
+                            .changed()
                         {
-                            actions.switch_to = Some(id);
+                            actions.set_visible = Some((id, vis));
                         }
-                        ui.add_space(2.0);
-                    }
+
+                        // Set active — only shown when not already active
+                        if !is_active {
+                            if ui
+                                .button("⏵ Set Active")
+                                .on_hover_text("Use this series for timeline / playback controls")
+                                .clicked()
+                            {
+                                actions.switch_to = Some(id);
+                            }
+                        }
+                    });
+
+                    ui.add_space(2.0);
 
                     // ── Rename ────────────────────────────────────
                     let rename_buf_id = ui.id().with(("series_rename", id.raw()));
@@ -189,14 +180,12 @@ pub fn render_series_section(
                     ui.horizontal(|ui| {
                         ui.label("Name:");
                         let response = ui.text_edit_singleline(&mut name_buf);
-
                         if response.lost_focus()
                             && ui.input(|i| i.key_pressed(egui::Key::Enter))
                             && !name_buf.trim().is_empty()
                             && name_buf.trim() != summary.label
                         {
                             actions.rename = Some((id, name_buf.trim().to_string()));
-                            // Reset buffer to the new name
                             let trimmed = name_buf.trim().to_string();
                             ui.data_mut(|d| d.insert_temp(rename_buf_id, trimmed));
                         } else {
@@ -243,12 +232,11 @@ pub fn render_series_section(
                         ("series_transform", id.raw()),
                         &mut t,
                     );
-
                     if transform_changed {
                         actions.transform_changes.push((id, t));
                     }
 
-                    // ── Axis swizzle (flip X/Y/Z + coordinate preset) ──
+                    // ── Axis swizzle ──────────────────────────────
                     let (mut current_swizzle, mut current_preset) = series_mgr
                         .get(id)
                         .map(|s| (s.swizzle.clone(), s.coordinate_preset))
@@ -260,7 +248,6 @@ pub fn render_series_section(
                         .id_salt(("series_coords", id.raw()))
                         .default_open(false)
                         .show(ui, |ui| {
-                            // Coordinate preset dropdown
                             ui.horizontal(|ui| {
                                 ui.label("Preset:");
                                 egui::ComboBox::from_id_salt(("series_coord_preset", id.raw()))
@@ -284,12 +271,14 @@ pub fn render_series_section(
                                     });
                             });
 
-                            // Flip checkboxes
                             ui.horizontal(|ui| {
                                 ui.label("Flip");
-                                let mut flip_x = current_swizzle.x.sign == AxisSign::Negative;
-                                let mut flip_y = current_swizzle.y.sign == AxisSign::Negative;
-                                let mut flip_z = current_swizzle.z.sign == AxisSign::Negative;
+                                let mut flip_x =
+                                    current_swizzle.x.sign == AxisSign::Negative;
+                                let mut flip_y =
+                                    current_swizzle.y.sign == AxisSign::Negative;
+                                let mut flip_z =
+                                    current_swizzle.z.sign == AxisSign::Negative;
                                 if ui.checkbox(&mut flip_x, "X").changed() {
                                     current_swizzle.x.sign = if flip_x {
                                         AxisSign::Negative
@@ -366,7 +355,6 @@ pub fn render_series_section(
 // Directory dialog helpers
 // ---------------------------------------------------------------------------
 
-/// Opens a native directory picker on a background thread.
 fn open_dir_dialog(rx_slot: &mut Option<DirDialogReceiver>, _orientation: SourceOrientation) {
     let (tx, rx) = mpsc::channel();
     *rx_slot = Some(DirDialogReceiver { rx });
@@ -379,8 +367,6 @@ fn open_dir_dialog(rx_slot: &mut Option<DirDialogReceiver>, _orientation: Source
     });
 }
 
-/// Polls the in-flight directory dialog.  If a path arrived, appends it to
-/// `pending_dirs` and clears the receiver.
 fn poll_dir_dialog(rx_slot: &mut Option<DirDialogReceiver>, pending_dirs: &mut Vec<PathBuf>) {
     let Some(dialog) = rx_slot.as_ref() else {
         return;
@@ -392,21 +378,15 @@ fn poll_dir_dialog(rx_slot: &mut Option<DirDialogReceiver>, pending_dirs: &mut V
             *rx_slot = None;
         }
         Ok(None) => {
-            // User cancelled.
             *rx_slot = None;
         }
-        Err(mpsc::TryRecvError::Empty) => {
-            // Still waiting.
-        }
+        Err(mpsc::TryRecvError::Empty) => {}
         Err(mpsc::TryRecvError::Disconnected) => {
             *rx_slot = None;
         }
     }
 }
 
-/// Discover sequences in a directory and add them to the series manager.
-///
-/// Returns the number of new series added.
 pub fn add_series_from_directory(
     dir: &std::path::Path,
     series_mgr: &mut SeriesManagerRes,
@@ -429,7 +409,6 @@ pub fn add_series_from_directory(
 
     let mut added = 0;
     for seq in sequences {
-        // Skip if a series with this base_dir already exists
         if series_mgr.find_by_dir(&seq.base_dir).is_some() {
             bevy::prelude::info!(
                 "Skipping '{}' — already loaded ({})",
