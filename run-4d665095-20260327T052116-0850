@@ -1,0 +1,8 @@
+status: new
+main-ref: 4d665095
+created: 2026-03-27T05:21:16
+msg: check loadfu for stale submodule entries
+
+git clone https://github.com/fluid-notion-labs/loadfu.git /tmp/loadfu-check 2>&1
+git -C /tmp/loadfu-check ls-files --stage | grep vendor || echo "no vendor entries"
+rm -rf /tmp/loadfu-check
