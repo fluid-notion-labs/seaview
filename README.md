@@ -9,13 +9,13 @@ You need to install development libraries for Bevy:
 
 ```bash
 # Ubuntu/Debian
-sudo apt-get install libudev-dev libasound2-dev
+sudo apt-get install libudev-dev libasound2-dev clang
 
 # Fedora
-sudo dnf install libudev-devel alsa-lib-devel
+sudo dnf install libudev-devel alsa-lib-devel clang
 
 # Arch
-sudo pacman -S udev alsa-lib
+sudo pacman -S udev alsa-lib clang
 ```
 
 ### Windows
