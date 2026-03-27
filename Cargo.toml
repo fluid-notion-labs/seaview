@@ -3,7 +3,6 @@ members = ["crates/seaview"]
 exclude = [
     "vendor/bevy",
     "vendor/bevy_brp",
-    "vendor/loadfu",
     "vendor/loadfu-old",
     "vendor/mesh-ripper",
     "vendor/stl_io",
