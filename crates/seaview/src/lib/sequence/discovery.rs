@@ -628,4 +628,225 @@ mod tests {
         assert_eq!(sequences.len(), 1);
         assert_eq!(sequences[0].frame_count(), 3);
     }
+
+    // -----------------------------------------------------------------------
+    // Multi-series discovery tests
+    // -----------------------------------------------------------------------
+
+    /// Helper: create N named sequences of M frames each in a temp dir.
+    fn make_sequences(dir: &Path, specs: &[(&str, usize)]) {
+        for (name, count) in specs {
+            let seq_dir = dir.join(name);
+            std::fs::create_dir_all(&seq_dir).unwrap();
+            for i in 0..*count {
+                File::create(seq_dir.join(format!("{}_frame_{:04}.stl", name, i))).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn discover_single_series() {
+        let tmp = TempDir::new().unwrap();
+        make_sequences(tmp.path(), &[("cube_rotation", 60)]);
+
+        let patterns = SequencePatterns::default();
+        let seqs = discover_sequences(
+            &tmp.path().join("cube_rotation"),
+            false,
+            &patterns,
+            crate::lib::coordinates::SourceOrientation::default(),
+        )
+        .unwrap();
+
+        assert_eq!(seqs.len(), 1);
+        assert_eq!(seqs[0].name, "cube_rotation");
+        assert_eq!(seqs[0].frame_count(), 60);
+    }
+
+    #[test]
+    fn discover_two_series_in_separate_dirs() {
+        let tmp = TempDir::new().unwrap();
+        make_sequences(tmp.path(), &[("cube_rotation", 60), ("sphere_pulse", 30)]);
+
+        let patterns = SequencePatterns::default();
+
+        let seqs_a = discover_sequences(
+            &tmp.path().join("cube_rotation"),
+            false,
+            &patterns,
+            crate::lib::coordinates::SourceOrientation::default(),
+        )
+        .unwrap();
+        let seqs_b = discover_sequences(
+            &tmp.path().join("sphere_pulse"),
+            false,
+            &patterns,
+            crate::lib::coordinates::SourceOrientation::default(),
+        )
+        .unwrap();
+
+        assert_eq!(seqs_a.len(), 1);
+        assert_eq!(seqs_a[0].frame_count(), 60);
+        assert_eq!(seqs_b.len(), 1);
+        assert_eq!(seqs_b[0].frame_count(), 30);
+    }
+
+    #[test]
+    fn discover_three_series_recursive() {
+        let tmp = TempDir::new().unwrap();
+        make_sequences(
+            tmp.path(),
+            &[("cube_rotation", 60), ("sphere_pulse", 30), ("twin_cube", 30)],
+        );
+
+        let patterns = SequencePatterns::default();
+        // Discover each individually (mirroring how seaview opens dirs)
+        let names_and_counts = [("cube_rotation", 60usize), ("sphere_pulse", 30), ("twin_cube", 30)];
+        for (name, count) in &names_and_counts {
+            let seqs = discover_sequences(
+                &tmp.path().join(name),
+                false,
+                &patterns,
+                crate::lib::coordinates::SourceOrientation::default(),
+            )
+            .unwrap();
+            assert_eq!(seqs.len(), 1, "expected 1 seq for {name}");
+            assert_eq!(seqs[0].frame_count(), *count, "frame count for {name}");
+        }
+    }
+
+    #[test]
+    fn series_manager_single_series() {
+        use crate::lib::series::SeriesManager;
+
+        let tmp = TempDir::new().unwrap();
+        make_sequences(tmp.path(), &[("cube_rotation", 60)]);
+
+        let patterns = SequencePatterns::default();
+        let seqs = discover_sequences(
+            &tmp.path().join("cube_rotation"),
+            false,
+            &patterns,
+            crate::lib::coordinates::SourceOrientation::default(),
+        )
+        .unwrap();
+
+        let mut mgr = SeriesManager::new();
+        for seq in seqs {
+            mgr.add(seq, 100);
+        }
+
+        assert_eq!(mgr.len(), 1);
+        assert!(mgr.active_id().is_some());
+        assert_eq!(mgr.visible_count(), 1);
+        assert_eq!(mgr.active().unwrap().frame_count(), 60);
+    }
+
+    #[test]
+    fn series_manager_two_series_both_visible() {
+        use crate::lib::series::SeriesManager;
+
+        let tmp = TempDir::new().unwrap();
+        make_sequences(tmp.path(), &[("cube_rotation", 60), ("sphere_pulse", 30)]);
+
+        let patterns = SequencePatterns::default();
+        let mut mgr = SeriesManager::new();
+
+        for name in &["cube_rotation", "sphere_pulse"] {
+            let seqs = discover_sequences(
+                &tmp.path().join(name),
+                false,
+                &patterns,
+                crate::lib::coordinates::SourceOrientation::default(),
+            )
+            .unwrap();
+            for seq in seqs {
+                mgr.add(seq, 100);
+            }
+        }
+
+        assert_eq!(mgr.len(), 2);
+        assert_eq!(mgr.visible_count(), 2, "both series should be visible by default");
+        // First added is active
+        let active = mgr.active().unwrap();
+        assert_eq!(active.frame_count(), 60);
+        // Visible IDs in insertion order
+        let visible: Vec<_> = mgr.visible_iter().map(|s| s.label.clone()).collect();
+        assert_eq!(visible, vec!["cube_rotation", "sphere_pulse"]);
+    }
+
+    #[test]
+    fn series_manager_three_series_independent_visibility() {
+        use crate::lib::series::SeriesManager;
+
+        let tmp = TempDir::new().unwrap();
+        make_sequences(
+            tmp.path(),
+            &[("cube_rotation", 60), ("sphere_pulse", 30), ("twin_cube", 30)],
+        );
+
+        let patterns = SequencePatterns::default();
+        let mut mgr = SeriesManager::new();
+
+        for name in &["cube_rotation", "sphere_pulse", "twin_cube"] {
+            let seqs = discover_sequences(
+                &tmp.path().join(name),
+                false,
+                &patterns,
+                crate::lib::coordinates::SourceOrientation::default(),
+            )
+            .unwrap();
+            for seq in seqs {
+                mgr.add(seq, 100);
+            }
+        }
+
+        assert_eq!(mgr.len(), 3);
+        assert_eq!(mgr.visible_count(), 3);
+
+        // Hide sphere_pulse — other two stay visible
+        let sphere_id = mgr.find_by_name("sphere_pulse").unwrap().id;
+        mgr.set_visible(sphere_id, false);
+
+        assert_eq!(mgr.visible_count(), 2);
+        let visible: Vec<_> = mgr.visible_iter().map(|s| s.label.clone()).collect();
+        assert_eq!(visible, vec!["cube_rotation", "twin_cube"]);
+
+        // Active series is still cube_rotation (first added)
+        assert_eq!(mgr.active().unwrap().label, "cube_rotation");
+    }
+
+    #[test]
+    fn series_manager_cycle_active_three_series() {
+        use crate::lib::series::SeriesManager;
+
+        let tmp = TempDir::new().unwrap();
+        make_sequences(
+            tmp.path(),
+            &[("cube_rotation", 60), ("sphere_pulse", 30), ("twin_cube", 30)],
+        );
+
+        let patterns = SequencePatterns::default();
+        let mut mgr = SeriesManager::new();
+        for name in &["cube_rotation", "sphere_pulse", "twin_cube"] {
+            let seqs = discover_sequences(
+                &tmp.path().join(name),
+                false,
+                &patterns,
+                crate::lib::coordinates::SourceOrientation::default(),
+            )
+            .unwrap();
+            for seq in seqs {
+                mgr.add(seq, 100);
+            }
+        }
+
+        assert_eq!(mgr.active().unwrap().label, "cube_rotation");
+        mgr.cycle_next();
+        assert_eq!(mgr.active().unwrap().label, "sphere_pulse");
+        mgr.cycle_next();
+        assert_eq!(mgr.active().unwrap().label, "twin_cube");
+        mgr.cycle_next();
+        assert_eq!(mgr.active().unwrap().label, "cube_rotation"); // wraps
+    }
 }
