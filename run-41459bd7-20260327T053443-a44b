@@ -1,7 +1,8 @@
-status: claiming
+status: running
 main-ref: 41459bd7
 created: 2026-03-27T05:34:43
 msg: cargo check
 worker: nick-MacPro5-1-84247
+ran: 2026-03-27T13:35:29
 
 cargo check 2>&1
