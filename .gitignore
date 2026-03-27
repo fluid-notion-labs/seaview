@@ -4,7 +4,7 @@ assets/test_sequences/right-hander
 assets/test_sequences/sphere-fluid
 assets/scenes/
 output
-#vendor
+vendor/
 /bin
 runs
 trace-*.json

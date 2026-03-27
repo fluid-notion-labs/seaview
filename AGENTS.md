@@ -54,6 +54,27 @@ bd update seaview-437 --notes "## Session Context (DATE)
 
 
 
+## Reading Dependency Source
+
+Git deps in `Cargo.toml` are the source of truth. `vendor/` is gitignored — never commit it.
+
+**To browse/grep a dep's source:**
+```bash
+git clone <repo-url> vendor/<crate>
+# then grep/read freely
+```
+
+**To patch/hack a dep locally:**
+1. Clone to `vendor/<crate>` as above
+2. Add a `[patch]` block to root `Cargo.toml`:
+   ```toml
+   [patch."https://github.com/owner/repo.git"]
+   crate-name = { path = "vendor/crate-name" }
+   ```
+3. Revert the `[patch]` block before committing — never commit it
+
+Note: `cargo vendor` has no selective/per-crate mode. Don't use it here.
+
 ## Quick Reference
 
 ```bash
