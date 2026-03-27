@@ -1,7 +1,8 @@
-status: claiming
+status: running
 main-ref: 61f86ee1
 created: 2026-03-27T05:00:04
 msg: test sentinel — cargo check
 worker: nick-MacPro5-1-56320
+ran: 2026-03-27T05:00:35
 
 cargo check 2>&1
