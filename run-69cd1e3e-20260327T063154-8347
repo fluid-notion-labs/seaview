@@ -1,6 +1,7 @@
-status: new
+status: claiming
 main-ref: 69cd1e3e
 created: 2026-03-27T06:31:54
 msg: cargo test lib
+worker: nick-MacPro5-1-131193
 
 cargo test --lib 2>&1
