@@ -1,0 +1,6 @@
+status: new
+main-ref: 69cd1e3e
+created: 2026-03-27T06:31:54
+msg: cargo test lib
+
+cargo test --lib 2>&1
