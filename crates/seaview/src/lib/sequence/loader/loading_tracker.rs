@@ -91,12 +91,10 @@ pub fn material_from_config(
 
 /// System that tracks asset loading progress for all formats.
 ///
-/// Uses the `asset_id_to_frame` reverse index for O(1) lookups instead of
-/// scanning the full handle list on every event.
-///
-/// With loadfu, **all** formats (STL, OBJ, GLB, glTF) produce `Handle<Mesh>`
-/// directly and register their asset IDs up-front in `drain_load_queue`.
-/// There is no longer a separate glTF extraction phase.
+/// Uses the `asset_id_to_frame` reverse index for O(1) lookups.  Each entry
+/// maps `AssetId<Mesh> → (SeriesId, frame_index)`.  Loaded state is written
+/// into [`SeriesFrameStore`] for the owning series, and mirrored into
+/// [`FrameStore`] for the active series (backward compat with UI consumers).
 ///
 /// Does NOT spawn entities — that is handled by `manage_frame_window`.
 pub(super) fn track_asset_loading(
@@ -112,12 +110,12 @@ pub(super) fn track_asset_loading(
     mut memory_budget: ResMut<MemoryBudget>,
     material_config: Res<crate::app::ui::state::MaterialConfig>,
     mut mesh_cache: ResMut<MeshCache>,
+    mut series_fs: ResMut<super::series_frame_store::SeriesFrameStore>,
+    series_mgr: Res<crate::lib::sequence::SeriesManagerRes>,
 ) {
-    if !frame_store.loading {
-        return;
-    }
+    let active_id = series_mgr.active_id();
 
-    // Count how many frames we actually requested (have a handle).
+    // Count requested frames for active-series progress logging.
     let requested_count = frame_store
         .frame_handles
         .iter()
@@ -127,119 +125,175 @@ pub(super) fn track_asset_loading(
     for event in events.read() {
         match event {
             AssetEvent::LoadedWithDependencies { id } => {
-                // O(1) lookup via reverse index.
-                let Some(&index) = asset_index.asset_id_to_frame.get(id) else {
+                // O(1) lookup: which (series, frame) does this asset belong to?
+                let Some(&(series_id, index)) = asset_index.asset_id_to_frame.get(id) else {
                     continue;
                 };
-                // Skip if this frame was already marked loaded.
-                if frame_store.loaded_frames[index] {
-                    continue;
-                }
-                let handle = match frame_store.frame_handles[index].as_ref() {
-                    Some(handles) => match handles.first() {
-                        Some(h) => h.clone(),
-                        None => continue,
-                    },
-                    None => continue,
-                };
 
-                frame_store.loaded_count += 1;
-                frame_store.loaded_frames[index] = true;
+                // Resolve the owning series state.
+                // Sentinel u64::MAX means the load was issued via the legacy
+                // active-series FrameStore path.
+                let is_active_sentinel = series_id == crate::lib::series::SeriesId::from_raw(u64::MAX);
+                let effective_series = if is_active_sentinel { active_id } else { Some(series_id) };
 
-                frame_loaded_events.write(FrameLoadedEvent {
-                    frame_index: index,
-                    success: true,
-                });
+                // Write into SeriesFrameStore for the owning series.
+                if let Some(sid) = effective_series {
+                    if let Some(state) = series_fs.get_mut(&sid) {
+                        if index < state.loaded_frames.len() && !state.loaded_frames[index] {
+                            state.loaded_frames[index] = true;
+                            state.loaded_count += 1;
 
-                // Dual-write: mark MeshCache entry as loaded (Phase 1).
-                if let Some(cache_entry) = mesh_cache.get_by_asset_id_mut(id) {
-                    cache_entry.loaded = true;
-                }
+                            // Propagate frame-size estimate into the series state.
+                            if state.estimated_frame_bytes == 0 {
+                                if let Some(handle_vec) = state.frame_handles.get(index).and_then(|h| h.as_ref()) {
+                                    if let Some(first_handle) = handle_vec.first() {
+                                        if let Some(mesh) = meshes.get(first_handle) {
+                                            let est = estimate_mesh_gpu_bytes_from_vertices(mesh.count_vertices());
+                                            state.estimated_frame_bytes = est;
+                                        }
+                                    }
+                                }
+                            }
 
-                // Create shared material on first loaded frame, using the
-                // current MaterialConfig so persisted values (color, roughness,
-                // etc.) are applied immediately — not the hardcoded defaults.
-                if loader_config.shared_material.is_none() {
-                    let mat = material_from_config(
-                        material_config.base_color,
-                        material_config.opacity,
-                        material_config.perceptual_roughness,
-                        material_config.metallic,
-                        material_config.reflectance,
-                        material_config.emissive,
-                        material_config.emissive_intensity,
-                        material_config.double_sided,
-                    );
-                    loader_config.shared_material = Some(materials.add(mat));
-                }
-
-                // Estimate frame size from first loaded mesh for memory budgeting,
-                // and flag degenerate frames (runt files with near-zero geometry).
-                if let Some(mesh) = meshes.get(&handle) {
-                    let vertex_count = mesh.count_vertices();
-
-                    // Set baseline estimate from the first real frame
-                    if frame_store.estimated_frame_bytes == 0 {
-                        let estimated_bytes = estimate_mesh_gpu_bytes_from_vertices(vertex_count);
-                        frame_store.estimated_frame_bytes = estimated_bytes;
-                        memory_budget.update_frame_estimate(estimated_bytes);
-                        info!(
-                            "Frame size estimate: {} vertices ≈ {:.1} MB, max {} frames in budget",
-                            vertex_count,
-                            estimated_bytes as f64 / 1_048_576.0,
-                            memory_budget.max_frames
-                        );
-                    }
-
-                    // Dual-write: store estimated bytes in MeshCache entry.
-                    if let Some(cache_entry) = mesh_cache.get_by_asset_id_mut(id) {
-                        let estimated =
-                            estimate_mesh_gpu_bytes_from_vertices(mesh.count_vertices());
-                        cache_entry.estimated_bytes = estimated;
-                    }
-
-                    // Flag degenerate frames: <10% of expected vertex count
-                    let expected_verts = frame_store.estimated_frame_bytes as usize / 32; // rough: 32 bytes/vert
-                    if expected_verts > 0 && vertex_count < expected_verts / 10 {
-                        if index < frame_store.degenerate_frames.len() {
-                            frame_store.degenerate_frames[index] = true;
-                        } else {
-                            // Grow the vec if watch mode added frames without resizing
-                            frame_store.degenerate_frames.resize(index + 1, false);
-                            frame_store.degenerate_frames[index] = true;
+                            // Flag degenerate frames in the series state.
+                            let expected_verts = state.estimated_frame_bytes as usize / 32;
+                            if expected_verts > 0 {
+                                if let Some(handle_vec) = state.frame_handles.get(index).and_then(|h| h.as_ref()) {
+                                    if let Some(first_handle) = handle_vec.first() {
+                                        if let Some(mesh) = meshes.get(first_handle) {
+                                            if mesh.count_vertices() < expected_verts / 10 {
+                                                if index < state.degenerate_frames.len() {
+                                                    state.degenerate_frames[index] = true;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
-                        warn!(
-                            "⚠ Degenerate frame {}: {} vertices (expected ~{}) — will be skipped",
-                            index, vertex_count, expected_verts,
-                        );
                     }
                 }
 
-                // Cache coordinate transform on first loaded frame
-                if index == 0 {
-                    if let Some(sequence) = sequence_manager.current_sequence() {
-                        loader_config.coord_transform = sequence.source_orientation.to_transform();
-                        debug!(
-                            "Applying coordinate transformation: {}",
-                            sequence.source_orientation.description()
-                        );
-                    }
-                }
+                // Mirror into FrameStore for the active series only.
+                let is_active = effective_series == active_id;
+                if is_active {
+                    if index < frame_store.loaded_frames.len() && !frame_store.loaded_frames[index] {
+                        let handle = match frame_store.frame_handles.get(index).and_then(|h| h.as_ref()) {
+                            Some(handles) => match handles.first() {
+                                Some(h) => h.clone(),
+                                None => continue,
+                            },
+                            None => {
+                                // May have been routed through per-series path;
+                                // grab from series_fs instead.
+                                if let Some(sid) = effective_series {
+                                    if let Some(state) = series_fs.get(&sid) {
+                                        match state.frame_handles.get(index).and_then(|h| h.as_ref()).and_then(|v| v.first()) {
+                                            Some(h) => h.clone(),
+                                            None => continue,
+                                        }
+                                    } else { continue; }
+                                } else { continue; }
+                            }
+                        };
 
-                // Log progress at intervals
-                if frame_store.loaded_count % 10 == 0 || frame_store.loaded_count == requested_count
-                {
-                    debug!(
-                        "Loading progress: {}/{} frames loaded",
-                        frame_store.loaded_count, requested_count,
-                    );
+                        frame_store.loaded_count += 1;
+                        frame_store.loaded_frames[index] = true;
+
+                        frame_loaded_events.write(FrameLoadedEvent {
+                            frame_index: index,
+                            success: true,
+                        });
+
+                        if let Some(cache_entry) = mesh_cache.get_by_asset_id_mut(id) {
+                            cache_entry.loaded = true;
+                        }
+
+                        // Create shared material on first loaded frame.
+                        if loader_config.shared_material.is_none() {
+                            let mat = material_from_config(
+                                material_config.base_color,
+                                material_config.opacity,
+                                material_config.perceptual_roughness,
+                                material_config.metallic,
+                                material_config.reflectance,
+                                material_config.emissive,
+                                material_config.emissive_intensity,
+                                material_config.double_sided,
+                            );
+                            loader_config.shared_material = Some(materials.add(mat));
+                        }
+
+                        // Frame-size estimate and degenerate detection.
+                        if let Some(mesh) = meshes.get(&handle) {
+                            let vertex_count = mesh.count_vertices();
+
+                            if frame_store.estimated_frame_bytes == 0 {
+                                let estimated_bytes = estimate_mesh_gpu_bytes_from_vertices(vertex_count);
+                                frame_store.estimated_frame_bytes = estimated_bytes;
+                                memory_budget.update_frame_estimate(estimated_bytes);
+                                info!(
+                                    "Frame size estimate: {} vertices ≈ {:.1} MB, max {} frames in budget",
+                                    vertex_count,
+                                    estimated_bytes as f64 / 1_048_576.0,
+                                    memory_budget.max_frames
+                                );
+                            }
+
+                            if let Some(cache_entry) = mesh_cache.get_by_asset_id_mut(id) {
+                                let estimated = estimate_mesh_gpu_bytes_from_vertices(mesh.count_vertices());
+                                cache_entry.estimated_bytes = estimated;
+                            }
+
+                            let expected_verts = frame_store.estimated_frame_bytes as usize / 32;
+                            if expected_verts > 0 && vertex_count < expected_verts / 10 {
+                                if index < frame_store.degenerate_frames.len() {
+                                    frame_store.degenerate_frames[index] = true;
+                                } else {
+                                    frame_store.degenerate_frames.resize(index + 1, false);
+                                    frame_store.degenerate_frames[index] = true;
+                                }
+                                warn!(
+                                    "⚠ Degenerate frame {}: {} vertices (expected ~{}) — will be skipped",
+                                    index, vertex_count, expected_verts,
+                                );
+                            }
+                        }
+
+                        // Cache coordinate transform on first active-series frame.
+                        if index == 0 {
+                            if let Some(sequence) = sequence_manager.current_sequence() {
+                                loader_config.coord_transform = sequence.source_orientation.to_transform();
+                                debug!(
+                                    "Applying coordinate transformation: {}",
+                                    sequence.source_orientation.description()
+                                );
+                            }
+                        }
+
+                        if frame_store.loaded_count % 10 == 0 || frame_store.loaded_count == requested_count {
+                            debug!(
+                                "Loading progress: {}/{} frames loaded",
+                                frame_store.loaded_count, requested_count,
+                            );
+                        }
+                    }
+                } else {
+                    // Non-active series: emit FrameLoadedEvent and update MeshCache.
+                    frame_loaded_events.write(FrameLoadedEvent {
+                        frame_index: index,
+                        success: true,
+                    });
+                    if let Some(cache_entry) = mesh_cache.get_by_asset_id_mut(id) {
+                        cache_entry.loaded = true;
+                    }
                 }
             }
             _ => {}
         }
     }
 
-    // Check if all requested frames are loaded
+    // Check if all active-series requested frames are loaded.
     if frame_store.loaded_count >= requested_count && requested_count > 0 && frame_store.loading {
         frame_store.loading = false;
         info!("════════════════════════════════════════════════════════════════");

@@ -213,25 +213,22 @@ impl LoaderConfig {
 // AssetIndex
 // ---------------------------------------------------------------------------
 
-/// Loader-private resource holding reverse `AssetId → frame` index maps.
+use crate::lib::series::SeriesId;
+
+/// Loader-private resource holding reverse `AssetId → (series_id, frame)` map.
 ///
 /// Write-heavy, only accessed by loader systems.  Separating it from
 /// [`FrameStore`] lets Bevy schedule UI reads in parallel.
-///
-/// With loadfu, all formats (STL, OBJ, GLB, glTF) produce `Handle<Mesh>`
-/// directly — the old two-phase glTF loading path and its intermediate
-/// `Handle<Gltf>` are no longer needed.
 #[derive(Resource, Default)]
 pub(crate) struct AssetIndex {
-    /// O(1) reverse index from `AssetId<Mesh>` → frame index.
+    /// O(1) reverse index from `AssetId<Mesh>` → (series_id, frame_index).
     ///
-    /// Populated by [`super::load_queue::drain_load_queue`] and consumed by
-    /// [`super::loading_tracker::track_asset_loading`] to avoid a linear scan.
-    pub(crate) asset_id_to_frame: HashMap<AssetId<Mesh>, usize>,
+    /// `SeriesId::from_raw(u64::MAX)` is the sentinel for active-series
+    /// loads that pre-date per-series routing.
+    pub(crate) asset_id_to_frame: HashMap<AssetId<Mesh>, (SeriesId, usize)>,
 }
 
 impl AssetIndex {
-    /// Reset for a new sequence.
     pub(crate) fn reset(&mut self) {
         self.asset_id_to_frame.clear();
     }

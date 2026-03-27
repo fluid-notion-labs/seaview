@@ -15,24 +15,36 @@ use std::collections::{HashSet, VecDeque};
 
 use super::assets::{AssetIndex, FrameStore};
 use super::mesh_cache::{CacheEntry, MeshCache};
+use super::series_frame_store::SeriesFrameStore;
 use super::{load_mesh_handle, rss_mb, LOADS_PER_FRAME};
 use crate::lib::sequence::{frames_to_load, union_frames_to_load, SeriesManagerRes, Timeline};
+use crate::lib::series::SeriesId;
 
 // ---------------------------------------------------------------------------
 // LoadQueue
 // ---------------------------------------------------------------------------
 
-/// A throttled queue of frame indices waiting to be sent to the asset server.
+/// A throttled queue of (series_id, frame_index) pairs waiting to be sent
+/// to the asset server.
 #[derive(Resource, Default)]
 pub struct LoadQueue {
-    pub(super) queue: VecDeque<usize>,
-    pub(super) pending: HashSet<usize>,
+    pub(super) queue: VecDeque<(SeriesId, usize)>,
+    pub(super) pending: HashSet<(SeriesId, usize)>,
 }
 
 impl LoadQueue {
+    /// Push a frame for the active (legacy) series path.
     pub(crate) fn push(&mut self, idx: usize) {
-        if self.pending.insert(idx) {
-            self.queue.push_back(idx);
+        // Sentinel SeriesId(u64::MAX) used for the active-series path
+        // so that drain_load_queue falls back to FrameStore.
+        self.push_series(idx, SeriesId::from_raw(u64::MAX));
+    }
+
+    /// Push a frame for a specific series.
+    pub(crate) fn push_series(&mut self, idx: usize, series_id: SeriesId) {
+        let key = (series_id, idx);
+        if self.pending.insert(key) {
+            self.queue.push_back(key);
         }
     }
 
@@ -235,57 +247,114 @@ pub(super) fn sync_section_loads(
 
 /// Drains up to [`LOADS_PER_FRAME`] items from the [`LoadQueue`], issuing
 /// `asset_server.load()` for each.
+///
+/// Each queue item carries a `(SeriesId, frame_index)` pair.  Handles are
+/// written into the appropriate [`SeriesEntityState`] in [`SeriesFrameStore`]
+/// and mirrored into [`FrameStore`] for the active series.
 pub(super) fn drain_load_queue(
     mut load_queue: ResMut<LoadQueue>,
     mut frame_store: ResMut<FrameStore>,
     mut asset_index: ResMut<AssetIndex>,
     asset_server: Res<AssetServer>,
     mut mesh_cache: ResMut<MeshCache>,
+    mut series_fs: ResMut<SeriesFrameStore>,
+    series_mgr: Res<SeriesManagerRes>,
 ) {
     if load_queue.is_empty() {
         return;
     }
-    if frame_store.format.is_none() {
-        return;
-    }
+
+    let active_sentinel = SeriesId::from_raw(u64::MAX);
+    let active_id = series_mgr.active_id();
 
     let mut loaded_this_frame = 0usize;
 
-    while let Some(idx) = load_queue.queue.pop_front() {
-        load_queue.pending.remove(&idx);
+    while let Some((series_id, idx)) = load_queue.queue.pop_front() {
+        load_queue.pending.remove(&(series_id, idx));
         if loaded_this_frame >= LOADS_PER_FRAME {
             break;
         }
 
-        if frame_store.frame_handles[idx].is_some() {
-            continue;
-        }
+        // Resolve whether this is active-series (sentinel) or a real series.
+        let is_active_path = series_id == active_sentinel;
 
-        if idx >= frame_store.frame_paths.len() {
-            continue;
-        }
+        if is_active_path {
+            // Legacy active-series path — check FrameStore.
+            if frame_store.format.is_none() {
+                continue;
+            }
+            if frame_store.frame_handles.get(idx).map(|h| h.is_some()).unwrap_or(false) {
+                continue;
+            }
+            if idx >= frame_store.frame_paths.len() {
+                continue;
+            }
 
-        let filename = frame_store.frame_paths[idx]
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("unknown")
-            .to_owned();
+            let filename = frame_store.frame_paths[idx]
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown")
+                .to_owned();
 
-        let handle = load_mesh_handle(&asset_server, &filename);
-        asset_index.asset_id_to_frame.insert(handle.id(), idx);
-        frame_store.frame_handles[idx] = Some(vec![handle.clone()]);
+            let handle = load_mesh_handle(&asset_server, &filename);
+            let real_id = active_id.unwrap_or(active_sentinel);
+            asset_index.asset_id_to_frame.insert(handle.id(), (real_id, idx));
+            frame_store.frame_handles[idx] = Some(vec![handle.clone()]);
 
-        let path = frame_store.frame_paths[idx].clone();
-        if mesh_cache.contains(&path) {
-            if let Some(entry) = mesh_cache.get_mut(&path) {
-                entry.add_ref();
+            // Mirror into SeriesFrameStore for the active series.
+            if let Some(aid) = active_id {
+                if let Some(state) = series_fs.get_mut(&aid) {
+                    if idx < state.frame_handles.len() {
+                        state.frame_handles[idx] = Some(vec![handle.clone()]);
+                    }
+                }
+            }
+
+            let path = frame_store.frame_paths[idx].clone();
+            if mesh_cache.contains(&path) {
+                if let Some(entry) = mesh_cache.get_mut(&path) {
+                    entry.add_ref();
+                }
+            } else {
+                mesh_cache.insert(path, CacheEntry::new(vec![handle]));
             }
         } else {
-            mesh_cache.insert(path, CacheEntry::new(vec![handle]));
+            // Per-series path — read from SeriesFrameStore.
+            let Some(state) = series_fs.get_mut(&series_id) else {
+                continue;
+            };
+            if state.format.is_none() {
+                continue;
+            }
+            if state.frame_handles.get(idx).map(|h| h.is_some()).unwrap_or(false) {
+                continue;
+            }
+            if idx >= state.frame_paths.len() {
+                continue;
+            }
+
+            let filename = state.frame_paths[idx]
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown")
+                .to_owned();
+            let path = state.frame_paths[idx].clone();
+
+            let handle = load_mesh_handle(&asset_server, &filename);
+            asset_index.asset_id_to_frame.insert(handle.id(), (series_id, idx));
+            state.frame_handles[idx] = Some(vec![handle.clone()]);
+
+            if mesh_cache.contains(&path) {
+                if let Some(entry) = mesh_cache.get_mut(&path) {
+                    entry.add_ref();
+                }
+            } else {
+                mesh_cache.insert(path, CacheEntry::new(vec![handle]));
+            }
         }
 
         loaded_this_frame += 1;
-        trace!("Kicked load for frame {} ('{}')", idx, filename);
+        trace!("Kicked load for series {:?} frame {}", series_id, idx);
     }
 
     if loaded_this_frame > 0 {

@@ -120,9 +120,19 @@ pub(super) fn manage_frame_window(
     let visible_ids = series_mgr.visible_ids();
 
     // Ensure every visible series is registered in SeriesFrameStore.
+    // Registration normally happens in handle_load_requests — this is a
+    // fallback for the first tick before that fires.
     for &id in &visible_ids {
         if !series_fs.contains(&id) {
-            series_fs.register(id, frame_store.total_frames);
+            let paths = if Some(id) == active_id {
+                frame_store.frame_paths.clone()
+            } else {
+                series_mgr
+                    .get(id)
+                    .map(|s| s.sequence.frames.iter().map(|f| f.path.clone()).collect())
+                    .unwrap_or_default()
+            };
+            series_fs.register(id, paths, frame_store.format);
         }
     }
 
@@ -286,13 +296,41 @@ pub(super) fn manage_frame_window(
             if already_spawned {
                 continue;
             }
-            if !frame_store.is_frame_loaded(idx) {
+            if !frame_store.is_frame_loaded(idx) && {
+                // For non-active series, check the per-series loaded state.
+                if Some(series_id) == active_id {
+                    !frame_store.is_frame_loaded(idx)
+                } else {
+                    !series_fs
+                        .get(&series_id)
+                        .map(|s| s.is_frame_loaded(idx))
+                        .unwrap_or(false)
+                }
+            } {
                 continue;
             }
-            let Some(mesh_handles) = frame_store.get_frame_meshes(idx) else {
-                continue;
+            // Get mesh handles from the per-series store (authoritative).
+            // Fall back to FrameStore for the active series during the
+            // transition tick before per-series handles are populated.
+            let mesh_handles: Vec<Handle<Mesh>> = {
+                let from_series = series_fs
+                    .get(&series_id)
+                    .and_then(|s| s.get_frame_meshes(idx))
+                    .map(|h| h.to_vec());
+                match from_series {
+                    Some(h) if !h.is_empty() => h,
+                    _ => {
+                        if Some(series_id) == active_id {
+                            match frame_store.get_frame_meshes(idx) {
+                                Some(h) => h.to_vec(),
+                                None => continue,
+                            }
+                        } else {
+                            continue;
+                        }
+                    }
+                }
             };
-            let mesh_handles: Vec<Handle<Mesh>> = mesh_handles.to_vec();
 
             // GPU residency: promote.
             let path = frame_store.frame_paths.get(idx).cloned();
@@ -360,11 +398,18 @@ pub(super) fn manage_frame_window(
                 .get(&series_id)
                 .map(|state| state.is_spawned(idx))
                 .unwrap_or(false);
-            let is_degenerate = frame_store
-                .degenerate_frames
-                .get(idx)
-                .copied()
-                .unwrap_or(false);
+            let is_degenerate = if Some(series_id) == active_id {
+                frame_store
+                    .degenerate_frames
+                    .get(idx)
+                    .copied()
+                    .unwrap_or(false)
+            } else {
+                series_fs
+                    .get(&series_id)
+                    .map(|s| s.is_degenerate(idx))
+                    .unwrap_or(false)
+            };
             has_entity && !is_degenerate
         };
 

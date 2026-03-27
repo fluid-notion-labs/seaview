@@ -78,6 +78,7 @@ use std::path::PathBuf;
 
 use super::{frames_to_load, SeriesManagerRes, Timeline};
 use crate::lib::memory_budget::MemoryBudget;
+use crate::lib::series::SeriesId;
 use crate::lib::settings::SettingsResource;
 
 // ---------------------------------------------------------------------------
@@ -165,6 +166,8 @@ pub struct FrameLoadedEvent {
 /// Event to request loading a sequence
 #[derive(Message)]
 pub struct LoadSequenceRequest {
+    /// The series this sequence belongs to.
+    pub series_id: SeriesId,
     /// Paths to all frame files (in order)
     pub frame_paths: Vec<PathBuf>,
 }
@@ -276,11 +279,13 @@ fn detect_sequence_format(paths: &[PathBuf]) -> Option<MeshFormat> {
 
 /// System that handles sequence load requests.
 ///
-/// Sets up [`FrameStore`], [`LoaderConfig`], [`AssetIndex`] and [`Timeline`]
-/// for a new sequence but does **not** kick off any `asset_server.load()`
-/// calls itself.  Instead the needed frame indices are pushed into the
-/// [`LoadQueue`] and drained over subsequent frames by
-/// [`drain_load_queue`](load_queue::drain_load_queue).
+/// Each [`LoadSequenceRequest`] carries a `series_id`.  The per-series asset
+/// state (handles, paths, load progress) is registered into [`SeriesFrameStore`]
+/// keyed by that ID.  [`FrameStore`] is kept in sync as an active-series mirror
+/// for legacy UI and spatial-index consumers.
+///
+/// Entity spawns are NOT triggered here — that happens in
+/// [`frame_window::manage_frame_window`] once assets finish loading.
 fn handle_load_requests(
     mut commands: Commands,
     mut load_requests: MessageReader<LoadSequenceRequest>,
@@ -297,9 +302,13 @@ fn handle_load_requests(
     settings_res: Res<SettingsResource>,
 ) {
     for request in load_requests.read() {
+        let series_id = request.series_id;
+        let n = request.frame_paths.len();
+
         info!(
-            "═══ LOADING SEQUENCE: {} frames ═══",
-            request.frame_paths.len()
+            "═══ LOADING SEQUENCE [{}]: {} frames ═══",
+            series_id,
+            n,
         );
 
         // Detect file format from the first frame.
@@ -309,127 +318,146 @@ fn handle_load_requests(
                 fmt
             }
             None => {
-                let first = request.frame_paths.first();
-                let ext = first
+                let ext = request
+                    .frame_paths
+                    .first()
                     .and_then(|p| p.extension())
                     .and_then(|e| e.to_str())
                     .unwrap_or("<none>");
                 error!(
-                    "Unsupported mesh file extension '{}' – cannot load sequence",
-                    ext
+                    "Unsupported mesh file extension '{}' – cannot load sequence [{}]",
+                    ext, series_id,
                 );
                 continue;
             }
         };
 
-        // Cleanup old sequence entities before resetting.
-        // Despawn from SeriesFrameStore first (authoritative), then
-        // fall back to FrameStore mirror for any stragglers.
-        for entity in series_fs.reset() {
+        // Despawn any existing entities for this series before replacing its state.
+        let old_entities = series_fs.remove(&series_id);
+        for entity in old_entities {
             commands.entity(entity).despawn();
         }
-        for entity_opt in frame_store.frame_entities.iter() {
-            if let Some(entities) = entity_opt {
-                for entity in entities {
-                    commands.entity(*entity).despawn();
+
+        // Also clear stale FrameStore mirror entities if this is the active series.
+        if series_mgr.active_id() == Some(series_id) {
+            for entity_opt in frame_store.frame_entities.iter() {
+                if let Some(entities) = entity_opt {
+                    for entity in entities {
+                        commands.entity(*entity).despawn();
+                    }
+                }
+            }
+            frame_store.reset();
+            loader_config.reset();
+            asset_index.reset();
+            load_queue.clear();
+            mesh_cache.reset();
+        }
+
+        // Register the series with its paths and format in SeriesFrameStore.
+        // If it already existed (just removed above) this will insert fresh state.
+        series_fs.register(series_id, request.frame_paths.clone(), Some(format));
+
+        // ── Active-series mirror ──────────────────────────────────────────
+        // Keep FrameStore in sync for the active series so existing UI / spatial
+        // index consumers continue to work unchanged.
+        if series_mgr.active_id() == Some(series_id) {
+            if let Some(ref mut si) = spatial_index {
+                si.reset(n);
+            }
+            frame_store.total_frames = n;
+            frame_store.loading = true;
+            frame_store.format = Some(format);
+            frame_store.frame_handles = vec![None; n];
+            frame_store.frame_entities = vec![None; n];
+            frame_store.loaded_frames = vec![false; n];
+            frame_store.degenerate_frames = vec![false; n];
+            frame_store.frame_paths = request.frame_paths.clone();
+
+            if let Some(first_path) = request.frame_paths.first() {
+                frame_store.base_path = first_path.parent().map(|p| p.to_path_buf());
+            }
+
+            let max_frames = if memory_budget.max_frames < usize::MAX {
+                memory_budget.max_frames
+            } else {
+                pre_estimate_max_frames(&request.frame_paths, &memory_budget, 5).unwrap_or(n)
+            };
+            timeline.init_sequence(n, max_frames);
+
+            let restored = restore_saved_timeline(
+                &mut timeline,
+                &series_mgr,
+                &settings_res,
+                &frame_store,
+                n,
+                max_frames,
+            );
+            if restored {
+                info!(
+                    "Timeline restored: {} section(s), playhead={} (total: {}, budget max: {})",
+                    timeline.sections.len(),
+                    timeline.playhead,
+                    n,
+                    max_frames,
+                );
+            } else {
+                info!(
+                    "Timeline initialized (default): frames 0..{} (total: {}, budget max: {})",
+                    timeline.section().end,
+                    n,
+                    max_frames,
+                );
+            }
+
+            let indices = frames_to_load(&timeline.sections, n);
+            info!("Enqueuing {} of {} frames for loading", indices.len(), n);
+            for idx in indices {
+                load_queue.push(idx);
+            }
+
+            info!(
+                "Asset loading queued: {} {} frames (of {} total) from {:?}",
+                load_queue.len(),
+                format.label(),
+                n,
+                frame_store.base_path
+            );
+        } else {
+            // Non-active series: enqueue loads directly into the series-scoped
+            // load queue.  For now we load all frames within their sections;
+            // the series timeline drives which frames are needed.
+            let sections = series_mgr
+                .get(series_id)
+                .map(|s| s.timeline.sections.as_slice())
+                .unwrap_or(&[]);
+            let max_frames = if memory_budget.max_frames < usize::MAX {
+                memory_budget.max_frames
+            } else {
+                pre_estimate_max_frames(&request.frame_paths, &memory_budget, 5).unwrap_or(n)
+            };
+            let indices = if sections.is_empty() {
+                // Default: load up to max_frames from the start.
+                (0..max_frames.min(n)).collect::<Vec<_>>()
+            } else {
+                frames_to_load(sections, n)
+            };
+            info!(
+                "[{}] Enqueuing {} of {} frames (non-active series)",
+                series_id,
+                indices.len(),
+                n,
+            );
+            // Push into the shared LoadQueue — drain_load_queue reads per-series
+            // paths from SeriesFrameStore so the right handles land in the right slot.
+            if let Some(state) = series_fs.get_mut(&series_id) {
+                for idx in &indices {
+                    if *idx < state.frame_paths.len() {
+                        load_queue.push_series(*idx, series_id);
+                    }
                 }
             }
         }
-
-        // Reset all resources + queue for new sequence
-        frame_store.reset();
-        loader_config.reset();
-        asset_index.reset();
-        load_queue.clear();
-        mesh_cache.reset();
-
-        let n = request.frame_paths.len();
-        if let Some(ref mut si) = spatial_index {
-            si.reset(n);
-        }
-        frame_store.total_frames = n;
-        frame_store.loading = true;
-        frame_store.format = Some(format);
-        // Pre-allocate vecs — handles start as None (loaded on demand)
-        frame_store.frame_handles = vec![None; n];
-        frame_store.frame_entities = vec![None; n];
-        frame_store.loaded_frames = vec![false; n];
-        frame_store.degenerate_frames = vec![false; n];
-        // Store all paths for on-demand loading
-        frame_store.frame_paths = request.frame_paths.clone();
-
-        // Store base path from first frame (needed before restore_saved_timeline
-        // so the series base_dir match works).
-        if let Some(first_path) = request.frame_paths.first() {
-            frame_store.base_path = first_path.parent().map(|p| p.to_path_buf());
-        }
-
-        // Initialize Timeline for the new sequence.
-        // If the real budget isn't known yet (first load, no vertex data),
-        // pre-estimate from file sizes on disk so we don't blast out thousands
-        // of asset requests.
-        let max_frames = if memory_budget.max_frames < usize::MAX {
-            memory_budget.max_frames
-        } else {
-            pre_estimate_max_frames(&request.frame_paths, &memory_budget, 5).unwrap_or(n)
-        };
-        timeline.init_sequence(n, max_frames);
-
-        // ── Restore saved sections / playhead ───────────────────────────
-        //
-        // `init_sequence` resets the timeline to a single default section
-        // [0..max_frames] with playhead=0.  If the user had saved
-        // per-series load sections (via autosave / seaview.toml), we need
-        // to overlay them here.
-        //
-        // There is a race between this system and `sync_series_manager`:
-        // both run in Update with no ordering constraint.  If
-        // `register_discovered_series` already ran (same frame), the
-        // SeriesManager will have restored sections.  If not, we fall
-        // back to the raw settings file.  Either way, the restored
-        // sections replace the default `init_sequence` output so saved
-        // state is not lost.
-        let restored = restore_saved_timeline(
-            &mut timeline,
-            &series_mgr,
-            &settings_res,
-            &frame_store,
-            n,
-            max_frames,
-        );
-        if restored {
-            info!(
-                "Timeline restored from saved state: {} section(s), playhead={} (total: {}, budget max: {})",
-                timeline.sections.len(),
-                timeline.playhead,
-                n,
-                max_frames,
-            );
-        } else {
-            info!(
-                "Timeline initialized (default): frames 0..{} (total: {}, budget max: {})",
-                timeline.section().end,
-                n,
-                max_frames,
-            );
-        }
-
-        // Enqueue frames for throttled loading instead of blasting them all
-        // at once.  `drain_load_queue` will issue the actual
-        // `asset_server.load()` calls spread over subsequent frames.
-        let indices = frames_to_load(&timeline.sections, n);
-        info!("Enqueuing {} of {} frames for loading", indices.len(), n);
-        for idx in indices {
-            load_queue.push(idx);
-        }
-
-        info!(
-            "Asset loading queued: {} {} frames (of {} total) from {:?}",
-            load_queue.len(),
-            format.label(),
-            frame_store.total_frames,
-            frame_store.base_path
-        );
     }
 }
 

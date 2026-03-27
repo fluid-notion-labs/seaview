@@ -25,22 +25,56 @@
 //! [`MeshCache::gpu_consumers`](super::mesh_cache::CacheEntry::gpu_consumers)
 //! refcounting.
 
+use bevy::asset::RenderAssetUsages;
+use bevy::mesh::Mesh;
 use bevy::prelude::*;
+use loadfu::MeshFormat;
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use crate::lib::series::SeriesId;
 
 // ---------------------------------------------------------------------------
-// SeriesEntityState — per-series entity + window tracking
+// SeriesEntityState — per-series entity + window tracking + asset handles
 // ---------------------------------------------------------------------------
 
-/// Entity-level state for a single series.
+/// Full per-series state: asset handles, loading progress, entities, and
+/// display tracking.
 ///
-/// Each series independently tracks which frame entities are spawned, which
-/// frame is currently displayed, and the previous spawn windows (for delta
-/// computation).
+/// Previously asset handles lived exclusively in the global `FrameStore`.
+/// Moving them here makes each series self-contained so that multiple series
+/// can load, track, and display their own distinct meshes simultaneously.
 #[derive(Debug)]
 pub struct SeriesEntityState {
+    // ── Asset / loading ──────────────────────────────────────────────
+
+    /// Mesh handles per frame (`None` = not yet requested from asset server).
+    /// Each frame may contain multiple meshes (e.g. multi-primitive GLB).
+    pub frame_handles: Vec<Option<Vec<Handle<Mesh>>>>,
+
+    /// On-disk paths for every frame (needed for `asset_server.load()`).
+    pub frame_paths: Vec<PathBuf>,
+
+    /// Which frames have finished loading (asset ready for spawn).
+    pub loaded_frames: Vec<bool>,
+
+    /// Number of frames that have finished loading.
+    pub loaded_count: usize,
+
+    /// Total frames in this series.
+    pub total_frames: usize,
+
+    /// Detected file format (set when `LoadSequenceRequest` is processed).
+    pub format: Option<MeshFormat>,
+
+    /// Frames flagged as degenerate (near-zero geometry — skipped during display).
+    pub degenerate_frames: Vec<bool>,
+
+    /// Estimated GPU bytes per frame (set after first frame loads).
+    pub estimated_frame_bytes: u64,
+
+    // ── Entity / display ─────────────────────────────────────────────
+
     /// Spawned entities per frame index (`None` = not currently spawned).
     /// Multi-mesh frames have multiple entities per frame.
     ///
@@ -54,21 +88,111 @@ pub struct SeriesEntityState {
     /// [`compute_window_delta`](super::frame_window::compute_window_delta)
     /// can compute the correct delta for each series independently.
     pub prev_windows: Vec<(usize, usize)>,
-
-    /// Total frames in this series (cached for bounds checking).
-    pub total_frames: usize,
 }
 
 impl SeriesEntityState {
-    /// Create a new entity state for a series with `total_frames` frames.
-    pub fn new(total_frames: usize) -> Self {
+    /// Create a new entity state for a series with `total_frames` frames and
+    /// the given on-disk paths.
+    pub fn new(frame_paths: Vec<PathBuf>, format: Option<MeshFormat>) -> Self {
+        let total_frames = frame_paths.len();
         Self {
+            frame_handles: vec![None; total_frames],
+            frame_paths,
+            loaded_frames: vec![false; total_frames],
+            loaded_count: 0,
+            total_frames,
+            format,
+            degenerate_frames: vec![false; total_frames],
+            estimated_frame_bytes: 0,
             frame_entities: vec![None; total_frames],
             displayed_frame: None,
             prev_windows: Vec::new(),
-            total_frames,
         }
     }
+
+    /// Reset for reload — clears asset + entity state but keeps paths/format.
+    pub fn reset_for_reload(&mut self) {
+        self.frame_handles.iter_mut().for_each(|h| *h = None);
+        self.loaded_frames.iter_mut().for_each(|l| *l = false);
+        self.loaded_count = 0;
+        self.degenerate_frames.iter_mut().for_each(|d| *d = false);
+        self.estimated_frame_bytes = 0;
+        self.frame_entities.iter_mut().for_each(|e| *e = None);
+        self.displayed_frame = None;
+        self.prev_windows.clear();
+    }
+
+    // ── Asset helpers ────────────────────────────────────────────────
+
+    /// Get all mesh handles for a specific frame.
+    pub fn get_frame_meshes(&self, index: usize) -> Option<&[Handle<Mesh>]> {
+        self.frame_handles
+            .get(index)
+            .and_then(|opt| opt.as_ref())
+            .map(|v| v.as_slice())
+    }
+
+    /// Whether a frame has a handle (requested from asset server).
+    pub fn has_handle(&self, index: usize) -> bool {
+        self.frame_handles
+            .get(index)
+            .map(|h| h.is_some())
+            .unwrap_or(false)
+    }
+
+    /// Whether a frame has finished loading.
+    pub fn is_frame_loaded(&self, index: usize) -> bool {
+        self.loaded_frames.get(index).copied().unwrap_or(false)
+    }
+
+    /// Whether this frame is degenerate.
+    pub fn is_degenerate(&self, index: usize) -> bool {
+        self.degenerate_frames.get(index).copied().unwrap_or(false)
+    }
+
+    /// Promote a frame's mesh to GPU (adds RENDER_WORLD flag).
+    pub fn promote_to_gpu(&self, idx: usize, meshes: &mut Assets<Mesh>) -> bool {
+        let Some(handles) = self.get_frame_meshes(idx) else {
+            return false;
+        };
+        let mut any = false;
+        for handle in handles {
+            if let Some(mesh) = meshes.get_mut(handle) {
+                mesh.asset_usage =
+                    RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD;
+                any = true;
+            }
+        }
+        any
+    }
+
+    /// Demote a frame's mesh from GPU (removes RENDER_WORLD flag).
+    pub fn demote_from_gpu(&self, idx: usize, meshes: &mut Assets<Mesh>) -> bool {
+        let Some(handles) = self.get_frame_meshes(idx) else {
+            return false;
+        };
+        let mut any = false;
+        for handle in handles {
+            if let Some(mesh) = meshes.get_mut(handle) {
+                mesh.asset_usage = RenderAssetUsages::MAIN_WORLD;
+                any = true;
+            }
+        }
+        any
+    }
+
+    /// Grow asset/entity vecs if the series gained frames (watch mode).
+    pub fn grow_to(&mut self, new_total: usize) {
+        if new_total > self.total_frames {
+            self.frame_handles.resize_with(new_total, || None);
+            self.loaded_frames.resize(new_total, false);
+            self.degenerate_frames.resize(new_total, false);
+            self.frame_entities.resize_with(new_total, || None);
+            self.total_frames = new_total;
+        }
+    }
+
+    // ── Entity helpers ───────────────────────────────────────────────
 
     /// Reset all entity tracking (e.g. when reloading).
     ///
@@ -136,13 +260,6 @@ impl SeriesEntityState {
             .is_some()
     }
 
-    /// Grow the entity vec if the series gained frames (e.g. watch mode).
-    pub fn grow_to(&mut self, new_total: usize) {
-        if new_total > self.frame_entities.len() {
-            self.frame_entities.resize_with(new_total, || None);
-            self.total_frames = new_total;
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -160,14 +277,20 @@ pub struct SeriesFrameStore {
 }
 
 impl SeriesFrameStore {
-    /// Register a new series with the given total frame count.
+    /// Register a new series with its frame paths and format.
     ///
     /// If the series already exists, this is a no-op (returns `false`).
-    pub fn register(&mut self, id: SeriesId, total_frames: usize) -> bool {
+    pub fn register(
+        &mut self,
+        id: SeriesId,
+        frame_paths: Vec<PathBuf>,
+        format: Option<MeshFormat>,
+    ) -> bool {
         if self.states.contains_key(&id) {
             return false;
         }
-        self.states.insert(id, SeriesEntityState::new(total_frames));
+        self.states
+            .insert(id, SeriesEntityState::new(frame_paths, format));
         true
     }
 
