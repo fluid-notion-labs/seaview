@@ -1,10 +1,18 @@
-status: running
+status: success
 main-ref: 4d665095
 created: 2026-03-27T05:21:16
 msg: check loadfu for stale submodule entries
 worker: nick-MacPro5-1-75751
 ran: 2026-03-27T13:21:36
+completed: 2026-03-27T13:21:49
 
 git clone https://github.com/fluid-notion-labs/loadfu.git /tmp/loadfu-check 2>&1
 git -C /tmp/loadfu-check ls-files --stage | grep vendor || echo "no vendor entries"
 rm -rf /tmp/loadfu-check
+
+# --- log ---
+# Cloning into '/tmp/loadfu-check'...
+# 160000 5f8270f2e049f90139a503d1e930070d926f9427 0	vendor/bevy
+# 160000 3def30c9caf96f2dbc85238179ea5a6152c5cf22 0	vendor/gltf
+# 160000 c982b18460dc107716b9e7ef0ce1f9833a3e811b 0	vendor/stl_io
+# 160000 1a6cdc245c820449c788a4ef9570c4ab9e6f7769 0	vendor/tobj
