@@ -33,7 +33,7 @@ use bevy::prelude::*;
 use super::assets::{FrameStore, LoaderConfig};
 use super::mesh_cache::MeshCache;
 use super::series_frame_store::SeriesFrameStore;
-use super::{rss_mb, SequenceMeshDisplay, SPAWNS_PER_FRAME};
+use super::{SequenceMeshDisplay, SPAWNS_PER_FRAME};
 use crate::app::ui::state::RenderConfig;
 use crate::lib::environment_objects::{AxisSwizzle, Transform3D};
 use crate::lib::memory_budget::MemoryBudget;
