@@ -185,12 +185,12 @@ pub(super) fn manage_frame_window(
         let series_transform = compose_series_transform(&series_t3d, &series_swizzle);
         let transform = series_transform * loader_config.coord_transform;
 
-        // Compute spawn windows.
+        // Compute spawn windows using the per-series total_frames.
         let new_windows = compute_spawn_windows(
             current,
             render_config.frame_window_size,
             &sections,
-            frame_store.total_frames,
+            total_frames,
         );
 
         let prev_windows: Vec<(usize, usize)> = series_fs
@@ -228,7 +228,7 @@ pub(super) fn manage_frame_window(
                 }
 
                 // GPU residency: MeshCache refcounted demote.
-                let path = frame_store.frame_paths.get(idx).cloned();
+                let path = series_fs.get(&series_id).and_then(|s| s.frame_paths.get(idx).cloned()).or_else(|| if Some(series_id) == active_id { frame_store.frame_paths.get(idx).cloned() } else { None });
                 let demoted_via_cache = if let Some(ref p) = path {
                     if let Some(cache_entry) = mesh_cache.get_mut(p) {
                         let should_demote = cache_entry.remove_gpu_consumer();
@@ -245,7 +245,14 @@ pub(super) fn manage_frame_window(
                 };
 
                 if !demoted_via_cache {
-                    frame_store.demote_from_gpu(idx, &mut meshes);
+                    // Demote via per-series state; fall back to FrameStore for active series.
+                    let demoted = series_fs
+                        .get(&series_id)
+                        .map(|s| s.demote_from_gpu(idx, &mut meshes))
+                        .unwrap_or(false);
+                    if !demoted && Some(series_id) == active_id {
+                        frame_store.demote_from_gpu(idx, &mut meshes);
+                    }
                 }
 
                 if frame_bytes > 0 {
@@ -296,17 +303,16 @@ pub(super) fn manage_frame_window(
             if already_spawned {
                 continue;
             }
-            if !frame_store.is_frame_loaded(idx) && {
-                // For non-active series, check the per-series loaded state.
-                if Some(series_id) == active_id {
-                    !frame_store.is_frame_loaded(idx)
-                } else {
-                    !series_fs
-                        .get(&series_id)
-                        .map(|s| s.is_frame_loaded(idx))
-                        .unwrap_or(false)
-                }
-            } {
+            // Skip if the frame hasn't finished loading yet.
+            let loaded = if Some(series_id) == active_id {
+                frame_store.is_frame_loaded(idx)
+            } else {
+                series_fs
+                    .get(&series_id)
+                    .map(|s| s.is_frame_loaded(idx))
+                    .unwrap_or(false)
+            };
+            if !loaded {
                 continue;
             }
             // Get mesh handles from the per-series store (authoritative).
@@ -332,17 +338,30 @@ pub(super) fn manage_frame_window(
                 }
             };
 
-            // GPU residency: promote.
-            let path = frame_store.frame_paths.get(idx).cloned();
+            // GPU residency: promote via MeshCache (refcounted); fall back to
+            // per-series state promote if not in cache.
+            let path = series_fs.get(&series_id).and_then(|s| s.frame_paths.get(idx).cloned()).or_else(|| if Some(series_id) == active_id { frame_store.frame_paths.get(idx).cloned() } else { None });
             if let Some(ref p) = path {
                 if let Some(cache_entry) = mesh_cache.get_mut(p) {
                     cache_entry.add_gpu_consumer();
                     cache_entry.promote_to_gpu(&mut meshes);
                 } else {
-                    frame_store.promote_to_gpu(idx, &mut meshes);
+                    let promoted = series_fs
+                        .get(&series_id)
+                        .map(|s| s.promote_to_gpu(idx, &mut meshes))
+                        .unwrap_or(false);
+                    if !promoted && Some(series_id) == active_id {
+                        frame_store.promote_to_gpu(idx, &mut meshes);
+                    }
                 }
             } else {
-                frame_store.promote_to_gpu(idx, &mut meshes);
+                let promoted = series_fs
+                    .get(&series_id)
+                    .map(|s| s.promote_to_gpu(idx, &mut meshes))
+                    .unwrap_or(false);
+                if !promoted && Some(series_id) == active_id {
+                    frame_store.promote_to_gpu(idx, &mut meshes);
+                }
             }
 
             let visibility = if idx == current {
@@ -416,7 +435,7 @@ pub(super) fn manage_frame_window(
         let display_frame = if is_displayable(current) {
             current
         } else {
-            let n = frame_store.total_frames;
+            let n = total_frames;
             let mut found = None;
             for offset in 1..n {
                 let candidate = (current + offset) % n;
@@ -450,7 +469,7 @@ pub(super) fn manage_frame_window(
                         commands.entity(*entity).despawn();
                     }
 
-                    let path = frame_store.frame_paths.get(idx).cloned();
+                    let path = series_fs.get(&series_id).and_then(|s| s.frame_paths.get(idx).cloned()).or_else(|| if Some(series_id) == active_id { frame_store.frame_paths.get(idx).cloned() } else { None });
                     let demoted_via_cache = if let Some(ref p) = path {
                         if let Some(cache_entry) = mesh_cache.get_mut(p) {
                             let should_demote = cache_entry.remove_gpu_consumer();
@@ -467,7 +486,13 @@ pub(super) fn manage_frame_window(
                     };
 
                     if !demoted_via_cache {
-                        frame_store.demote_from_gpu(idx, &mut meshes);
+                        let demoted = series_fs
+                            .get(&series_id)
+                            .map(|s| s.demote_from_gpu(idx, &mut meshes))
+                            .unwrap_or(false);
+                        if !demoted && Some(series_id) == active_id {
+                            frame_store.demote_from_gpu(idx, &mut meshes);
+                        }
                     }
 
                     if frame_bytes > 0 {

@@ -551,6 +551,7 @@ fn restore_saved_timeline(
 /// Helper function to trigger loading a sequence from discovered frames
 #[allow(dead_code)]
 pub fn load_discovered_sequence(
+    series_id: SeriesId,
     sequence: &super::Sequence,
     load_events: &mut MessageWriter<LoadSequenceRequest>,
 ) {
@@ -562,10 +563,11 @@ pub fn load_discovered_sequence(
     }
 
     debug!(
-        "Requesting load of sequence '{}' with {} frames",
+        "Requesting load of sequence '{}' ({}) with {} frames",
         sequence.name,
+        series_id,
         frame_paths.len()
     );
 
-    load_events.write(LoadSequenceRequest { frame_paths });
+    load_events.write(LoadSequenceRequest { series_id, frame_paths });
 }

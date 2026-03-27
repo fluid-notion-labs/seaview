@@ -213,7 +213,6 @@ fn poll_async_discovery(
     mut pending_query: Query<(Entity, &mut PendingDiscovery)>,
     mut sequence_manager: ResMut<SequenceManager>,
     mut events: MessageWriter<SequenceEvent>,
-    mut load_events: MessageWriter<LoadSequenceRequest>,
     mut all_discovered: MessageWriter<AllSequencesDiscovered>,
 ) {
     for (entity, mut pending) in pending_query.iter_mut() {
@@ -246,31 +245,18 @@ fn poll_async_discovery(
                     continue;
                 }
 
-                // Emit the full list for SeriesManager / multi-series UI.
-                // We need to infer source_orientation from the first seq —
-                // it was set during construction.
+                // Emit the full list — register_discovered_series will fire
+                // LoadSequenceRequest per series with the correct series_id.
                 let source_orientation = sequences[0].source_orientation;
                 all_discovered.write(AllSequencesDiscovered {
                     sequences: sequences.clone(),
                     source_orientation,
                 });
 
-                // Backward compat: load the first sequence immediately
-                // into the legacy single-sequence path.
+                // Backward compat: populate legacy SequenceManager with first seq.
                 let first = sequences.into_iter().next().unwrap();
                 let frame_count = first.frame_count();
                 let sequence_name = first.name.clone();
-
-                let frame_paths: Vec<_> = first.frames.iter().map(|f| f.path.clone()).collect();
-                if !frame_paths.is_empty() {
-                    debug!(
-                        "Triggering load of {} mesh frames for sequence '{}'",
-                        frame_paths.len(),
-                        sequence_name,
-                    );
-                    load_events.write(LoadSequenceRequest { frame_paths });
-                }
-
                 sequence_manager.load_sequence(first);
                 events.write(SequenceEvent::SequenceLoaded(sequence_name));
                 events.write(SequenceEvent::DiscoveryCompleted(frame_count));
@@ -293,6 +279,7 @@ fn register_discovered_series(
     mut series_manager: ResMut<SeriesManagerRes>,
     memory_budget: Res<MemoryBudget>,
     settings_res: Res<SettingsResource>,
+    mut load_events: MessageWriter<LoadSequenceRequest>,
 ) {
     let mgr = &mut *series_manager;
 
@@ -300,7 +287,6 @@ fn register_discovered_series(
         let max_frames = if memory_budget.max_frames < usize::MAX {
             memory_budget.max_frames
         } else {
-            // No budget known yet — use total frames as ceiling.
             event
                 .sequences
                 .first()
@@ -317,6 +303,22 @@ fn register_discovered_series(
                 sequence.frame_count(),
                 max_frames,
             );
+
+            // Fire a per-series load request so each series gets its own
+            // asset handles in SeriesFrameStore rather than stomping FrameStore.
+            let frame_paths: Vec<_> = sequence.frames.iter().map(|f| f.path.clone()).collect();
+            if !frame_paths.is_empty() {
+                debug!(
+                    "Firing LoadSequenceRequest for series {} '{}' ({} frames)",
+                    id,
+                    sequence.name,
+                    frame_paths.len(),
+                );
+                load_events.write(LoadSequenceRequest {
+                    series_id: id,
+                    frame_paths,
+                });
+            }
         }
 
         // -- Restore per-series state from saved settings ---------------------

@@ -287,9 +287,8 @@ fn handle_incremental_load(
             );
         }
 
-        // Register new frames — store paths and pre-allocate slots.
-        // Actual asset loading is handled by `sync_section_loads` which
-        // only loads frames within the timeline's budget sections.
+        // Register new frames — store paths and pre-allocate slots in both
+        // FrameStore (active-series mirror) and SeriesFrameStore (authoritative).
         for path in &request.frame_paths {
             frame_store.frame_paths.push(path.clone());
             frame_store.frame_handles.push(None);
@@ -298,10 +297,15 @@ fn handle_incremental_load(
             frame_store.degenerate_frames.push(false);
         }
 
-        // Grow the per-series entity state to match the new total.
+        // Grow the per-series state to match — this extends frame_handles,
+        // frame_paths, loaded_frames, etc. in SeriesEntityState.
         let new_total = frame_store.total_frames + request.frame_paths.len();
         if let Some(id) = series_mgr.active_id() {
             if let Some(state) = series_fs.get_mut(&id) {
+                // Append new paths before grow_to so the path vec is in sync.
+                for path in &request.frame_paths {
+                    state.frame_paths.push(path.clone());
+                }
                 state.grow_to(new_total);
             }
         }

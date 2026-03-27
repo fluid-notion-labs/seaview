@@ -1203,7 +1203,10 @@ fn sync_series_manager(
                         active.label,
                         active.id,
                     );
-                    load_events.write(LoadSequenceRequest { frame_paths });
+                    load_events.write(LoadSequenceRequest {
+                        series_id: active.id,
+                        frame_paths,
+                    });
                 }
             } else {
                 info!(
@@ -1231,7 +1234,10 @@ fn sync_series_manager(
                         active.label,
                         active.id,
                     );
-                    load_events.write(LoadSequenceRequest { frame_paths });
+                    load_events.write(LoadSequenceRequest {
+                        series_id: active.id,
+                        frame_paths,
+                    });
                 }
             }
         }

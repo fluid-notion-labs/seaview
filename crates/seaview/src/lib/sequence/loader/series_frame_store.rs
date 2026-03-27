@@ -393,13 +393,30 @@ mod tests {
         Entity::from_bits(!(index as u64) & 0xFFFF_FFFF)
     }
 
+    /// Build a `SeriesEntityState` with `n` dummy frame slots for testing.
+    fn test_state(n: usize) -> SeriesEntityState {
+        let paths: Vec<std::path::PathBuf> = (0..n)
+            .map(|i| std::path::PathBuf::from(format!("/tmp/frame_{:04}.stl", i)))
+            .collect();
+        SeriesEntityState::new(paths, None)
+    }
+
+    /// Register a series with `n` dummy slots.
+    fn reg(store: &mut SeriesFrameStore, id: SeriesId, n: usize) -> bool {
+        let paths: Vec<std::path::PathBuf> = (0..n)
+            .map(|i| std::path::PathBuf::from(format!("/tmp/s{}frame_{:04}.stl", id.raw(), i)))
+            .collect();
+        store.register(id, paths, None)
+    }
+
     // ── SeriesEntityState ─────────────────────────────────────────────
 
     #[test]
     fn entity_state_new() {
-        let state = SeriesEntityState::new(10);
+        let state = test_state(10);
         assert_eq!(state.total_frames, 10);
         assert_eq!(state.frame_entities.len(), 10);
+        assert_eq!(state.frame_handles.len(), 10);
         assert!(state.displayed_frame.is_none());
         assert!(state.prev_windows.is_empty());
         assert!(!state.has_spawned_entities());
@@ -408,7 +425,7 @@ mod tests {
 
     #[test]
     fn entity_state_set_and_get() {
-        let mut state = SeriesEntityState::new(5);
+        let mut state = test_state(5);
         let e1 = fake_entity(1);
         let e2 = fake_entity(2);
 
@@ -424,14 +441,14 @@ mod tests {
 
     #[test]
     fn entity_state_set_out_of_bounds_is_noop() {
-        let mut state = SeriesEntityState::new(3);
+        let mut state = test_state(3);
         state.set_entities(10, vec![fake_entity(1)]);
         assert!(!state.has_spawned_entities());
     }
 
     #[test]
     fn entity_state_take_entities() {
-        let mut state = SeriesEntityState::new(5);
+        let mut state = test_state(5);
         state.set_entities(2, vec![fake_entity(1)]);
 
         let taken = state.take_entities(2);
@@ -448,7 +465,7 @@ mod tests {
 
     #[test]
     fn entity_state_take_all() {
-        let mut state = SeriesEntityState::new(5);
+        let mut state = test_state(5);
         state.set_entities(0, vec![fake_entity(1)]);
         state.set_entities(2, vec![fake_entity(2), fake_entity(3)]);
         state.set_entities(4, vec![fake_entity(4)]);
@@ -464,7 +481,7 @@ mod tests {
 
     #[test]
     fn entity_state_reset() {
-        let mut state = SeriesEntityState::new(5);
+        let mut state = test_state(5);
         state.set_entities(0, vec![fake_entity(1)]);
         state.displayed_frame = Some(0);
         state.prev_windows = vec![(0, 3)];
@@ -479,11 +496,12 @@ mod tests {
 
     #[test]
     fn entity_state_grow_to() {
-        let mut state = SeriesEntityState::new(3);
+        let mut state = test_state(3);
         assert_eq!(state.frame_entities.len(), 3);
 
         state.grow_to(5);
         assert_eq!(state.frame_entities.len(), 5);
+        assert_eq!(state.frame_handles.len(), 5);
         assert_eq!(state.total_frames, 5);
 
         // Growing to smaller size is a no-op
@@ -498,7 +516,7 @@ mod tests {
         let mut store = SeriesFrameStore::default();
         assert!(store.is_empty());
 
-        assert!(store.register(sid(1), 10));
+        assert!(reg(&mut store, sid(1), 10));
         assert!(!store.is_empty());
         assert_eq!(store.len(), 1);
         assert!(store.contains(&sid(1)));
@@ -510,8 +528,8 @@ mod tests {
     #[test]
     fn store_register_duplicate_is_noop() {
         let mut store = SeriesFrameStore::default();
-        assert!(store.register(sid(1), 10));
-        assert!(!store.register(sid(1), 20)); // no-op
+        assert!(reg(&mut store, sid(1), 10));
+        assert!(!reg(&mut store, sid(1), 20)); // no-op
         assert_eq!(store.get(&sid(1)).unwrap().total_frames, 10);
     }
 
@@ -524,7 +542,7 @@ mod tests {
     #[test]
     fn store_remove() {
         let mut store = SeriesFrameStore::default();
-        store.register(sid(1), 5);
+        reg(&mut store, sid(1), 5);
 
         // Add some entities
         store
@@ -552,9 +570,9 @@ mod tests {
     #[test]
     fn store_multiple_series() {
         let mut store = SeriesFrameStore::default();
-        store.register(sid(1), 10);
-        store.register(sid(2), 20);
-        store.register(sid(3), 5);
+        reg(&mut store, sid(1), 10);
+        reg(&mut store, sid(2), 20);
+        reg(&mut store, sid(3), 5);
 
         assert_eq!(store.len(), 3);
 
@@ -576,8 +594,8 @@ mod tests {
     #[test]
     fn store_iter() {
         let mut store = SeriesFrameStore::default();
-        store.register(sid(1), 5);
-        store.register(sid(2), 10);
+        reg(&mut store, sid(1), 5);
+        reg(&mut store, sid(2), 10);
 
         let ids: Vec<SeriesId> = store.iter().map(|(id, _)| *id).collect();
         assert_eq!(ids.len(), 2);
@@ -588,8 +606,8 @@ mod tests {
     #[test]
     fn store_iter_mut() {
         let mut store = SeriesFrameStore::default();
-        store.register(sid(1), 5);
-        store.register(sid(2), 5);
+        reg(&mut store, sid(1), 5);
+        reg(&mut store, sid(2), 5);
 
         // Set entities on all series via iter_mut
         for (_, state) in store.iter_mut() {
@@ -602,8 +620,8 @@ mod tests {
     #[test]
     fn store_reset() {
         let mut store = SeriesFrameStore::default();
-        store.register(sid(1), 5);
-        store.register(sid(2), 10);
+        reg(&mut store, sid(1), 5);
+        reg(&mut store, sid(2), 10);
 
         store
             .get_mut(&sid(1))
@@ -634,7 +652,7 @@ mod tests {
     #[test]
     fn store_get_mut_and_modify() {
         let mut store = SeriesFrameStore::default();
-        store.register(sid(1), 5);
+        reg(&mut store, sid(1), 5);
 
         {
             let state = store.get_mut(&sid(1)).unwrap();
