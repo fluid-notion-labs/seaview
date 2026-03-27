@@ -1,8 +1,35 @@
-status: running
+status: failure
 main-ref: 61f86ee1
 created: 2026-03-27T05:00:04
 msg: test sentinel — cargo check
 worker: nick-MacPro5-1-56320
 ran: 2026-03-27T05:00:35
+completed: 2026-03-27T05:00:47
 
 cargo check 2>&1
+
+# --- log ---
+#     Updating crates.io index
+#     Updating git repository `https://github.com/vladbat00/bevy_egui.git`
+#     Updating git repository `https://github.com/fluid-notion-labs/loadfu.git`
+# error: failed to get `loadfu` as a dependency of package `seaview v0.1.0 (/mnt/data/projects/fluidsim/fluidspace-pipeline/seaview/crates/seaview)`
+# 
+# Caused by:
+#   failed to load source for dependency `loadfu`
+# 
+# Caused by:
+#   Unable to update https://github.com/fluid-notion-labs/loadfu.git?rev=9ddd1e7
+# 
+# Caused by:
+#   failed to clone into: /home/nick/.cargo/git/db/loadfu-90696b1343fd309c
+# 
+# Caused by:
+#   failed to authenticate when downloading repository
+# 
+#   * attempted to find username/password via git's `credential.helper` support, but failed
+# 
+#   if the git CLI succeeds then `net.git-fetch-with-cli` may help here
+#   https://doc.rust-lang.org/cargo/reference/config.html#netgit-fetch-with-cli
+# 
+# Caused by:
+#   failed to acquire username/password from local configuration
