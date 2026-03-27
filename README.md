@@ -5,17 +5,28 @@ A modern reimplementation of mesh-ripper - a high-performance mesh sequence view
 ## System Requirements
 
 ### Linux
-You need to install development libraries for Bevy:
+
+Install development libraries required by Bevy and seaview:
 
 ```bash
 # Ubuntu/Debian
-sudo apt-get install libudev-dev libasound2-dev clang
+sudo apt-get install g++ pkg-config libx11-dev libasound2-dev libudev-dev \
+    libxkbcommon-x11-0 libwayland-dev libxkbcommon-dev clang
 
 # Fedora
-sudo dnf install libudev-devel alsa-lib-devel clang
+sudo dnf install gcc-c++ pkgconf libX11-devel alsa-lib-devel systemd-devel \
+    libxkbcommon-devel wayland-devel clang
 
 # Arch
-sudo pacman -S udev alsa-lib clang
+sudo pacman -S gcc pkgconf libx11 alsa-lib udev libxkbcommon wayland clang
+```
+
+You also need a Vulkan driver for your GPU:
+
+```bash
+# Ubuntu/Debian — pick one:
+sudo apt-get install vulkan-tools  # NVIDIA (driver includes Vulkan)
+sudo apt-get install mesa-vulkan-drivers  # AMD / Intel
 ```
 
 ### Windows
