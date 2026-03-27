@@ -831,6 +831,7 @@ dependencies = [
 [[package]]
 name = "bevy_egui"
 version = "0.39.1"
+source = "git+https://github.com/vladbat00/bevy_egui.git?rev=fc54b193441e74e0317c5c8a158f73669670cf8f#fc54b193441e74e0317c5c8a158f73669670cf8f"
 dependencies = [
  "arboard",
  "bevy_app",
@@ -3982,6 +3983,7 @@ checksum = "b4ce301924b7887e9d637144fdade93f9dfff9b60981d4ac161db09720d39aa5"
 [[package]]
 name = "loadfu"
 version = "0.1.0"
+source = "git+https://github.com/fluid-notion-labs/loadfu.git?branch=main#c90bad8136548bdb0be32260fa17cedf80a0e0e2"
 dependencies = [
  "bevy",
  "bytemuck",
