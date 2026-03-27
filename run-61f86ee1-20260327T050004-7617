@@ -1,0 +1,6 @@
+status: new
+main-ref: 61f86ee1
+created: 2026-03-27T05:00:04
+msg: test sentinel — cargo check
+
+cargo check 2>&1
