@@ -11,7 +11,7 @@ Install development libraries required by Bevy and seaview:
 ```bash
 # Ubuntu/Debian
 sudo apt-get install g++ pkg-config libx11-dev libasound2-dev libudev-dev \
-    libxkbcommon-x11-0 libwayland-dev libxkbcommon-dev clang
+    libxkbcommon-x11-0 libwayland-dev libxkbcommon-dev clang wild-linker
 
 # Fedora
 sudo dnf install gcc-c++ pkgconf libX11-devel alsa-lib-devel systemd-devel \
