@@ -1,0 +1,6 @@
+status: new
+main-ref: 4d665095
+created: 2026-03-27T05:31:38
+msg: cargo check after loadfu submodule fix
+
+cargo check 2>&1
