@@ -179,12 +179,27 @@ fn main() {
         .add_plugins(AutosavePlugin);
     #[cfg(feature = "spatial")]
     app.add_plugins(seaview::app::spatial_accelerator::SpatialAcceleratorPlugin);
+    // MeshletPlugin is deferred: only register when the input directory actually
+    // contains .meshlet_mesh files.  Adding MeshletPlugin to a scene that has
+    // only standard Mesh3d entities + deferred rendering causes a bind-group
+    // layout mismatch on the first frame (meshlet prepass pipeline vs
+    // StandardMaterial bind group).
     #[cfg(feature = "meshlet")]
-    app.add_plugins(bevy::pbr::experimental::meshlet::MeshletPlugin {
-        cluster_buffer_slots: 1 << 22,
-    });
-    #[cfg(feature = "meshlet")]
-    app.add_plugins(MaterialPlugin::<MeshletDebugMaterial>::default());
+    {
+        let has_meshlet_files = seq_dir
+            .as_ref()
+            .map(|dir| dir_contains_meshlet_files(dir))
+            .unwrap_or(false);
+        if has_meshlet_files {
+            info!("Meshlet files detected — enabling MeshletPlugin");
+            app.add_plugins(bevy::pbr::experimental::meshlet::MeshletPlugin {
+                cluster_buffer_slots: 1 << 22,
+            });
+            app.add_plugins(MaterialPlugin::<MeshletDebugMaterial>::default());
+        } else {
+            debug!("No .meshlet_mesh files found — MeshletPlugin not loaded");
+        }
+    }
 
     app.insert_resource(args)
         .insert_resource(source_orientation)
@@ -607,4 +622,29 @@ fn handle_input_path(
             error!("Path does not exist: {:?}", path);
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Quick pre-app check: does the directory contain any `.meshlet_mesh` files?
+///
+/// Only scans one level deep (matching discovery behaviour).  Used to decide
+/// whether to register `MeshletPlugin` — adding it to a scene with only
+/// standard `Mesh3d` entities under deferred rendering causes a bind-group
+/// layout mismatch crash.
+#[cfg(feature = "meshlet")]
+fn dir_contains_meshlet_files(dir: &std::path::Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        if let Some(name) = entry.file_name().to_str() {
+            if name.to_lowercase().ends_with(".meshlet_mesh") {
+                return true;
+            }
+        }
+    }
+    false
 }

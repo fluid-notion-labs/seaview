@@ -243,7 +243,9 @@ impl Plugin for SequenceLoaderPlugin {
                     load_queue::drain_load_queue,
                     loading_tracker::track_asset_loading,
                     #[cfg(feature = "meshlet")]
-                    loading_tracker::track_meshlet_loading,
+                    loading_tracker::track_meshlet_loading.run_if(
+                        resource_exists::<Assets<bevy::pbr::experimental::meshlet::MeshletMesh>>
+                    ),
                 )
                     .chain(),
             )

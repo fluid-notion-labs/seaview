@@ -108,11 +108,16 @@ pub fn sync_meshlet_debug(
         (Entity, &MeshMaterial3d<crate::app::meshlet_debug::MeshletDebugMaterial>),
         With<SequenceMeshDisplay>,
     >,
-    mut debug_materials: ResMut<Assets<crate::app::meshlet_debug::MeshletDebugMaterial>>,
+    debug_materials: Option<ResMut<Assets<crate::app::meshlet_debug::MeshletDebugMaterial>>>,
 ) {
     if !render_config.is_changed() {
         return;
     }
+
+    // MeshletPlugin not loaded — nothing to toggle.
+    let Some(mut debug_materials) = debug_materials else {
+        return;
+    };
 
     let Some(ref std_handle) = loader_config.shared_material else {
         return;
