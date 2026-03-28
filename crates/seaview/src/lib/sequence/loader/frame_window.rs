@@ -249,6 +249,7 @@ pub(super) fn manage_frame_window(
         for idx in &delta.to_despawn {
             let idx = *idx;
             if Some(idx) == prev_displayed {
+                debug!("[series {}] Deferring despawn of displayed frame {}", series_id, idx);
                 deferred_despawn = Some(idx);
                 continue;
             }
@@ -258,6 +259,7 @@ pub(super) fn manage_frame_window(
                 .and_then(|state| state.take_entities(idx));
 
             if let Some(entities) = entities {
+                debug!("[series {}] Despawning frame {} ({} entities)", series_id, idx, entities.len());
                 for entity in &entities {
                     if let Ok(mut vis) = visibility_query.get_mut(*entity) {
                         *vis = Visibility::Hidden;
@@ -606,6 +608,13 @@ pub(super) fn manage_frame_window(
             } else {
                 Vec::new()
             };
+
+        let visible_count = entity_iter.iter().filter(|(idx, _)| *idx == display_frame).count();
+        let hidden_count = entity_iter.len() - visible_count;
+        debug!(
+            "[series {}] visibility pass: {} frames spawned ({} visible, {} hidden), display={}",
+            series_id, entity_iter.len(), visible_count, hidden_count, display_frame,
+        );
 
         for (idx, entities) in &entity_iter {
             let desired = if *idx == display_frame {
