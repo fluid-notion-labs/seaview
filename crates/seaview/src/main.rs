@@ -1,7 +1,6 @@
 use bevy::asset::io::AssetSourceBuilder;
 use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
 use bevy::pbr::wireframe::WireframePlugin;
-use bevy::pbr::{DefaultOpaqueRendererMethod, ScreenSpaceReflections};
 use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 use seaview::app::autosave::AutosavePlugin;
@@ -158,9 +157,9 @@ fn main() {
     // before AssetPlugin (part of DefaultPlugins).
     app.register_asset_source("env", AssetSourceBuilder::platform_default("/", None));
 
-    // Meshlet requires a single consistent opaque render method.
-    // Deferred is supported and preferred (enables SSR etc).
-    app.insert_resource(DefaultOpaqueRendererMethod::deferred());
+    // Forward rendering (default). Deferred was causing gray mesh artifacts
+    // when combined with MeshletPlugin — revisit once meshlet+deferred is
+    // confirmed stable in Bevy.
     app.add_plugins(DefaultPlugins)
         .add_plugins(WireframePlugin::default())
         .add_plugins(loadfu::LoadfuPlugin)
@@ -300,14 +299,14 @@ fn setup(
     // Store all named cameras for runtime switching (Phase 4 UI)
     commands.insert_resource(settings_res.settings.to_saved_cameras());
 
-    // Spawn the FPS camera with HDR, MSAA off, and SSR enabled (deferred rendering).
+    // Spawn the FPS camera with HDR and MSAA off.
     // Environment map (IBL + skybox) is managed by sync_environment_map system.
+    // SSR removed — requires deferred rendering which conflicts with meshlet.
     commands.spawn((
         Camera3d::default(),
         camera_transform,
         FpsCamera::default(),
         Msaa::Off,
-        ScreenSpaceReflections::default(),
     ));
 
     // Apply cached mesh bounds from seaview.toml
