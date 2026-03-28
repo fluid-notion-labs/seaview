@@ -31,7 +31,7 @@ pub struct RenderConfig {
 impl Default for RenderConfig {
     fn default() -> Self {
         Self {
-            frame_window_size: 5,
+            frame_window_size: 1,
             wireframe_enabled: false,
         }
     }
