@@ -16,7 +16,9 @@ use std::collections::{HashSet, VecDeque};
 use super::assets::{AssetIndex, FrameStore};
 use super::mesh_cache::{CacheEntry, MeshCache};
 use super::series_frame_store::SeriesFrameStore;
-use super::{load_mesh_handle, rss_mb, LOADS_PER_FRAME};
+use super::{load_mesh_handle, rss_mb, SequenceKind, LOADS_PER_FRAME};
+#[cfg(feature = "meshlet")]
+use super::load_meshlet_handle;
 use crate::lib::sequence::{frames_to_load, SeriesManagerRes, Timeline};
 use crate::lib::series::SeriesId;
 
@@ -355,6 +357,27 @@ pub(super) fn drain_load_queue(
             }
 
             let path = frame_store.frame_paths[idx].clone();
+
+            #[cfg(feature = "meshlet")]
+            if frame_store.format == Some(SequenceKind::Meshlet) {
+                let handle = load_meshlet_handle(&asset_server, &path);
+                let real_id = active_id.unwrap_or(active_sentinel);
+                asset_index.asset_id_to_frame.insert(handle.id(), (real_id, idx));
+                if let Some(v) = frame_store.meshlet_handles.get_mut(idx) {
+                    *v = Some(handle.clone());
+                }
+                if let Some(aid) = active_id {
+                    if let Some(state) = series_fs.get_mut(&aid) {
+                        if let Some(v) = state.meshlet_handles.get_mut(idx) {
+                            *v = Some(handle);
+                        }
+                    }
+                }
+                loaded_this_frame += 1;
+                trace!("Kicked meshlet load for series {:?} frame {}", active_sentinel, idx);
+                continue;
+            }
+
             let handle = load_mesh_handle(&asset_server, &path);
             let real_id = active_id.unwrap_or(active_sentinel);
             asset_index.asset_id_to_frame.insert(handle.id(), (real_id, idx));
@@ -393,6 +416,18 @@ pub(super) fn drain_load_queue(
             }
 
             let path = state.frame_paths[idx].clone();
+
+            #[cfg(feature = "meshlet")]
+            if state.format == Some(SequenceKind::Meshlet) {
+                let handle = load_meshlet_handle(&asset_server, &path);
+                asset_index.asset_id_to_frame.insert(handle.id(), (series_id, idx));
+                if let Some(v) = state.meshlet_handles.get_mut(idx) {
+                    *v = Some(handle);
+                }
+                loaded_this_frame += 1;
+                trace!("Kicked meshlet load for series {:?} frame {}", series_id, idx);
+                continue;
+            }
 
             let handle = load_mesh_handle(&asset_server, &path);
             asset_index.asset_id_to_frame.insert(handle.id(), (series_id, idx));

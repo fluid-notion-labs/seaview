@@ -33,7 +33,7 @@ use bevy::prelude::*;
 use super::assets::{FrameStore, LoaderConfig};
 use super::mesh_cache::MeshCache;
 use super::series_frame_store::SeriesFrameStore;
-use super::{SequenceMeshDisplay, SPAWNS_PER_FRAME};
+use super::{SequenceMeshDisplay, SequenceKind, SPAWNS_PER_FRAME};
 use crate::app::ui::state::RenderConfig;
 use crate::lib::environment_objects::{AxisSwizzle, Transform3D};
 use crate::lib::memory_budget::MemoryBudget;
@@ -353,6 +353,56 @@ pub(super) fn manage_frame_window(
             if !loaded {
                 continue;
             }
+
+            // ── Meshlet fast path ──────────────────────────────────────
+            #[cfg(feature = "meshlet")]
+            {
+                let series_kind = series_fs
+                    .get(&series_id)
+                    .and_then(|s| s.format)
+                    .or_else(|| if Some(series_id) == active_id { frame_store.format } else { None });
+
+                if series_kind == Some(SequenceKind::Meshlet) {
+                    use bevy::pbr::experimental::meshlet::MeshletMesh3d;
+
+                    let handle = series_fs
+                        .get(&series_id)
+                        .and_then(|s| s.meshlet_handles.get(idx).and_then(|h| h.clone()))
+                        .or_else(|| {
+                            if Some(series_id) == active_id {
+                                frame_store.meshlet_handles.get(idx).and_then(|h| h.clone())
+                            } else {
+                                None
+                            }
+                        });
+
+                    let Some(handle) = handle else { continue };
+
+                    let visibility = if idx == current { Visibility::Visible } else { Visibility::Hidden };
+                    let entity = commands
+                        .spawn((
+                            MeshletMesh3d(handle),
+                            MeshMaterial3d(material.clone()),
+                            transform,
+                            SequenceMeshDisplay,
+                            visibility,
+                            Name::new(format!("Series {} Frame {} meshlet", series_id, idx)),
+                        ))
+                        .id();
+
+                    if let Some(state) = series_fs.get_mut(&series_id) {
+                        state.set_entities(idx, vec![entity]);
+                    }
+                    if Some(series_id) == active_id {
+                        frame_store.frame_entities[idx] = Some(vec![entity]);
+                    }
+
+                    spawns_this_series += 1;
+                    continue;
+                }
+            }
+
+            // ── Standard mesh path ─────────────────────────────────────
             // Get mesh handles from the per-series store (authoritative).
             // Fall back to FrameStore for the active series during the
             // transition tick before per-series handles are populated.

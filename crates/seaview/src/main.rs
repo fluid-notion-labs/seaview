@@ -156,7 +156,7 @@ fn main() {
     app.insert_resource(DefaultOpaqueRendererMethod::deferred())
         .add_plugins(DefaultPlugins)
         .add_plugins(WireframePlugin::default())
-        .add_plugins(loadfu::LoadfuPlugin)
+        .add_plugins(loadfu::LoadfuPlugin);
         .add_plugins(FrameTimeDiagnosticsPlugin::default())
         .add_plugins(RenderingDiagnosticsPlugin)
         .add_plugins(SequencePlugin)

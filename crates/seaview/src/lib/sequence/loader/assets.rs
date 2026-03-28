@@ -16,9 +16,10 @@
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::Mesh;
 use bevy::prelude::*;
-use loadfu::MeshFormat;
 use std::collections::HashMap;
 use std::path::PathBuf;
+
+use super::SequenceKind;
 
 // ---------------------------------------------------------------------------
 // FrameStore
@@ -52,13 +53,25 @@ pub struct FrameStore {
     pub frame_entities: Vec<Option<Vec<Entity>>>,
     /// Currently displayed (visible) frame index
     pub displayed_frame: Option<usize>,
-    /// Detected file format for this sequence (set on first load request)
-    pub format: Option<MeshFormat>,
+    /// Detected sequence kind for this sequence (set on first load request)
+    pub format: Option<SequenceKind>,
     /// Estimated GPU memory per frame in bytes (set after first frame loads)
     pub estimated_frame_bytes: u64,
     /// Frames flagged as degenerate (e.g. runt files with near-zero geometry).
     /// Indexed by frame number. Degenerate frames are skipped during display.
     pub degenerate_frames: Vec<bool>,
+    /// Meshlet handles — populated instead of `frame_handles` for `.meshlet` sequences.
+    /// Only non-empty when `format == Some(SequenceKind::Meshlet)`.
+    ///
+    /// # Feature seam
+    /// This field only exists when compiled with `--features meshlet`.  Because
+    /// `FrameStore` derives `Default`, the field is zero-initialised automatically
+    /// when the feature is active.  Any code that constructs `FrameStore` by
+    /// explicit field list (rather than `..Default::default()`) will need a
+    /// matching `#[cfg(feature = "meshlet")]` arm.  Prefer `Default::default()`
+    /// or `FrameStore { field, ..Default::default() }` to avoid future breakage.
+    #[cfg(feature = "meshlet")]
+    pub meshlet_handles: Vec<Option<Handle<bevy::pbr::experimental::meshlet::MeshletMesh>>>,
 }
 
 impl FrameStore {
@@ -75,6 +88,8 @@ impl FrameStore {
         self.frame_entities.clear();
         self.estimated_frame_bytes = 0;
         self.degenerate_frames.clear();
+        #[cfg(feature = "meshlet")]
+        self.meshlet_handles.clear();
     }
 
     /// Check if all frames are loaded.
@@ -274,7 +289,7 @@ mod tests {
         store.total_frames = 10;
         store.loaded_count = 5;
         store.loading = true;
-        store.format = Some(MeshFormat::Stl);
+        store.format = Some(SequenceKind::Mesh(loadfu::MeshFormat::Stl));
         store.estimated_frame_bytes = 1024;
 
         store.reset();
@@ -339,6 +354,7 @@ mod tests {
 
     #[test]
     fn test_mesh_format_from_extension() {
+        use loadfu::MeshFormat;
         assert_eq!(MeshFormat::from_extension("stl"), Some(MeshFormat::Stl));
         assert_eq!(MeshFormat::from_extension("STL"), Some(MeshFormat::Stl));
         assert_eq!(MeshFormat::from_extension("obj"), Some(MeshFormat::Obj));
@@ -350,6 +366,7 @@ mod tests {
 
     #[test]
     fn test_mesh_format_is_gltf() {
+        use loadfu::MeshFormat;
         assert!(!MeshFormat::Stl.is_gltf());
         assert!(!MeshFormat::Obj.is_gltf());
         assert!(MeshFormat::Gltf.is_gltf());
@@ -358,6 +375,7 @@ mod tests {
 
     #[test]
     fn test_mesh_format_is_direct_mesh() {
+        use loadfu::MeshFormat;
         assert!(MeshFormat::Stl.is_direct_mesh());
         assert!(MeshFormat::Obj.is_direct_mesh());
         assert!(!MeshFormat::Gltf.is_direct_mesh());

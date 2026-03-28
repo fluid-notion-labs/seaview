@@ -28,11 +28,11 @@
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::Mesh;
 use bevy::prelude::*;
-use loadfu::MeshFormat;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::lib::series::SeriesId;
+use crate::lib::sequence::loader::SequenceKind;
 
 // ---------------------------------------------------------------------------
 // SeriesEntityState — per-series entity + window tracking + asset handles
@@ -64,8 +64,8 @@ pub struct SeriesEntityState {
     /// Total frames in this series.
     pub total_frames: usize,
 
-    /// Detected file format (set when `LoadSequenceRequest` is processed).
-    pub format: Option<MeshFormat>,
+    /// Detected sequence kind (set when `LoadSequenceRequest` is processed).
+    pub format: Option<SequenceKind>,
 
     /// Frames flagged as degenerate (near-zero geometry — skipped during display).
     pub degenerate_frames: Vec<bool>,
@@ -88,12 +88,15 @@ pub struct SeriesEntityState {
     /// [`compute_window_delta`](super::frame_window::compute_window_delta)
     /// can compute the correct delta for each series independently.
     pub prev_windows: Vec<(usize, usize)>,
+    /// Meshlet handles — populated instead of `frame_handles` for `.meshlet` sequences.
+    #[cfg(feature = "meshlet")]
+    pub meshlet_handles: Vec<Option<Handle<bevy::pbr::experimental::meshlet::MeshletMesh>>>,
 }
 
 impl SeriesEntityState {
     /// Create a new entity state for a series with `total_frames` frames and
     /// the given on-disk paths.
-    pub fn new(frame_paths: Vec<PathBuf>, format: Option<MeshFormat>) -> Self {
+    pub fn new(frame_paths: Vec<PathBuf>, format: Option<SequenceKind>) -> Self {
         let total_frames = frame_paths.len();
         Self {
             frame_handles: vec![None; total_frames],
@@ -107,6 +110,8 @@ impl SeriesEntityState {
             frame_entities: vec![None; total_frames],
             displayed_frame: None,
             prev_windows: Vec::new(),
+            #[cfg(feature = "meshlet")]
+            meshlet_handles: vec![None; total_frames],
         }
     }
 
@@ -120,6 +125,8 @@ impl SeriesEntityState {
         self.frame_entities.iter_mut().for_each(|e| *e = None);
         self.displayed_frame = None;
         self.prev_windows.clear();
+        #[cfg(feature = "meshlet")]
+        self.meshlet_handles.iter_mut().for_each(|h| *h = None);
     }
 
     // ── Asset helpers ────────────────────────────────────────────────
@@ -284,7 +291,7 @@ impl SeriesFrameStore {
         &mut self,
         id: SeriesId,
         frame_paths: Vec<PathBuf>,
-        format: Option<MeshFormat>,
+        format: Option<SequenceKind>,
     ) -> bool {
         if self.states.contains_key(&id) {
             return false;

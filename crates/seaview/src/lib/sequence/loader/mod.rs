@@ -7,13 +7,49 @@
 //! - **OBJ**: Loaded directly as [`Mesh`] assets via loadfu's `ObjLoader`.
 //! - **glTF / GLB**: Loaded directly as [`Mesh`] assets via loadfu's
 //!   `GlbLoader`, which merges all primitives into a single mesh by default.
-//!   No more two-phase `bevy_gltf` delegation.
+//! - **Meshlet** (`--features meshlet`): Pre-baked `.meshlet` files produced
+//!   by the `manifold` pipeline.  See below.
 //!
-//! All formats produce `Handle<Mesh>` directly — format detection is handled
-//! by [`loadfu::MeshFormat`].
+//! File format is detected by extension at load time.  A single sequence must
+//! contain only one format — mixing is not supported.
 //!
-//! File format is detected by extension at load time so that a single sequence
-//! can only contain one format (mixing is not supported).
+//! ## Mesh vs Meshlet — two separate render paths
+//!
+//! Standard mesh formats (STL/OBJ/GLB/glTF) and meshlet sequences are
+//! fundamentally different asset types in Bevy and cannot share the same
+//! component or handle type:
+//!
+//! | | Standard mesh | Meshlet |
+//! |---|---|---|
+//! | Asset type | `Mesh` | `MeshletMesh` |
+//! | Handle type | `Handle<Mesh>` | `Handle<MeshletMesh>` |
+//! | Spawn component | `Mesh3d(handle)` | `MeshletMesh3d(handle)` |
+//! | Renderer | Forward / Deferred PBR | Virtual geometry (Nanite-style) |
+//! | Material constraint | Any `Material` | Must impl `meshlet_mesh_fragment_shader` |
+//! | Camera requirement | Any | `Msaa::Off` (already set) |
+//! | Memory cache | `MeshCache` (refcounted) | Not cached — asset server owns lifetime |
+//! | GPU promote step | `promote_to_gpu()` | Not needed — lz4 decode is async in asset server |
+//!
+//! ### Consequence for this module
+//!
+//! Because the handle and component types differ, the two paths branch at every
+//! major seam in the loader:
+//!
+//! - **[`SequenceKind`]** — detected from extension; `Meshlet` short-circuits
+//!   before `loadfu::MeshFormat` is consulted.
+//! - **[`FrameStore`] / [`SeriesEntityState`]** — carry a separate
+//!   `meshlet_handles` field (`#[cfg(feature = "meshlet")]`) alongside the
+//!   existing `frame_handles: Vec<Option<Vec<Handle<Mesh>>>>`.  The two are
+//!   mutually exclusive for a given sequence.
+//! - **`drain_load_queue`** — calls `load_meshlet_handle` and writes into
+//!   `meshlet_handles`; skips `MeshCache` entirely.
+//! - **`manage_frame_window`** — spawns `MeshletMesh3d` entities on the meshlet
+//!   path; the standard `Mesh3d` path is skipped.
+//! - **`loading_tracker`** — currently tracks `Handle<Mesh>` load events only;
+//!   meshlet load tracking is a TODO (meshlet frames are considered loaded
+//!   immediately on handle issue for now).
+//!
+//! When adding new loader features, check each of these seams.
 //!
 //! ## Memory Budget Integration
 //!
@@ -70,11 +106,49 @@ pub use loading_tracker::default_material_properties;
 pub use mesh_cache::{CacheEntry, MeshCache};
 pub use series_frame_store::{SeriesEntityState, SeriesFrameStore};
 pub use spatial_index::SpatialIndex;
+pub use self::SequenceKind;
 
 use bevy::mesh::Mesh;
 use bevy::prelude::*;
 use loadfu::MeshFormat;
 use std::path::PathBuf;
+
+// ---------------------------------------------------------------------------
+// SequenceKind
+// ---------------------------------------------------------------------------
+
+/// The kind of a discovered sequence — either a standard mesh format (handled
+/// by loadfu → `Handle<Mesh>`) or a pre-baked meshlet sequence (handled by
+/// Bevy's virtual geometry renderer → `Handle<MeshletMesh>`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SequenceKind {
+    Mesh(MeshFormat),
+    /// Pre-baked `.meshlet` files for Bevy's virtual geometry renderer.
+    /// Only available when compiled with `--features meshlet`.
+    Meshlet,
+}
+
+impl SequenceKind {
+    /// Detect from the extension of a single path.
+    pub fn from_path(path: &std::path::Path) -> Option<Self> {
+        let ext = path.extension()?.to_str()?.to_lowercase();
+        if ext == "meshlet" {
+            return Some(SequenceKind::Meshlet);
+        }
+        MeshFormat::from_path(path).map(SequenceKind::Mesh)
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            SequenceKind::Mesh(f) => f.label(),
+            SequenceKind::Meshlet => "meshlet",
+        }
+    }
+
+    pub fn is_meshlet(&self) -> bool {
+        matches!(self, SequenceKind::Meshlet)
+    }
+}
 
 use super::{frames_to_load, LoadSection, SeriesManagerRes, Timeline};
 use crate::lib::memory_budget::MemoryBudget;
@@ -267,6 +341,27 @@ pub fn load_mesh_handle(asset_server: &AssetServer, path: &std::path::Path) -> H
     asset_server.load(asset_path)
 }
 
+/// Load a `.meshlet` file as a `Handle<MeshletMesh>` via the asset server.
+///
+/// Requires the `meshlet` feature. The `.meshlet` extension is registered by
+/// Bevy's `MeshletMeshLoader` (added by `MeshletPlugin`). The binary format is
+/// lz4-compressed and byte-compatible with Bevy's `MeshletMeshSaver`.
+#[cfg(feature = "meshlet")]
+pub fn load_meshlet_handle(
+    asset_server: &AssetServer,
+    path: &std::path::Path,
+) -> Handle<bevy::pbr::experimental::meshlet::MeshletMesh> {
+    let abs = path
+        .canonicalize()
+        .unwrap_or_else(|_| path.to_path_buf());
+    let rel = abs
+        .strip_prefix("/")
+        .unwrap_or(&abs)
+        .to_string_lossy();
+    let asset_path = format!("env://{}", rel);
+    asset_server.load(asset_path)
+}
+
 /// Pre-estimate the maximum number of frames that fit in the memory budget by
 /// stat-ing a sample of files on disk.  This gives a conservative upper bound
 /// *before* any GPU data is available, preventing the loader from blasting out
@@ -322,25 +417,23 @@ fn pre_estimate_max_frames(
     Some(max)
 }
 
-/// Detect format from the first path in the request and log a warning if any
-/// frame has a different extension.
-fn detect_sequence_format(paths: &[PathBuf]) -> Option<MeshFormat> {
+/// Detect sequence kind from the first path, warn on mixed extensions.
+fn detect_sequence_kind(paths: &[PathBuf]) -> Option<SequenceKind> {
     let first = paths.first()?;
-    let format = MeshFormat::from_path(first)?;
+    let kind = SequenceKind::from_path(first)?;
 
-    // Warn about mixed extensions (we don't support mixing formats).
     for (i, p) in paths.iter().enumerate().skip(1) {
-        if let Some(other_format) = MeshFormat::from_path(p) {
-            if other_format != format {
+        if let Some(other) = SequenceKind::from_path(p) {
+            if other != kind {
                 warn!(
-                    "Frame {} has format {:?} but sequence format is {:?} – it may fail to load",
-                    i, other_format, format
+                    "Frame {} has kind {:?} but sequence kind is {:?} – it may fail to load",
+                    i, other, kind
                 );
             }
         }
     }
 
-    Some(format)
+    Some(kind)
 }
 
 // ---------------------------------------------------------------------------
@@ -381,11 +474,11 @@ fn handle_load_requests(
             n,
         );
 
-        // Detect file format from the first frame.
-        let format = match detect_sequence_format(&request.frame_paths) {
-            Some(fmt) => {
-                info!("Detected format: {}", fmt.label());
-                fmt
+        // Detect sequence kind from the first frame.
+        let format = match detect_sequence_kind(&request.frame_paths) {
+            Some(kind) => {
+                info!("Detected format: {}", kind.label());
+                kind
             }
             None => {
                 let ext = request
