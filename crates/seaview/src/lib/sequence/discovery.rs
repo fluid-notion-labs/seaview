@@ -86,7 +86,7 @@ struct PendingDiscovery {
 // ---------------------------------------------------------------------------
 
 /// Supported mesh file extensions
-const SUPPORTED_EXTENSIONS: &[&str] = &["stl", "obj", "glb", "gltf"];
+const SUPPORTED_EXTENSIONS: &[&str] = &["stl", "obj", "glb", "gltf", "meshlet"];
 
 /// Check if a filename ends with a supported mesh extension
 fn has_supported_extension(filename: &str) -> bool {

@@ -55,6 +55,9 @@ default = []
 # (~300-700 ms per frame on large meshes) and not yet lazy/async, so
 # disabled by default until the lazy-build epic lands.
 spatial = []
+# Meshlet (virtual geometry) rendering. Requires Vulkan/Metal + RTX-class GPU.
+# Enables MeshletPlugin and .meshlet sequence loading.
+meshlet = ["bevy/meshlet"]
 # After bulk mesh unloads, call libc::malloc_trim(0) to return freed pages
 # to the OS.  Without this glibc keeps the pages in its arena and RSS stays
 # high even though the memory is logically free.  Can be expensive on
