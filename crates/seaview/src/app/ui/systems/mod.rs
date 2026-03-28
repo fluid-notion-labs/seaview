@@ -56,6 +56,8 @@ impl Plugin for UiSystemsPlugin {
                 handle_create_session_events,
                 apply_material_config,
                 sync_wireframe_config,
+                #[cfg(feature = "meshlet")]
+                sync_meshlet_debug,
                 toast_events_system,
             ),
         );

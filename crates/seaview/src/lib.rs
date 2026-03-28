@@ -27,6 +27,8 @@ pub mod app {
     pub mod cli;
     pub mod environment_objects;
     pub mod input;
+    #[cfg(feature = "meshlet")]
+    pub mod meshlet_debug;
     #[cfg(feature = "spatial")]
     pub mod spatial_accelerator;
     pub mod systems;

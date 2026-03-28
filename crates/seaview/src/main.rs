@@ -12,6 +12,11 @@ use seaview::{
     SeaviewUiPlugin, SessionPlugin,
 };
 
+/// Debug material for meshlet visualization — colors each cluster distinctly.
+/// Only registered when compiled with `--features meshlet`.
+#[cfg(feature = "meshlet")]
+use seaview::app::meshlet_debug::MeshletDebugMaterial;
+
 use seaview::app::cli::Args;
 use seaview::app::systems::camera::{
     camera_controller, cursor_grab_system, handle_center_on_mesh, keyboard_center_on_mesh,
@@ -179,6 +184,8 @@ fn main() {
     app.add_plugins(bevy::pbr::experimental::meshlet::MeshletPlugin {
         cluster_buffer_slots: 1 << 22,
     });
+    #[cfg(feature = "meshlet")]
+    app.add_plugins(MaterialPlugin::<MeshletDebugMaterial>::default());
 
     app.insert_resource(args)
         .insert_resource(source_orientation)

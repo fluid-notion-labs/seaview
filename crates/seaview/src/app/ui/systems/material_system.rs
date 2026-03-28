@@ -78,3 +78,55 @@ pub fn sync_wireframe_config(
         );
     }
 }
+
+/// System that toggles meshlet cluster debug visualization.
+///
+/// When enabled, replaces `MeshMaterial3d<StandardMaterial>` with
+/// `MeshMaterial3d<MeshletDebugMaterial>` on all `SequenceMeshDisplay` entities,
+/// coloring each meshlet cluster a distinct color for debugging.
+///
+/// Only compiled with `--features meshlet`.
+#[cfg(feature = "meshlet")]
+pub fn sync_meshlet_debug(
+    render_config: Res<RenderConfig>,
+    mut commands: Commands,
+    loader_config: Res<crate::lib::sequence::loader::LoaderConfig>,
+    std_query: Query<
+        (Entity, &MeshMaterial3d<StandardMaterial>),
+        With<SequenceMeshDisplay>,
+    >,
+    debug_query: Query<
+        (Entity, &MeshMaterial3d<crate::app::meshlet_debug::MeshletDebugMaterial>),
+        With<SequenceMeshDisplay>,
+    >,
+    mut debug_materials: ResMut<Assets<crate::app::meshlet_debug::MeshletDebugMaterial>>,
+) {
+    if !render_config.is_changed() {
+        return;
+    }
+
+    let Some(ref std_handle) = loader_config.shared_material else {
+        return;
+    };
+
+    if render_config.meshlet_debug_enabled {
+        // Swap StandardMaterial → MeshletDebugMaterial
+        let debug_handle = debug_materials.add(crate::app::meshlet_debug::MeshletDebugMaterial::default());
+        for (entity, _) in std_query.iter() {
+            commands
+                .entity(entity)
+                .remove::<MeshMaterial3d<StandardMaterial>>()
+                .insert(MeshMaterial3d(debug_handle.clone()));
+        }
+        debug!("Meshlet debug visualization enabled");
+    } else {
+        // Swap MeshletDebugMaterial → StandardMaterial
+        for (entity, _) in debug_query.iter() {
+            commands
+                .entity(entity)
+                .remove::<MeshMaterial3d<crate::app::meshlet_debug::MeshletDebugMaterial>>()
+                .insert(MeshMaterial3d(std_handle.clone()));
+        }
+        debug!("Meshlet debug visualization disabled");
+    }
+}

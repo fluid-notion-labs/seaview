@@ -20,12 +20,14 @@ use crate::lib::toast::ToastQueue;
 #[derive(Resource, Debug, Clone)]
 pub struct RenderConfig {
     /// Number of frames to keep spawned around the current frame.
-    /// The window spans `[current - window/2, current + window/2]`.
-    /// A value of 1 means only the current frame is spawned (original behaviour).
     pub frame_window_size: usize,
 
     /// Whether wireframe overlay is enabled (shows mesh triangles on top of material).
     pub wireframe_enabled: bool,
+
+    /// Whether meshlet debug visualization is enabled (colors each cluster distinctly).
+    /// Only has effect when compiled with `--features meshlet`.
+    pub meshlet_debug_enabled: bool,
 }
 
 impl Default for RenderConfig {
@@ -33,6 +35,7 @@ impl Default for RenderConfig {
         Self {
             frame_window_size: 1,
             wireframe_enabled: false,
+            meshlet_debug_enabled: false,
         }
     }
 }

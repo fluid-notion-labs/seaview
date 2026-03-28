@@ -8,7 +8,7 @@ use bevy_egui::egui;
 
 use crate::app::ui::state::{RenderConfig, SsrConfig, UiState};
 use crate::app::ui::widgets::section_header_tracked;
-use crate::lib::sequence::FrameStore;
+use crate::lib::sequence::loader::{FrameStore, SequenceKind};
 
 /// Renders the rendering section inside an existing egui `Ui` context.
 ///
@@ -27,15 +27,35 @@ pub fn render_rendering_section(
         "rendering",
         &mut ui_state.collapsible.rendering_open,
         |ui| {
-            // Wireframe overlay toggle
-            ui.heading("Wireframe");
-            ui.add_space(2.0);
-            ui.checkbox(
-                &mut render_config.wireframe_enabled,
-                "Show wireframe overlay",
-            )
-            .on_hover_text("Overlay triangle edges on the mesh (Ctrl+Shift+W)");
-            ui.add_space(8.0);
+            // Wireframe overlay toggle — not applicable for meshlet sequences
+            let is_meshlet = frame_store.format == Some(SequenceKind::Meshlet);
+
+            if !is_meshlet {
+                ui.heading("Wireframe");
+                ui.add_space(2.0);
+                ui.checkbox(
+                    &mut render_config.wireframe_enabled,
+                    "Show wireframe overlay",
+                )
+                .on_hover_text("Overlay triangle edges on the mesh (Ctrl+Shift+W)");
+                ui.add_space(8.0);
+            }
+
+            // Meshlet debug visualization — only shown for meshlet sequences
+            #[cfg(feature = "meshlet")]
+            if is_meshlet {
+                ui.heading("Meshlet Debug");
+                ui.add_space(2.0);
+                ui.checkbox(
+                    &mut render_config.meshlet_debug_enabled,
+                    "Color by cluster",
+                )
+                .on_hover_text(
+                    "Color each meshlet cluster a distinct color. \
+                     Shows cluster boundaries and LOD structure.",
+                );
+                ui.add_space(8.0);
+            }
 
             // ── Screen-Space Reflections ───────────────────────────────
             ui.heading("Screen-Space Reflections");
