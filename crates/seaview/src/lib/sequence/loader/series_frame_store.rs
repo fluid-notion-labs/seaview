@@ -89,6 +89,12 @@ pub struct SeriesEntityState {
     /// can compute the correct delta for each series independently.
     pub prev_windows: Vec<(usize, usize)>,
     /// Meshlet handles — populated instead of `frame_handles` for `.meshlet` sequences.
+    ///
+    /// # Feature seam
+    /// Only exists with `--features meshlet`. `SeriesEntityState` is constructed
+    /// explicitly in `new()` (not via `Default`), so any new construction sites
+    /// must include a `#[cfg(feature = "meshlet")] meshlet_handles: vec![None; n]`
+    /// arm to avoid a compile error when the feature is active.
     #[cfg(feature = "meshlet")]
     pub meshlet_handles: Vec<Option<Handle<bevy::pbr::experimental::meshlet::MeshletMesh>>>,
 }
