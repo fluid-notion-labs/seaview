@@ -246,15 +246,17 @@ pub(super) fn manage_frame_window(
         let mut despawns = 0usize;
         let mut deferred_despawn: Option<usize> = None;
 
-        // Only defer despawn of prev_displayed if we're going to display the actual
-        // playhead frame this tick. If we're falling back to a non-playhead frame,
-        // allow prev_displayed to despawn immediately — otherwise it leaks as a
-        // permanent ghost entity behind the fallback.
-        let will_display_playhead = is_displayable(current);
+        // Only defer despawn of prev_displayed if the current playhead frame is
+        // actually spawned. If we're in fallback mode (current not yet loaded),
+        // don't defer — otherwise the fallback frame leaks as a ghost entity.
+        let current_is_spawned = series_fs
+            .get(&series_id)
+            .map(|s| s.is_spawned(current))
+            .unwrap_or(false);
 
         for idx in &delta.to_despawn {
             let idx = *idx;
-            if Some(idx) == prev_displayed && will_display_playhead {
+            if Some(idx) == prev_displayed && current_is_spawned {
                 debug!("[series {}] Deferring despawn of displayed frame {}", series_id, idx);
                 deferred_despawn = Some(idx);
                 continue;
