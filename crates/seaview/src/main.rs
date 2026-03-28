@@ -156,7 +156,7 @@ fn main() {
     app.insert_resource(DefaultOpaqueRendererMethod::deferred())
         .add_plugins(DefaultPlugins)
         .add_plugins(WireframePlugin::default())
-        .add_plugins(loadfu::LoadfuPlugin);
+        .add_plugins(loadfu::LoadfuPlugin)
         .add_plugins(FrameTimeDiagnosticsPlugin::default())
         .add_plugins(RenderingDiagnosticsPlugin)
         .add_plugins(SequencePlugin)
@@ -172,6 +172,10 @@ fn main() {
         .add_plugins(AutosavePlugin);
     #[cfg(feature = "spatial")]
     app.add_plugins(seaview::app::spatial_accelerator::SpatialAcceleratorPlugin);
+    #[cfg(feature = "meshlet")]
+    app.add_plugins(bevy::pbr::experimental::meshlet::MeshletPlugin {
+        cluster_buffer_slots: 1 << 22,
+    });
 
     app.insert_resource(args)
         .insert_resource(source_orientation)
