@@ -132,7 +132,7 @@ impl SequenceKind {
     /// Detect from the extension of a single path.
     pub fn from_path(path: &std::path::Path) -> Option<Self> {
         let ext = path.extension()?.to_str()?.to_lowercase();
-        if ext == "meshlet" {
+        if ext == "meshlet_mesh" {
             return Some(SequenceKind::Meshlet);
         }
         MeshFormat::from_path(path).map(SequenceKind::Mesh)
@@ -141,7 +141,7 @@ impl SequenceKind {
     pub fn label(&self) -> &'static str {
         match self {
             SequenceKind::Mesh(f) => f.label(),
-            SequenceKind::Meshlet => "meshlet",
+            SequenceKind::Meshlet => "meshlet_mesh",
         }
     }
 
