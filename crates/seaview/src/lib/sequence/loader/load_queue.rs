@@ -17,7 +17,7 @@ use super::assets::{AssetIndex, FrameStore};
 use super::mesh_cache::{CacheEntry, MeshCache};
 use super::series_frame_store::SeriesFrameStore;
 use super::{load_mesh_handle, rss_mb, LOADS_PER_FRAME};
-use crate::lib::sequence::{frames_to_load, union_frames_to_load, SeriesManagerRes, Timeline};
+use crate::lib::sequence::{frames_to_load, SeriesManagerRes, Timeline};
 use crate::lib::series::SeriesId;
 
 // ---------------------------------------------------------------------------
@@ -120,6 +120,7 @@ pub(super) fn sync_section_loads(
     mut meshes: ResMut<Assets<Mesh>>,
     mut mesh_cache: ResMut<MeshCache>,
     series_mgr: Res<SeriesManagerRes>,
+    mut series_fs: ResMut<SeriesFrameStore>,
 ) {
     if frame_store.total_frames == 0 {
         return;
@@ -136,87 +137,150 @@ pub(super) fn sync_section_loads(
 
     let rss_before = rss_mb();
 
-    // Compute the UNION of needed frames across all **visible** series.
-    // Hidden series do not contribute to the load set — their frames will be
-    // unloaded naturally as they leave all active sections.
-    let needed = {
-        let visible_ids = series_mgr.visible_ids();
-        if visible_ids.is_empty() {
-            // Nothing visible: fall back to global timeline (avoids empty state
-            // on first load before series manager is fully initialised).
-            frames_to_load(&timeline.sections, frame_store.total_frames)
-        } else if visible_ids.len() == 1 {
-            // Single visible series — common case, no dedup overhead.
-            let id = visible_ids[0];
-            if series_mgr.active_id() == Some(id) {
-                // Active series: use the global timeline (authoritative).
-                frames_to_load(&timeline.sections, frame_store.total_frames)
-            } else {
-                match series_mgr.get(id) {
-                    Some(state) => frames_to_load(
-                        &state.timeline.sections,
-                        frame_store.total_frames,
-                    ),
-                    None => frames_to_load(&timeline.sections, frame_store.total_frames),
-                }
-            }
-        } else {
-            // Multiple visible series — build the union.
-            let active_id = series_mgr.active_id();
-            let all_sections: Vec<(&[crate::lib::sequence::LoadSection], usize)> = visible_ids
-                .iter()
-                .filter_map(|&id| {
-                    if Some(id) == active_id {
-                        // Active series uses the global timeline.
-                        Some((timeline.sections.as_slice(), frame_store.total_frames))
-                    } else {
-                        series_mgr.get(id).map(|state| {
-                            (state.timeline.sections.as_slice(), frame_store.total_frames)
-                        })
-                    }
-                })
-                .collect();
-            union_frames_to_load(&all_sections)
-        }
-    };
+    let active_id = series_mgr.active_id();
+    let visible_ids = series_mgr.visible_ids();
 
-    let reconciliation = reconcile_section_loads(&needed, frame_store.total_frames, |idx| {
-        frame_store.frame_handles[idx].is_some()
-    });
+    // ── Per-series reconciliation ─────────────────────────────────────
+    //
+    // Each visible series is reconciled independently against its own
+    // SeriesFrameStore state so that non-active series' loads are correctly
+    // enqueued with the right series ID.
 
     let mut loads_enqueued = 0usize;
-    for idx in &reconciliation.to_load {
-        load_queue.push(*idx);
-        loads_enqueued += 1;
-    }
-
     let mut unloads = 0usize;
     let mut handles_with_entities = 0usize;
     let mut meshes_removed = 0usize;
-    for &idx in &reconciliation.to_unload {
-        if frame_store.frame_entities[idx].is_some() {
-            handles_with_entities += 1;
+
+    for &sid in &visible_ids {
+        let is_active = Some(sid) == active_id;
+
+        // Determine which frames this series needs loaded.
+        //
+        // Non-active series inherit the active timeline's sections
+        // (proportionally mapped to their own frame count) so they
+        // respect the visible region the user has set, rather than
+        // loading their full default [0, N) range.
+        let (sections, total_frames) = if is_active {
+            (timeline.sections.clone(), frame_store.total_frames)
+        } else {
+            match series_mgr.get(sid) {
+                Some(state) => {
+                    let tf = state.timeline.total_frames;
+                    let mapped = super::map_sections_proportional(
+                        &timeline.sections,
+                        timeline.total_frames,
+                        tf,
+                    );
+                    if mapped.is_empty() {
+                        (state.timeline.sections.clone(), tf)
+                    } else {
+                        (mapped, tf)
+                    }
+                }
+                None => continue,
+            }
+        };
+
+        if total_frames == 0 {
+            continue;
         }
-        let mesh_ids: Vec<AssetId<Mesh>> = frame_store.frame_handles[idx]
-            .as_ref()
-            .map(|handles| handles.iter().map(|h| h.id()).collect())
-            .unwrap_or_default();
-        for id in mesh_ids {
-            asset_index.asset_id_to_frame.remove(&id);
-            if meshes.remove(id).is_some() {
-                meshes_removed += 1;
+
+        let needed = frames_to_load(&sections, total_frames);
+
+        if is_active {
+            // Active series: reconcile against FrameStore (the authoritative
+            // mirror for the active series).
+            let reconciliation = reconcile_section_loads(&needed, total_frames, |idx| {
+                frame_store.frame_handles.get(idx).map(|h| h.is_some()).unwrap_or(false)
+            });
+
+            for idx in &reconciliation.to_load {
+                load_queue.push(*idx);
+                loads_enqueued += 1;
+            }
+
+            for &idx in &reconciliation.to_unload {
+                if frame_store.frame_entities.get(idx).map(|e| e.is_some()).unwrap_or(false) {
+                    handles_with_entities += 1;
+                }
+                let mesh_ids: Vec<AssetId<Mesh>> = frame_store.frame_handles.get(idx)
+                    .and_then(|h| h.as_ref())
+                    .map(|handles| handles.iter().map(|h| h.id()).collect())
+                    .unwrap_or_default();
+                for id in mesh_ids {
+                    asset_index.asset_id_to_frame.remove(&id);
+                    if meshes.remove(id).is_some() {
+                        meshes_removed += 1;
+                    }
+                }
+                if idx < frame_store.frame_paths.len() {
+                    let path = frame_store.frame_paths[idx].clone();
+                    mesh_cache.release(&path);
+                }
+                if idx < frame_store.frame_handles.len() {
+                    frame_store.frame_handles[idx] = None;
+                }
+                if idx < frame_store.loaded_frames.len() && frame_store.loaded_frames[idx] {
+                    frame_store.loaded_frames[idx] = false;
+                    frame_store.loaded_count = frame_store.loaded_count.saturating_sub(1);
+                }
+
+                // Also clear from SeriesFrameStore mirror.
+                if let Some(state) = series_fs.get_mut(&sid) {
+                    if idx < state.frame_handles.len() {
+                        state.frame_handles[idx] = None;
+                    }
+                    if idx < state.loaded_frames.len() && state.loaded_frames[idx] {
+                        state.loaded_frames[idx] = false;
+                        state.loaded_count = state.loaded_count.saturating_sub(1);
+                    }
+                }
+
+                unloads += 1;
+            }
+        } else {
+            // Non-active series: reconcile against SeriesFrameStore.
+            let has_handle = |idx: usize| -> bool {
+                series_fs
+                    .get(&sid)
+                    .map(|s| s.has_handle(idx))
+                    .unwrap_or(false)
+            };
+            let reconciliation = reconcile_section_loads(&needed, total_frames, has_handle);
+
+            for idx in &reconciliation.to_load {
+                load_queue.push_series(*idx, sid);
+                loads_enqueued += 1;
+            }
+
+            for &idx in &reconciliation.to_unload {
+                if let Some(state) = series_fs.get_mut(&sid) {
+                    // Remove mesh assets.
+                    let mesh_ids: Vec<AssetId<Mesh>> = state.frame_handles.get(idx)
+                        .and_then(|h| h.as_ref())
+                        .map(|handles| handles.iter().map(|h| h.id()).collect())
+                        .unwrap_or_default();
+                    for id in mesh_ids {
+                        asset_index.asset_id_to_frame.remove(&id);
+                        if meshes.remove(id).is_some() {
+                            meshes_removed += 1;
+                        }
+                    }
+                    if idx < state.frame_paths.len() {
+                        let path = state.frame_paths[idx].clone();
+                        mesh_cache.release(&path);
+                    }
+                    if idx < state.frame_handles.len() {
+                        state.frame_handles[idx] = None;
+                    }
+                    if idx < state.loaded_frames.len() && state.loaded_frames[idx] {
+                        state.loaded_frames[idx] = false;
+                        state.loaded_count = state.loaded_count.saturating_sub(1);
+                    }
+                }
+                unloads += 1;
             }
         }
-        if idx < frame_store.frame_paths.len() {
-            let path = frame_store.frame_paths[idx].clone();
-            mesh_cache.release(&path);
-        }
-        frame_store.frame_handles[idx] = None;
-        if frame_store.loaded_frames[idx] {
-            frame_store.loaded_frames[idx] = false;
-            frame_store.loaded_count = frame_store.loaded_count.saturating_sub(1);
-        }
-        unloads += 1;
     }
 
     #[cfg(feature = "mesh_unload_malloc_trim")]

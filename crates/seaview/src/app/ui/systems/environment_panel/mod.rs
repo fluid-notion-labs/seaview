@@ -45,6 +45,7 @@ use crate::lib::mesh_info::MeshDimensions;
 use crate::lib::sequence::loader::spatial_index::SpatialIndex;
 use crate::lib::sequence::loader::LoaderConfig;
 use crate::lib::sequence::FrameStore;
+use crate::lib::sequence::loader::PendingLoadRequests;
 use crate::lib::sequence::LoadSequenceRequest;
 use crate::lib::sequence::SeriesManagerRes;
 
@@ -100,7 +101,7 @@ pub fn environment_panel_system(
     mut env_objs: EnvObjectParams,
     mut series_mgr: ResMut<SeriesManagerRes>,
     mut dir_dialog_rx: Local<Option<DirDialogReceiver>>,
-    mut load_events: MessageWriter<LoadSequenceRequest>,
+    mut pending_loads: ResMut<PendingLoadRequests>,
 ) {
     if !ui_state.show_environment_panel {
         return;
@@ -361,7 +362,7 @@ pub fn environment_panel_system(
                                 usize::MAX,
                             );
                             for (series_id, frame_paths) in added {
-                                load_events.write(LoadSequenceRequest { series_id, frame_paths });
+                                pending_loads.queue.push(LoadSequenceRequest { series_id, frame_paths });
                             }
                         }
                     }

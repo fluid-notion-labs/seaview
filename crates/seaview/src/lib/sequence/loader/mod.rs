@@ -82,6 +82,35 @@ use crate::lib::series::SeriesId;
 use crate::lib::settings::SettingsResource;
 
 // ---------------------------------------------------------------------------
+// Shared section-mapping helper
+// ---------------------------------------------------------------------------
+
+/// Proportionally map `source_sections` from a timeline with
+/// `source_total` frames onto a target with `target_total` frames.
+///
+/// Used so that non-active series inherit the active timeline's visible
+/// region rather than loading their full default `[0, N)` range.
+pub(crate) fn map_sections_proportional(
+    source_sections: &[LoadSection],
+    source_total: usize,
+    target_total: usize,
+) -> Vec<LoadSection> {
+    if source_total == 0 || target_total == 0 || source_sections.is_empty() {
+        return Vec::new();
+    }
+    let ratio = target_total as f64 / source_total as f64;
+    source_sections
+        .iter()
+        .map(|s| {
+            let start = ((s.start as f64) * ratio).round() as usize;
+            let end = ((s.end as f64) * ratio).round() as usize;
+            LoadSection::new(start.min(target_total), end.min(target_total))
+        })
+        .filter(|s| s.frame_count() > 0)
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
 // Tuning constants
 // ---------------------------------------------------------------------------
 
@@ -128,11 +157,13 @@ impl Plugin for SequenceLoaderPlugin {
             .init_resource::<LoadQueue>()
             .init_resource::<MeshCache>()
             .init_resource::<SeriesFrameStore>()
+            .init_resource::<PendingLoadRequests>()
             .add_message::<FrameLoadedEvent>()
             .add_message::<LoadSequenceRequest>()
             .add_systems(
                 Update,
                 (
+                    flush_pending_loads,
                     handle_load_requests,
                     load_queue::sync_section_loads,
                     load_queue::drain_load_queue,
@@ -170,6 +201,34 @@ pub struct LoadSequenceRequest {
     pub series_id: SeriesId,
     /// Paths to all frame files (in order)
     pub frame_paths: Vec<PathBuf>,
+}
+
+/// Resource-based queue for load requests originating from the egui pass.
+///
+/// The egui UI runs in `EguiPrimaryContextPass` (after `Update`), so
+/// `MessageWriter<LoadSequenceRequest>` messages written there are not
+/// visible to the `handle_load_requests` system until the *next* frame's
+/// event buffer swap — which may be too late if `sync_section_loads` clears
+/// the load queue in between.
+///
+/// Instead, UI code pushes into this resource and [`flush_pending_loads`]
+/// (which runs at the start of the `Update` chain) drains it into the
+/// normal message channel where `handle_load_requests` picks it up in the
+/// same tick.
+#[derive(Resource, Default)]
+pub struct PendingLoadRequests {
+    pub queue: Vec<LoadSequenceRequest>,
+}
+
+/// Drain [`PendingLoadRequests`] into the `LoadSequenceRequest` message
+/// channel so they are processed in the same `Update` tick.
+fn flush_pending_loads(
+    mut pending: ResMut<PendingLoadRequests>,
+    mut load_events: MessageWriter<LoadSequenceRequest>,
+) {
+    for request in pending.queue.drain(..) {
+        load_events.write(request);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -444,10 +503,35 @@ fn handle_load_requests(
             } else {
                 pre_estimate_max_frames(&request.frame_paths, &memory_budget, 5).unwrap_or(n)
             };
-            let sections: Vec<LoadSection> = series_mgr
-                .get(series_id)
-                .map(|s| s.timeline.sections.clone())
-                .unwrap_or_default();
+
+            // Use the active timeline's sections (proportionally mapped to this
+            // series' frame count) so that newly-added series respect the
+            // visible region the user has set, rather than loading all frames.
+            let sections: Vec<LoadSection> = {
+                let own_sections: Vec<LoadSection> = series_mgr
+                    .get(series_id)
+                    .map(|s| s.timeline.sections.clone())
+                    .unwrap_or_default();
+
+                // Check if the series has custom (non-default) sections.
+                // A default section covers [0, min(total, budget)) — if that's
+                // all we have, inherit from the active timeline instead.
+                let is_default = own_sections.len() == 1
+                    && own_sections[0].start == 0
+                    && own_sections[0].end >= n.min(max_frames);
+
+                if !is_default && !own_sections.is_empty() {
+                    own_sections
+                } else {
+                    let mapped = map_sections_proportional(
+                        &timeline.sections,
+                        timeline.total_frames,
+                        n,
+                    );
+                    if mapped.is_empty() { own_sections } else { mapped }
+                }
+            };
+
             let indices: Vec<usize> = if sections.is_empty() {
                 // Default: load up to max_frames from the start.
                 (0..max_frames.min(n)).collect()
@@ -458,6 +542,7 @@ fn handle_load_requests(
                     .take(max_frames)
                     .collect()
             };
+
             info!(
                 "[{}] Enqueuing {} of {} frames (non-active series)",
                 series_id,
@@ -586,4 +671,92 @@ pub fn load_discovered_sequence(
     );
 
     load_events.write(LoadSequenceRequest { series_id, frame_paths });
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn map_sections_proportional_same_size() {
+        let sections = vec![LoadSection::new(100, 200)];
+        let result = map_sections_proportional(&sections, 1000, 1000);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].start, 100);
+        assert_eq!(result[0].end, 200);
+    }
+
+    #[test]
+    fn map_sections_proportional_half_size() {
+        let sections = vec![LoadSection::new(100, 200)];
+        let result = map_sections_proportional(&sections, 1000, 500);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].start, 50);
+        assert_eq!(result[0].end, 100);
+    }
+
+    #[test]
+    fn map_sections_proportional_double_size() {
+        let sections = vec![LoadSection::new(100, 200)];
+        let result = map_sections_proportional(&sections, 1000, 2000);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].start, 200);
+        assert_eq!(result[0].end, 400);
+    }
+
+    #[test]
+    fn map_sections_proportional_clamps_to_target() {
+        let sections = vec![LoadSection::new(900, 1000)];
+        let result = map_sections_proportional(&sections, 1000, 500);
+        assert_eq!(result.len(), 1);
+        assert!(result[0].end <= 500);
+    }
+
+    #[test]
+    fn map_sections_proportional_empty_input() {
+        assert!(map_sections_proportional(&[], 1000, 500).is_empty());
+    }
+
+    #[test]
+    fn map_sections_proportional_zero_source() {
+        let sections = vec![LoadSection::new(0, 100)];
+        assert!(map_sections_proportional(&sections, 0, 500).is_empty());
+    }
+
+    #[test]
+    fn map_sections_proportional_zero_target() {
+        let sections = vec![LoadSection::new(0, 100)];
+        assert!(map_sections_proportional(&sections, 1000, 0).is_empty());
+    }
+
+    #[test]
+    fn map_sections_proportional_multi_section() {
+        let sections = vec![
+            LoadSection::new(0, 100),
+            LoadSection::new(500, 600),
+        ];
+        let result = map_sections_proportional(&sections, 10000, 5000);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].start, 0);
+        assert_eq!(result[0].end, 50);
+        assert_eq!(result[1].start, 250);
+        assert_eq!(result[1].end, 300);
+    }
+
+    #[test]
+    fn map_sections_proportional_real_world() {
+        // Active: 10839 frames, section [3302, 6940)
+        // New series: 10225 frames
+        let sections = vec![LoadSection::new(3302, 6940)];
+        let result = map_sections_proportional(&sections, 10839, 10225);
+        assert_eq!(result.len(), 1);
+        // Should load ~3434 frames, not all 10225
+        let loaded = result[0].frame_count();
+        assert!(loaded < 4000, "Should load ~3434 frames, got {}", loaded);
+        assert!(loaded > 3000, "Should load ~3434 frames, got {}", loaded);
+    }
 }

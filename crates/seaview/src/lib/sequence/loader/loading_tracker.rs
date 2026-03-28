@@ -287,6 +287,22 @@ pub(super) fn track_asset_loading(
                     if let Some(cache_entry) = mesh_cache.get_by_asset_id_mut(id) {
                         cache_entry.loaded = true;
                     }
+
+                    // Create shared material if this is the first frame loaded
+                    // across any series (non-active may finish before active).
+                    if loader_config.shared_material.is_none() {
+                        let mat = material_from_config(
+                            material_config.base_color,
+                            material_config.opacity,
+                            material_config.perceptual_roughness,
+                            material_config.metallic,
+                            material_config.reflectance,
+                            material_config.emissive,
+                            material_config.emissive_intensity,
+                            material_config.double_sided,
+                        );
+                        loader_config.shared_material = Some(materials.add(mat));
+                    }
                 }
             }
             _ => {}

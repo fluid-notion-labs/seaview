@@ -136,14 +136,34 @@ pub(super) fn manage_frame_window(
         }
     }
 
-    // Despawn entities belonging to series that are no longer visible.
-    // Collect IDs to avoid borrow issues.
+    // Despawn entities belonging to series that are no longer visible or that
+    // have been fully removed from SeriesManagerRes.
+    //
+    // - Removed series: call series_fs.remove to free all state.
+    // - Hidden series:  call take_all_entities to free GPU entities but
+    //   preserve loaded handles/frames so a re-show doesn't need a reload.
     let registered_ids: Vec<_> = series_fs.iter().map(|(id, _)| *id).collect();
     for id in registered_ids {
         if !visible_ids.contains(&id) {
-            let entities = series_fs.remove(&id);
+            let still_in_mgr = series_mgr.get(id).is_some();
+            let entities = if still_in_mgr {
+                // Hidden — preserve state, just take entities.
+                series_fs
+                    .get_mut(&id)
+                    .map(|s| s.take_all_entities())
+                    .unwrap_or_default()
+            } else {
+                // Fully removed — drop all state.
+                series_fs.remove(&id)
+            };
             for entity in entities {
                 commands.entity(entity).despawn();
+            }
+            // Mirror: clear stale entity refs from FrameStore for the active series.
+            if Some(id) == active_id {
+                for slot in frame_store.frame_entities.iter_mut() {
+                    *slot = None;
+                }
             }
         }
     }
@@ -155,7 +175,9 @@ pub(super) fn manage_frame_window(
         // Determine the playhead for this series.
         // Active series uses the global Timeline (which may have been advanced
         // by playback / keyboard this tick).  Other series use their own
-        // per-series timeline stored in SeriesManagerRes.
+        // per-series timeline stored in SeriesManagerRes — but with the
+        // playhead and sections proportionally mapped from the active
+        // timeline so they stay in sync with the visible region.
         let (current, sections, total_frames) = if Some(series_id) == active_id {
             (
                 timeline.playhead,
@@ -164,11 +186,27 @@ pub(super) fn manage_frame_window(
             )
         } else {
             match series_mgr.get(series_id) {
-                Some(state) => (
-                    state.timeline.playhead,
-                    state.timeline.sections.clone(),
-                    state.timeline.total_frames,
-                ),
+                Some(state) => {
+                    let tf = state.timeline.total_frames;
+                    if tf == 0 || timeline.total_frames == 0 {
+                        (state.timeline.playhead, state.timeline.sections.clone(), tf)
+                    } else {
+                        let ratio = tf as f64 / timeline.total_frames as f64;
+                        let mapped_playhead =
+                            ((timeline.playhead as f64) * ratio).round() as usize;
+                        let mapped_sections = super::map_sections_proportional(
+                            &timeline.sections,
+                            timeline.total_frames,
+                            tf,
+                        );
+                        let secs = if mapped_sections.is_empty() {
+                            state.timeline.sections.clone()
+                        } else {
+                            mapped_sections
+                        };
+                        (mapped_playhead.min(tf.saturating_sub(1)), secs, tf)
+                    }
+                }
                 None => continue,
             }
         };
