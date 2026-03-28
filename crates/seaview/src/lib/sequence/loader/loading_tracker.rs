@@ -359,6 +359,71 @@ pub(super) fn track_asset_loading(
 }
 
 // ---------------------------------------------------------------------------
+// Meshlet loading tracker
+// ---------------------------------------------------------------------------
+
+/// System that marks meshlet frames as loaded via `AssetEvent<MeshletMesh>`.
+///
+/// Mirrors `track_asset_loading` but uses `meshlet_id_to_frame` for O(1) lookup.
+#[cfg(feature = "meshlet")]
+pub(super) fn track_meshlet_loading(
+    mut events: MessageReader<AssetEvent<bevy::pbr::experimental::meshlet::MeshletMesh>>,
+    mut frame_store: ResMut<FrameStore>,
+    mut loader_config: ResMut<LoaderConfig>,
+    asset_index: Res<AssetIndex>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    material_config: Res<crate::app::ui::state::MaterialConfig>,
+    mut series_fs: ResMut<super::series_frame_store::SeriesFrameStore>,
+    series_mgr: Res<crate::lib::sequence::SeriesManagerRes>,
+    mut frame_loaded_events: MessageWriter<FrameLoadedEvent>,
+) {
+    let active_id = series_mgr.active_id();
+
+    for event in events.read() {
+        let AssetEvent::LoadedWithDependencies { id } = event else { continue };
+
+        let Some(&(series_id, index)) = asset_index.meshlet_id_to_frame.get(id) else {
+            continue;
+        };
+
+        let is_active_sentinel = series_id == crate::lib::series::SeriesId::from_raw(u64::MAX);
+        let effective_series = if is_active_sentinel { active_id } else { Some(series_id) };
+
+        if let Some(sid) = effective_series {
+            if let Some(state) = series_fs.get_mut(&sid) {
+                if index < state.loaded_frames.len() && !state.loaded_frames[index] {
+                    state.loaded_frames[index] = true;
+                    state.loaded_count += 1;
+                }
+            }
+        }
+
+        if effective_series == active_id {
+            if index < frame_store.loaded_frames.len() && !frame_store.loaded_frames[index] {
+                frame_store.loaded_frames[index] = true;
+                frame_store.loaded_count += 1;
+                frame_loaded_events.write(FrameLoadedEvent { frame_index: index, success: true });
+            }
+
+            if loader_config.shared_material.is_none() {
+                let mat = material_from_config(
+                    material_config.base_color,
+                    material_config.opacity,
+                    material_config.perceptual_roughness,
+                    material_config.metallic,
+                    material_config.reflectance,
+                    material_config.emissive,
+                    material_config.emissive_intensity,
+                    material_config.double_sided,
+                );
+                loader_config.shared_material = Some(materials.add(mat));
+                info!("Meshlet: created shared material on first loaded frame");
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 

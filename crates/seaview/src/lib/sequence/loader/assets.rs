@@ -241,11 +241,20 @@ pub(crate) struct AssetIndex {
     /// `SeriesId::from_raw(u64::MAX)` is the sentinel for active-series
     /// loads that pre-date per-series routing.
     pub(crate) asset_id_to_frame: HashMap<AssetId<Mesh>, (SeriesId, usize)>,
+    /// O(1) reverse index from `AssetId<MeshletMesh>` → (series_id, frame_index).
+    /// Only populated when compiled with `--features meshlet`.
+    #[cfg(feature = "meshlet")]
+    pub(crate) meshlet_id_to_frame: HashMap<
+        AssetId<bevy::pbr::experimental::meshlet::MeshletMesh>,
+        (SeriesId, usize),
+    >,
 }
 
 impl AssetIndex {
     pub(crate) fn reset(&mut self) {
         self.asset_id_to_frame.clear();
+        #[cfg(feature = "meshlet")]
+        self.meshlet_id_to_frame.clear();
     }
 }
 

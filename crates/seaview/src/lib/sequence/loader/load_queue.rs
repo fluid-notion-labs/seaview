@@ -361,6 +361,8 @@ pub(super) fn drain_load_queue(
             #[cfg(feature = "meshlet")]
             if frame_store.format == Some(SequenceKind::Meshlet) {
                 let handle = load_meshlet_handle(&asset_server, &path);
+                let real_id = active_id.unwrap_or(active_sentinel);
+                asset_index.meshlet_id_to_frame.insert(handle.id(), (real_id, idx));
                 if let Some(v) = frame_store.meshlet_handles.get_mut(idx) {
                     *v = Some(handle.clone());
                 }
@@ -418,6 +420,7 @@ pub(super) fn drain_load_queue(
             #[cfg(feature = "meshlet")]
             if state.format == Some(SequenceKind::Meshlet) {
                 let handle = load_meshlet_handle(&asset_server, &path);
+                asset_index.meshlet_id_to_frame.insert(handle.id(), (series_id, idx));
                 if let Some(v) = state.meshlet_handles.get_mut(idx) {
                     *v = Some(handle);
                 }
