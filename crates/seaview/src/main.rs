@@ -153,8 +153,11 @@ fn main() {
     // before AssetPlugin (part of DefaultPlugins).
     app.register_asset_source("env", AssetSourceBuilder::platform_default("/", None));
 
-    app.insert_resource(DefaultOpaqueRendererMethod::deferred())
-        .add_plugins(DefaultPlugins)
+    // Meshlet requires a single consistent opaque render method — don't force
+    // deferred when meshlet is active, let it use the default (forward).
+    #[cfg(not(feature = "meshlet"))]
+    app.insert_resource(DefaultOpaqueRendererMethod::deferred());
+    app.add_plugins(DefaultPlugins)
         .add_plugins(WireframePlugin::default())
         .add_plugins(loadfu::LoadfuPlugin)
         .add_plugins(FrameTimeDiagnosticsPlugin::default())
