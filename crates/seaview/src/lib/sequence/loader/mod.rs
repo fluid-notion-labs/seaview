@@ -538,6 +538,8 @@ fn handle_load_requests(
             frame_store.loaded_frames = vec![false; n];
             frame_store.degenerate_frames = vec![false; n];
             frame_store.frame_paths = request.frame_paths.clone();
+            #[cfg(feature = "meshlet")]
+            { frame_store.meshlet_handles = vec![None; n]; }
 
             if let Some(first_path) = request.frame_paths.first() {
                 frame_store.base_path = first_path.parent().map(|p| p.to_path_buf());
