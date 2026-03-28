@@ -1027,9 +1027,9 @@ impl SequenceManager {
         self.is_playing = !self.is_playing;
     }
 
-    /// Set playback speed (clamped to 0.1..=5.0)
+    /// Set playback speed (clamped to 0.1..=50.0)
     pub fn set_speed(&mut self, speed: f32) {
-        self.speed = speed.clamp(0.1, 5.0);
+        self.speed = speed.clamp(0.1, 50.0);
     }
 }
 

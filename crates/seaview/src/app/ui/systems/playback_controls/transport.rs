@@ -237,7 +237,7 @@ pub fn draw_transport_row(
 
         ui.label("Speed:");
         ui.add(
-            egui::Slider::new(&mut sequence_manager.speed, 0.1..=5.0)
+            egui::Slider::new(&mut sequence_manager.speed, 0.1..=50.0)
                 .text("x")
                 .fixed_decimals(1)
                 .custom_formatter(|n, _| format!("{:.1}x", n))
