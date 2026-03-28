@@ -176,6 +176,8 @@ fn main() {
     app.add_plugins(bevy::pbr::experimental::meshlet::MeshletPlugin {
         cluster_buffer_slots: 1 << 22,
     });
+    #[cfg(feature = "meshlet")]
+    app.add_meshlet_mesh_material::<StandardMaterial>();
 
     app.insert_resource(args)
         .insert_resource(source_orientation)
