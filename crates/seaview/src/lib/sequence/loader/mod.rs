@@ -76,7 +76,7 @@ use bevy::prelude::*;
 use loadfu::MeshFormat;
 use std::path::PathBuf;
 
-use super::{frames_to_load, SeriesManagerRes, Timeline};
+use super::{frames_to_load, LoadSection, SeriesManagerRes, Timeline};
 use crate::lib::memory_budget::MemoryBudget;
 use crate::lib::series::SeriesId;
 use crate::lib::settings::SettingsResource;
@@ -436,22 +436,27 @@ fn handle_load_requests(
             );
         } else {
             // Non-active series: enqueue loads directly into the series-scoped
-            // load queue.  For now we load all frames within their sections;
-            // the series timeline drives which frames are needed.
-            let sections = series_mgr
-                .get(series_id)
-                .map(|s| s.timeline.sections.as_slice())
-                .unwrap_or(&[]);
+            // load queue.  Sections drive which frames are needed, but are
+            // always capped to the memory budget (series may have been added
+            // with usize::MAX max_frames before the budget was known).
             let max_frames = if memory_budget.max_frames < usize::MAX {
                 memory_budget.max_frames
             } else {
                 pre_estimate_max_frames(&request.frame_paths, &memory_budget, 5).unwrap_or(n)
             };
-            let indices = if sections.is_empty() {
+            let sections: Vec<LoadSection> = series_mgr
+                .get(series_id)
+                .map(|s| s.timeline.sections.clone())
+                .unwrap_or_default();
+            let indices: Vec<usize> = if sections.is_empty() {
                 // Default: load up to max_frames from the start.
-                (0..max_frames.min(n)).collect::<Vec<_>>()
+                (0..max_frames.min(n)).collect()
             } else {
-                frames_to_load(sections, n)
+                // Respect the budget — don't load more frames than the budget allows.
+                frames_to_load(&sections, n)
+                    .into_iter()
+                    .take(max_frames)
+                    .collect()
             };
             info!(
                 "[{}] Enqueuing {} of {} frames (non-active series)",

@@ -639,7 +639,7 @@ mod tests {
             let seq_dir = dir.join(name);
             std::fs::create_dir_all(&seq_dir).unwrap();
             for i in 0..*count {
-                File::create(seq_dir.join(format!("{}_frame_{:04}.stl", name, i))).unwrap();
+                File::create(seq_dir.join(format!("{}_{:04}.stl", name, i))).unwrap();
             }
         }
     }

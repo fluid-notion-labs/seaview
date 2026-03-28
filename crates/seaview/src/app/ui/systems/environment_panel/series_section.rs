@@ -387,27 +387,29 @@ fn poll_dir_dialog(rx_slot: &mut Option<DirDialogReceiver>, pending_dirs: &mut V
     }
 }
 
+/// Returns a vec of `(SeriesId, frame_paths)` for every newly-added series so
+/// the caller can fire [`LoadSequenceRequest`] for each one.
 pub fn add_series_from_directory(
     dir: &std::path::Path,
     series_mgr: &mut SeriesManagerRes,
     source_orientation: SourceOrientation,
     max_frames: usize,
-) -> usize {
+) -> Vec<(crate::lib::series::SeriesId, Vec<PathBuf>)> {
     let patterns = SequencePatterns::default();
     let sequences = match discover_sequences(dir, true, &patterns, source_orientation) {
         Ok(seqs) => seqs,
         Err(e) => {
             bevy::prelude::warn!("Failed to discover sequences in {}: {}", dir.display(), e);
-            return 0;
+            return Vec::new();
         }
     };
 
     if sequences.is_empty() {
         bevy::prelude::info!("No sequences found in {}", dir.display());
-        return 0;
+        return Vec::new();
     }
 
-    let mut added = 0;
+    let mut added = Vec::new();
     for seq in sequences {
         if series_mgr.find_by_dir(&seq.base_dir).is_some() {
             bevy::prelude::info!(
@@ -418,6 +420,7 @@ pub fn add_series_from_directory(
             continue;
         }
 
+        let frame_paths: Vec<PathBuf> = seq.frames.iter().map(|f| f.path.clone()).collect();
         let id = series_mgr.add(seq.clone(), max_frames);
         bevy::prelude::info!(
             "Added series '{}' as {} ({} frames) from {}",
@@ -426,7 +429,7 @@ pub fn add_series_from_directory(
             seq.frame_count(),
             dir.display(),
         );
-        added += 1;
+        added.push((id, frame_paths));
     }
 
     added
