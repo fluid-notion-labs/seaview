@@ -353,7 +353,7 @@ impl Default for CollapsibleState {
 }
 
 /// Resource that controls the mesh material properties
-#[derive(Resource, Clone, Debug)]
+#[derive(Resource, Clone, Debug, PartialEq)]
 pub struct MaterialConfig {
     /// Base color of the material
     pub base_color: Color,

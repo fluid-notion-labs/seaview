@@ -235,7 +235,21 @@ pub fn environment_panel_system(
                         "material",
                         &mut ui_state.collapsible.material_open,
                         |ui| {
-                            render_material_controls(ui, &mut panel.material_config);
+                            // Snapshot before UI — only mark changed if a
+                            // widget actually modified a value.  Without
+                            // this, merely expanding the section triggers
+                            // DerefMut on the ResMut and re-applies the
+                            // material every frame, which can cause meshlet
+                            // meshes to go dark.
+                            let before = panel.material_config.clone();
+                            render_material_controls(
+                                ui,
+                                panel.material_config.bypass_change_detection(),
+                            );
+                            if *panel.material_config != before {
+                                // Touch the ResMut so change detection fires.
+                                panel.material_config.set_changed();
+                            }
                         },
                     );
 
