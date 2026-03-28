@@ -192,8 +192,19 @@ pub struct SequenceMeshDisplay;
 ///
 /// GLB/glTF files are merged into a single mesh by default
 /// (`GlbLoaderSettings { merge: true }`).
-pub fn load_mesh_handle(asset_server: &AssetServer, filename: &str) -> Handle<Mesh> {
-    let asset_path = format!("seq://{}", filename);
+///
+/// Uses the `env://` asset source (rooted at `/`) so that frames from any
+/// absolute path on disk load correctly — including series in directories
+/// different from the initially-registered `seq://` source.
+pub fn load_mesh_handle(asset_server: &AssetServer, path: &std::path::Path) -> Handle<Mesh> {
+    let abs = path
+        .canonicalize()
+        .unwrap_or_else(|_| path.to_path_buf());
+    let rel = abs
+        .strip_prefix("/")
+        .unwrap_or(&abs)
+        .to_string_lossy();
+    let asset_path = format!("env://{}", rel);
     asset_server.load(asset_path)
 }
 

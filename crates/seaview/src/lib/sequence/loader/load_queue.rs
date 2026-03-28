@@ -290,13 +290,8 @@ pub(super) fn drain_load_queue(
                 continue;
             }
 
-            let filename = frame_store.frame_paths[idx]
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("unknown")
-                .to_owned();
-
-            let handle = load_mesh_handle(&asset_server, &filename);
+            let path = frame_store.frame_paths[idx].clone();
+            let handle = load_mesh_handle(&asset_server, &path);
             let real_id = active_id.unwrap_or(active_sentinel);
             asset_index.asset_id_to_frame.insert(handle.id(), (real_id, idx));
             frame_store.frame_handles[idx] = Some(vec![handle.clone()]);
@@ -333,14 +328,9 @@ pub(super) fn drain_load_queue(
                 continue;
             }
 
-            let filename = state.frame_paths[idx]
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("unknown")
-                .to_owned();
             let path = state.frame_paths[idx].clone();
 
-            let handle = load_mesh_handle(&asset_server, &filename);
+            let handle = load_mesh_handle(&asset_server, &path);
             asset_index.asset_id_to_frame.insert(handle.id(), (series_id, idx));
             state.frame_handles[idx] = Some(vec![handle.clone()]);
 
