@@ -106,7 +106,7 @@ pub use loading_tracker::default_material_properties;
 pub use mesh_cache::{CacheEntry, MeshCache};
 pub use series_frame_store::{SeriesEntityState, SeriesFrameStore};
 pub use spatial_index::SpatialIndex;
-pub use self::SequenceKind;
+
 
 use bevy::mesh::Mesh;
 use bevy::prelude::*;
