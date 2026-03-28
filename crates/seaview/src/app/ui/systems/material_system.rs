@@ -12,6 +12,7 @@ use bevy::prelude::*;
 /// System that applies MaterialConfig changes to the mesh material in real time
 pub fn apply_material_config(
     config: Res<MaterialConfig>,
+    frame_store: Res<crate::lib::sequence::loader::FrameStore>,
     mesh_query: Query<&MeshMaterial3d<StandardMaterial>, With<SequenceMeshDisplay>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
@@ -19,9 +20,14 @@ pub fn apply_material_config(
         return;
     }
 
+    // Meshlet sequences require opaque, single-sided materials.
+    #[cfg(feature = "meshlet")]
+    let is_meshlet = frame_store.format == Some(crate::lib::sequence::loader::SequenceKind::Meshlet);
+    #[cfg(not(feature = "meshlet"))]
+    let is_meshlet = false;
+
     for material_handle in mesh_query.iter() {
         if let Some(material) = materials.get_mut(&material_handle.0) {
-            // Apply opacity to base color alpha
             let mut color = config.base_color;
             color.set_alpha(config.opacity);
             material.base_color = color;
@@ -29,7 +35,6 @@ pub fn apply_material_config(
             material.metallic = config.metallic;
             material.reflectance = config.reflectance;
 
-            // Emissive: combine color with intensity
             if config.emissive_intensity > 0.0 {
                 material.emissive =
                     (config.emissive.to_linear() * config.emissive_intensity).into();
@@ -37,20 +42,24 @@ pub fn apply_material_config(
                 material.emissive = Color::BLACK.into();
             }
 
-            // Double-sided rendering
-            material.double_sided = config.double_sided;
-            material.cull_mode = if config.double_sided {
-                None
+            // Meshlet: force opaque + single-sided
+            if is_meshlet {
+                material.double_sided = false;
+                material.cull_mode = Some(bevy::render::render_resource::Face::Back);
+                material.alpha_mode = AlphaMode::Opaque;
             } else {
-                Some(bevy::render::render_resource::Face::Back)
-            };
-
-            // Auto-derive alpha mode from opacity
-            material.alpha_mode = if config.opacity < 1.0 {
-                AlphaMode::Blend
-            } else {
-                AlphaMode::Opaque
-            };
+                material.double_sided = config.double_sided;
+                material.cull_mode = if config.double_sided {
+                    None
+                } else {
+                    Some(bevy::render::render_resource::Face::Back)
+                };
+                material.alpha_mode = if config.opacity < 1.0 {
+                    AlphaMode::Blend
+                } else {
+                    AlphaMode::Opaque
+                };
+            }
         }
     }
 }

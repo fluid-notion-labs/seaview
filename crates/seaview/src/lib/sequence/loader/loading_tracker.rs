@@ -406,7 +406,8 @@ pub(super) fn track_meshlet_loading(
             }
 
             if loader_config.shared_material.is_none() {
-                let mat = material_from_config(
+                // Meshlet requires opaque single-sided materials — ignore double_sided.
+                let mut mat = material_from_config(
                     material_config.base_color,
                     material_config.opacity,
                     material_config.perceptual_roughness,
@@ -414,8 +415,9 @@ pub(super) fn track_meshlet_loading(
                     material_config.reflectance,
                     material_config.emissive,
                     material_config.emissive_intensity,
-                    material_config.double_sided,
+                    false, // force single-sided for meshlet
                 );
+                mat.alpha_mode = bevy::prelude::AlphaMode::Opaque; // meshlet: opaque only
                 loader_config.shared_material = Some(materials.add(mat));
                 info!("Meshlet: created shared material on first loaded frame");
             }
