@@ -106,7 +106,7 @@ impl CacheEntry {
     pub fn promote_to_gpu(&self, meshes: &mut Assets<Mesh>) -> bool {
         let mut any = false;
         for handle in &self.handles {
-            if let Some(mesh) = meshes.get_mut(handle) {
+            if let Some(mut mesh) = meshes.get_mut(handle) {
                 mesh.asset_usage = RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD;
                 any = true;
             }
@@ -121,7 +121,7 @@ impl CacheEntry {
     pub fn demote_from_gpu(&self, meshes: &mut Assets<Mesh>) -> bool {
         let mut any = false;
         for handle in &self.handles {
-            if let Some(mesh) = meshes.get_mut(handle) {
+            if let Some(mut mesh) = meshes.get_mut(handle) {
                 mesh.asset_usage = RenderAssetUsages::MAIN_WORLD;
                 any = true;
             }

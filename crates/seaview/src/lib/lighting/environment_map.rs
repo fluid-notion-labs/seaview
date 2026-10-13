@@ -426,7 +426,7 @@ pub fn process_pending_hdr_cubemaps(
             continue;
         }
 
-        let Some(image) = images.get_mut(handle) else {
+        let Some(mut image) = images.get_mut(handle) else {
             debug!("  catalog_idx={} handle exists but image not in Assets — skipping", catalog_idx);
             continue;
         };
@@ -620,7 +620,7 @@ pub fn sync_environment_map(
                             ..default()
                         },
                         Skybox {
-                            image: specular_handle,
+                            image: Some(specular_handle),
                             brightness: config.skybox_brightness,
                             ..default()
                         },
@@ -656,7 +656,7 @@ pub fn sync_environment_map(
                             ..default()
                         },
                         Skybox {
-                            image: handle,
+                            image: Some(handle),
                             brightness: config.skybox_brightness,
                             ..default()
                         },

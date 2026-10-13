@@ -15,7 +15,9 @@ edition = "2021"
 authors = ["Seaview Contributors"]
 
 [workspace.dependencies]
-bevy = { version = "0.18.0", default-features = false, features = [
+# r600: bevy comes from our forks, wired via [patch.crates-io] at the
+# bottom of this file.
+bevy = { version = "0.19", default-features = false, features = [
     "bevy_asset",
     "bevy_core_pipeline",
 
@@ -48,8 +50,11 @@ bevy = { version = "0.18.0", default-features = false, features = [
     "zstd_rust",
     "reflect_auto_register",
 ] }
+# Native GL backend for machines without a Vulkan driver (r600/llvmpipe).
+bevy_render = { version = "0.19", features = ["gles"] }
 # Meshlet feature is additive — enabled per-crate via the `meshlet` feature flag.
-bevy_egui = { git = "https://github.com/vladbat00/bevy_egui.git", rev = "fc54b193441e74e0317c5c8a158f73669670cf8f" }
+# 0.40 pairs with bevy 0.19.
+bevy_egui = "0.40"
 
 [profile.dev]
 opt-level = 1
@@ -74,3 +79,78 @@ strip = true
 
 [profile.release-perf.package."*"]
 opt-level = 3
+
+# r600 compatibility patches (AMD HD 5770, GL-only, no Vulkan). The
+# patched sources live in our GitHub forks, on branches named after the
+# release they patch; local checkouts for iterating on them live under
+# vendor/ (untracked):
+#
+#   fluid-notion-labs/bevy-r600  branch r600-0.19.1 (fork of bevyengine/bevy)
+#     bevy_window:  InstanceDisplayHandle resource (display handle for
+#                   the wgpu instance; without it wgpu's GL backend uses
+#                   surfaceless EGL -> no window surfaces -> panic)
+#     bevy_winit:   capture the event loop's display handle into it
+#     bevy_render:  pass it to initialize_renderer -> InstanceDescriptor
+#     bevy_pbr:     point shadows: textureSampleCompare instead of
+#                   textureSampleCompareLevel (the latter lowers to
+#                   extension-only textureLod(samplerCubeArrayShadow))
+#   fluid-notion-labs/wgpu-r600  branch r600-29.0.4 (fork of gfx-rs/wgpu;
+#     naga the crate is developed inside the wgpu monorepo)
+#     naga GLSL backend: never require GL_EXT_texture_shadow_lod
+#     (unsupported by r600; kills every PBR pipeline)
+#
+# Patching the umbrella bevy crate (repo root) pulls the whole bevy
+# workspace from the fork; patching crates individually would mix fork
+# and registry copies of the same versions, which do NOT unify (types
+# don't match). Bump: rebase the branch on the new release tag, push,
+# update here.
+[patch.crates-io]
+bevy = { git = "https://github.com/fluid-notion-labs/bevy-r600", branch = "r600-0.19.1" }
+bevy_render = { git = "https://github.com/fluid-notion-labs/bevy-r600", branch = "r600-0.19.1" }
+naga = { git = "https://github.com/fluid-notion-labs/wgpu-r600", branch = "r600-29.0.4" }
+# bevy_egui depends on individual bevy crates; without these entries they
+# resolve to registry copies that do NOT unify with the fork (types don't
+# match). Keep in sync with bevy_egui's bevy_* dependency list.
+bevy_app = { git = "https://github.com/fluid-notion-labs/bevy-r600", branch = "r600-0.19.1" }
+bevy_asset = { git = "https://github.com/fluid-notion-labs/bevy-r600", branch = "r600-0.19.1" }
+bevy_camera = { git = "https://github.com/fluid-notion-labs/bevy-r600", branch = "r600-0.19.1" }
+bevy_color = { git = "https://github.com/fluid-notion-labs/bevy-r600", branch = "r600-0.19.1" }
+bevy_core_pipeline = { git = "https://github.com/fluid-notion-labs/bevy-r600", branch = "r600-0.19.1" }
+bevy_derive = { git = "https://github.com/fluid-notion-labs/bevy-r600", branch = "r600-0.19.1" }
+bevy_ecs = { git = "https://github.com/fluid-notion-labs/bevy-r600", branch = "r600-0.19.1" }
+bevy_image = { git = "https://github.com/fluid-notion-labs/bevy-r600", branch = "r600-0.19.1" }
+bevy_input = { git = "https://github.com/fluid-notion-labs/bevy-r600", branch = "r600-0.19.1" }
+bevy_log = { git = "https://github.com/fluid-notion-labs/bevy-r600", branch = "r600-0.19.1" }
+bevy_math = { git = "https://github.com/fluid-notion-labs/bevy-r600", branch = "r600-0.19.1" }
+bevy_mesh = { git = "https://github.com/fluid-notion-labs/bevy-r600", branch = "r600-0.19.1" }
+bevy_picking = { git = "https://github.com/fluid-notion-labs/bevy-r600", branch = "r600-0.19.1" }
+bevy_platform = { git = "https://github.com/fluid-notion-labs/bevy-r600", branch = "r600-0.19.1" }
+bevy_reflect = { git = "https://github.com/fluid-notion-labs/bevy-r600", branch = "r600-0.19.1" }
+bevy_shader = { git = "https://github.com/fluid-notion-labs/bevy-r600", branch = "r600-0.19.1" }
+bevy_time = { git = "https://github.com/fluid-notion-labs/bevy-r600", branch = "r600-0.19.1" }
+bevy_transform = { git = "https://github.com/fluid-notion-labs/bevy-r600", branch = "r600-0.19.1" }
+bevy_ui_render = { git = "https://github.com/fluid-notion-labs/bevy-r600", branch = "r600-0.19.1" }
+bevy_utils = { git = "https://github.com/fluid-notion-labs/bevy-r600", branch = "r600-0.19.1" }
+bevy_window = { git = "https://github.com/fluid-notion-labs/bevy-r600", branch = "r600-0.19.1" }
+bevy_winit = { git = "https://github.com/fluid-notion-labs/bevy-r600", branch = "r600-0.19.1" }
+# pulled in by bevy_egui 0.40's wider default feature set; same
+# unification rule as above.
+bevy_diagnostic = { git = "https://github.com/fluid-notion-labs/bevy-r600", branch = "r600-0.19.1" }
+bevy_gizmos = { git = "https://github.com/fluid-notion-labs/bevy-r600", branch = "r600-0.19.1" }
+bevy_light = { git = "https://github.com/fluid-notion-labs/bevy-r600", branch = "r600-0.19.1" }
+bevy_material = { git = "https://github.com/fluid-notion-labs/bevy-r600", branch = "r600-0.19.1" }
+bevy_pbr = { git = "https://github.com/fluid-notion-labs/bevy-r600", branch = "r600-0.19.1" }
+bevy_state = { git = "https://github.com/fluid-notion-labs/bevy-r600", branch = "r600-0.19.1" }
+bevy_tasks = { git = "https://github.com/fluid-notion-labs/bevy-r600", branch = "r600-0.19.1" }
+bevy_text = { git = "https://github.com/fluid-notion-labs/bevy-r600", branch = "r600-0.19.1" }
+bevy_ui = { git = "https://github.com/fluid-notion-labs/bevy-r600", branch = "r600-0.19.1" }
+bevy_sprite = { git = "https://github.com/fluid-notion-labs/bevy-r600", branch = "r600-0.19.1" }
+bevy_scene = { git = "https://github.com/fluid-notion-labs/bevy-r600", branch = "r600-0.19.1" }
+bevy_gltf = { git = "https://github.com/fluid-notion-labs/bevy-r600", branch = "r600-0.19.1" }
+bevy_post_process = { git = "https://github.com/fluid-notion-labs/bevy-r600", branch = "r600-0.19.1" }
+bevy_remote = { git = "https://github.com/fluid-notion-labs/bevy-r600", branch = "r600-0.19.1" }
+bevy_anti_alias = { git = "https://github.com/fluid-notion-labs/bevy-r600", branch = "r600-0.19.1" }
+bevy_a11y = { git = "https://github.com/fluid-notion-labs/bevy-r600", branch = "r600-0.19.1" }
+bevy_feathers = { git = "https://github.com/fluid-notion-labs/bevy-r600", branch = "r600-0.19.1" }
+bevy_animation = { git = "https://github.com/fluid-notion-labs/bevy-r600", branch = "r600-0.19.1" }
+bevy_encase_derive = { git = "https://github.com/fluid-notion-labs/bevy-r600", branch = "r600-0.19.1" }

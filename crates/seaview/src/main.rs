@@ -2,7 +2,10 @@ use bevy::asset::io::AssetSourceBuilder;
 use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
 use bevy::pbr::wireframe::WireframePlugin;
 use bevy::prelude::*;
-use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
+use bevy::render::error_handler::{RenderErrorHandler, RenderErrorPolicy};
+use bevy::render::settings::{RenderCreation, WgpuFeatures, WgpuLimits, WgpuSettings};
+use bevy::window::{CursorGrabMode, CursorOptions, PresentMode, PrimaryWindow, Window, WindowPlugin};
+use bevy::render::RenderPlugin;
 use seaview::app::autosave::AutosavePlugin;
 use seaview::app::environment_objects::{EnvironmentObjectPlugin, EnvironmentObjectStoreRes};
 use seaview::lib::lighting::{EnvironmentLightConfig, GlobalLight};
@@ -40,6 +43,14 @@ use seaview::lib::settings::{resolve_settings_dir, Settings, SettingsResource};
 struct PendingSavedSections(Vec<LoadSection>);
 
 fn main() {
+    // No Vulkan here: the r600 (HD 5770) card has no Vulkan driver, and
+    // llmpipe's Vulkan dies at device creation. GL 4.6 via EGL works, so
+    // default to the GL backend. Note: LIBGL_ALWAYS_SOFTWARE in ~/.bashrc
+    // forces llmpipe and must be unset (see zed wrapper there).
+    if std::env::var_os("WGPU_BACKEND").is_none() {
+        // Safe: main start, no other threads exist yet.
+        unsafe { std::env::set_var("WGPU_BACKEND", "gl") };
+    }
     // Parse command line arguments
     let args = Args::parse_args();
 
@@ -160,7 +171,52 @@ fn main() {
     // Forward rendering (default). Deferred was causing gray mesh artifacts
     // when combined with MeshletPlugin — revisit once meshlet+deferred is
     // confirmed stable in Bevy.
-    app.add_plugins(DefaultPlugins)
+    // r600 (HD 5770): GL backend reports an empty present-mode list; Fifo
+    // is the one mode GL always supports, so set it explicitly instead of
+    // AutoVsync's fallback dance.
+    //
+    // r600 allows 0 storage buffers in the VERTEX shader stage, but wgpu
+    // reports the stage-independent GL_MAX_SHADER_STORAGE_BLOCKS (compute),
+    // so bevy picks storage bindings and GL rejects the pipeline ("Too many
+    // vertex shader storage blocks"). Force 0 via constrained_limits (not
+    // limits: with the default Functionality priority bevy overwrites limits
+    // with the adapter's) so bevy uses uniform-buffer bindings instead.
+    app.add_plugins(
+        DefaultPlugins
+            .set(WindowPlugin {
+                primary_window: Some(Window {
+                    present_mode: PresentMode::Fifo,
+                    ..default()
+                }),
+                ..default()
+            })
+            .set(RenderPlugin {
+                render_creation: RenderCreation::Automatic(Box::new(WgpuSettings {
+                    constrained_limits: Some(WgpuLimits {
+                        max_storage_buffers_per_shader_stage: 0,
+                        ..Default::default()
+                    }),
+                    // Requesting an empty feature set keeps just the
+                    // adapter's own features (bevy merges options.features
+                    // into the adapter's set with |=).
+                    features: WgpuFeatures::empty(),
+                    ..default()
+                })),
+                ..default()
+            }),
+    )
+        // r600 (HD 5770) GLSL rejects textureGatherOffset on shadow samplers,
+        // so SSAO's compute pipelines fail to compile on this GPU. SSAO is
+        // cosmetic; ignore its pipeline errors and keep rendering. Quit on
+        // any other render error as bevy does by default.
+        .insert_resource(RenderErrorHandler(|error, main_world, _| {
+            if error.description.contains("ssao_") {
+                RenderErrorPolicy::Ignore
+            } else {
+                main_world.write_message(AppExit::error());
+                RenderErrorPolicy::StopRendering
+            }
+        }))
         .add_plugins(WireframePlugin::default())
         .add_plugins(loadfu::LoadfuPlugin)
         .add_plugins(FrameTimeDiagnosticsPlugin::default())
@@ -378,7 +434,7 @@ fn setup(
     commands.spawn((
         DirectionalLight {
             illuminance: 10000.0,
-            shadows_enabled: true,
+            shadow_maps_enabled: true,
             ..default()
         },
         Transform::from_xyz(0.0, 1.0, 0.0).looking_at(Vec3::new(-0.3, -1.0, -0.5), Vec3::Y),
@@ -389,7 +445,7 @@ fn setup(
     commands.spawn((
         PointLight {
             intensity: 50000.0,
-            shadows_enabled: false,
+            shadow_maps_enabled: false,
             range: 1000.0,
             ..default()
         },
@@ -401,7 +457,7 @@ fn setup(
     commands.spawn((
         PointLight {
             intensity: 30000.0,
-            shadows_enabled: false,
+            shadow_maps_enabled: false,
             range: 1000.0,
             ..default()
         },

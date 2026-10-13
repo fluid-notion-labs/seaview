@@ -27,7 +27,7 @@ pub fn apply_material_config(
     let is_meshlet = false;
 
     for material_handle in mesh_query.iter() {
-        if let Some(material) = materials.get_mut(&material_handle.0) {
+        if let Some(mut material) = materials.get_mut(&material_handle.0) {
             let mut color = config.base_color;
             color.set_alpha(config.opacity);
             material.base_color = color;

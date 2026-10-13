@@ -91,7 +91,10 @@ impl Default for SsrConfig {
         let defaults = ScreenSpaceReflections::default();
         Self {
             enabled: true,
-            perceptual_roughness_threshold: defaults.perceptual_roughness_threshold,
+            // bevy 0.19 replaced the single threshold with fade ranges;
+            // keep our single-value config and use the end of the fade-out
+            // range as its successor.
+            perceptual_roughness_threshold: defaults.max_perceptual_roughness.end,
             thickness: defaults.thickness,
             linear_steps: defaults.linear_steps,
             linear_march_exponent: defaults.linear_march_exponent,
@@ -104,13 +107,19 @@ impl Default for SsrConfig {
 impl SsrConfig {
     /// Convert to Bevy's camera component.
     pub fn to_component(&self) -> ScreenSpaceReflections {
+        // bevy 0.19: roughness is now two fade ranges instead of a single
+        // cutoff. SSR is fully active below min range, fades out over the
+        // max range and is gone past our configured threshold.
+        let t = self.perceptual_roughness_threshold;
         ScreenSpaceReflections {
-            perceptual_roughness_threshold: self.perceptual_roughness_threshold,
+            min_perceptual_roughness: 0.08..0.12,
+            max_perceptual_roughness: (t - 0.05).max(0.0)..t,
             thickness: self.thickness,
             linear_steps: self.linear_steps,
             linear_march_exponent: self.linear_march_exponent,
             bisection_steps: self.bisection_steps,
             use_secant: self.use_secant,
+            edge_fadeout: 0.0..0.0,
         }
     }
 }

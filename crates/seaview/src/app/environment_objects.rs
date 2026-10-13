@@ -34,7 +34,7 @@ use bevy::asset::RenderAssetUsages;
 use bevy::gltf::Gltf;
 use bevy::mesh::VertexAttributeValues;
 use bevy::prelude::*;
-use bevy::scene::{SceneInstance, SceneRoot};
+use bevy::world_serialization::{WorldAssetRoot, WorldInstance};
 
 /// File extensions that go through loadfu's direct-mesh pipeline.
 const DIRECT_MESH_EXTENSIONS: &[&str] = &["stl", "obj", "ply"];
@@ -358,7 +358,7 @@ fn poll_gltf_assets(
         );
         commands
             .entity(state.root_entity)
-            .insert(SceneRoot(scene_handle));
+            .insert(WorldAssetRoot(scene_handle));
 
         pending.awaiting_scene.push(*id);
     }
@@ -423,7 +423,7 @@ fn poll_direct_mesh_assets(
 
         // Loadfu loads meshes with MAIN_WORLD only (CPU-resident).
         // Promote to GPU so the render pipeline can actually draw it.
-        if let Some(mesh) = mesh_assets.get_mut(mesh_handle) {
+        if let Some(mut mesh) = mesh_assets.get_mut(mesh_handle) {
             mesh.asset_usage = RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD;
         }
 
@@ -500,7 +500,7 @@ fn discover_child_meshes(
     mut pending: ResMut<PendingSceneDiscovery>,
     children_query: Query<&Children>,
     mesh_query: Query<(Entity, Option<&Name>), With<Mesh3d>>,
-    scene_instance_query: Query<&SceneInstance>,
+    scene_instance_query: Query<&WorldInstance>,
 ) {
     // Only process objects that are awaiting discovery.
     pending.awaiting_scene.retain(|id| {

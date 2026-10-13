@@ -174,7 +174,14 @@ impl LoadSectionSettings {
     pub fn new(start: usize, end: usize) -> Self {
         Self {
             start,
-            end,
+            // `LoadSection::default()` uses `usize::MAX` as a "to the end"
+            // sentinel that gets clamped to the real sequence length on
+            // load. But TOML integers are i64: serializing usize::MAX fails
+            // with "out-of-range value for u64 type" (autosave fires before
+            // the sequence loads and clamps it). Clamp to the largest value
+            // TOML can represent — the load path clamps to the actual
+            // sequence length anyway.
+            end: end.min(i64::MAX as usize),
             active: true,
         }
     }

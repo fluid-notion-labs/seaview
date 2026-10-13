@@ -157,7 +157,7 @@ pub fn sync_lighting_rig(
             range: light.range,
             outer_angle: cone_to_outer_angle(light.cone_angle),
             inner_angle: cone_to_inner_angle(light.cone_angle),
-            shadows_enabled: true,
+            shadow_maps_enabled: true,
             ..default()
         };
 

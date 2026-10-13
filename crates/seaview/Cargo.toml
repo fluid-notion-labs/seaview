@@ -15,11 +15,16 @@ path = "src/main.rs"
 
 [dependencies]
 bevy = { workspace = true }
+# Native GL backend for r600 (see workspace Cargo.toml).
+bevy_render = { workspace = true }
 # baby_shark = { workspace = true }  # TODO: Re-enable when vendor/baby_shark is available
 nalgebra = "0.33.2"
-parry3d = "0.26"
+parry3d = "0.27"
 bytemuck = { version = "1", features = ["extern_crate_alloc"] }
-loadfu = { git = "https://github.com/fluid-notion-labs/loadfu.git", branch = "main", features = ["bevy"] }
+# branch bevy-0.19: loadfu main still pins bevy 0.18, which does not
+# unify with the r600 fork (bevy 0.19). Merge back to main when other
+# consumers are on 0.19 too.
+loadfu = { git = "https://github.com/fluid-notion-labs/loadfu.git", branch = "bevy-0.19", features = ["bevy"] }
 clap = { version = "4.5", features = ["derive"] }
 # bevy_brp_extras = { git = "https://github.com/natepiano/bevy_brp.git", rev = "6edff47" }  # TODO: Update for Bevy 0.18
 regex = "1.10"

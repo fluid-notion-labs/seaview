@@ -163,7 +163,7 @@ impl FrameStore {
         };
         let mut any = false;
         for handle in handles {
-            if let Some(mesh) = meshes.get_mut(handle) {
+            if let Some(mut mesh) = meshes.get_mut(handle) {
                 mesh.asset_usage = RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD;
                 any = true;
             }
@@ -181,7 +181,7 @@ impl FrameStore {
         };
         let mut any = false;
         for handle in handles {
-            if let Some(mesh) = meshes.get_mut(handle) {
+            if let Some(mut mesh) = meshes.get_mut(handle) {
                 mesh.asset_usage = RenderAssetUsages::MAIN_WORLD;
                 any = true;
             }
