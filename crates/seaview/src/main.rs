@@ -18,8 +18,8 @@ use seaview::app::meshlet_debug::MeshletDebugMaterial;
 
 use seaview::app::cli::Args;
 use seaview::app::systems::camera::{
-    camera_controller, cursor_grab_system, handle_center_on_mesh, keyboard_center_on_mesh,
-    CenterOnMeshEvent, FpsCamera,
+    camera_controller, cursor_grab_system, handle_center_on_mesh, handle_focus_scene,
+    keyboard_center_on_mesh, CenterOnMeshEvent, FocusSceneEvent, FpsCamera,
 };
 use seaview::app::systems::diagnostics::RenderingDiagnosticsPlugin;
 use seaview::app::ui::state::MaterialConfig;
@@ -205,6 +205,7 @@ fn main() {
         .insert_resource(settings_resource)
         .insert_resource(global_settings)
         .add_message::<CenterOnMeshEvent>()
+        .add_message::<FocusSceneEvent>()
         .add_systems(
             Startup,
             (setup, handle_input_path, setup_cursor, init_watch_config),
@@ -216,6 +217,7 @@ fn main() {
                 camera_controller,
                 cursor_grab_system,
                 handle_center_on_mesh,
+                handle_focus_scene,
                 keyboard_center_on_mesh,
             ),
         )

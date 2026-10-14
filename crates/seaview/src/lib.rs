@@ -6,6 +6,7 @@
 pub mod lib {
     pub mod actions;
     pub mod autosave;
+    pub mod camera_fit;
     pub mod coordinates;
     pub mod environment_objects;
     pub mod fade;

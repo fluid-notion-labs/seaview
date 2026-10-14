@@ -8,7 +8,7 @@
 use bevy::prelude::*;
 use bevy_egui::egui;
 
-use crate::app::systems::camera::CenterOnMeshEvent;
+use crate::app::systems::camera::{CenterOnMeshEvent, FocusSceneEvent};
 use crate::lib::sequence::{
     LoadingPhase, LoadingPhaseState, SequenceManager, Timeline, WatchConfig,
 };
@@ -42,6 +42,7 @@ pub fn draw_transport_row(
     watch_config: &mut WatchConfig,
     loading_phase: &mut LoadingPhase,
     center_events: &mut MessageWriter<CenterOnMeshEvent>,
+    focus_events: &mut MessageWriter<FocusSceneEvent>,
     autosave: &mut ResMut<AutosaveRes>,
     saved_cameras: &Option<ResMut<SavedCameras>>,
     series_summaries: &[SeriesSummary],
@@ -132,6 +133,17 @@ pub fn draw_transport_row(
             debug!("🎯 Center camera button clicked!");
             center_events.write(CenterOnMeshEvent);
             debug!("CenterOnMeshEvent sent");
+        }
+
+        // -- Focus scene ------------------------------------------------------
+
+        if ui
+            .button("🔍")
+            .on_hover_text("Focus scene (fit view to all scene content)")
+            .clicked()
+        {
+            debug!("🔍 Focus scene button clicked!");
+            focus_events.write(FocusSceneEvent);
         }
 
         // -- Save view --------------------------------------------------------

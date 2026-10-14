@@ -10,7 +10,9 @@
 //! - Shift: 5× movement speed
 //! - Alt: 25× movement speed
 //! - Ctrl+C: Center camera on mesh
+//! - Focus scene button (transport bar): fit view to all scene content
 
+use bevy::camera::primitives::Aabb;
 use bevy::input::mouse::{MouseMotion, MouseWheel};
 use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
@@ -18,11 +20,15 @@ use bevy_egui::EguiContexts;
 
 use crate::app::input::ActionStateRes;
 use crate::lib::actions::Action;
+use crate::lib::camera_fit::{compute_fit, world_aabb, FIT_MARGIN};
 use crate::lib::mesh_info::MeshDimensions;
-use crate::lib::sequence::loader::LoaderConfig;
+use crate::lib::sequence::loader::{LoaderConfig, SequenceMeshDisplay};
 
 #[derive(Message)]
 pub struct CenterOnMeshEvent;
+
+#[derive(Message)]
+pub struct FocusSceneEvent;
 
 #[derive(Component)]
 pub struct FpsCamera {
@@ -85,6 +91,122 @@ pub fn handle_center_on_mesh(
         debug!(
             "🎯 Camera centred on mesh — center: {:?}, radius: {:.1}, camera: {:?}",
             world_center, local_radius, camera_position,
+        );
+    }
+}
+
+/// Merge a world-space (min, max) pair into an accumulated AABB.
+fn merge_aabb(acc: Option<(Vec3, Vec3)>, mn: Vec3, mx: Vec3) -> Option<(Vec3, Vec3)> {
+    Some(match acc {
+        Some((cmn, cmx)) => (cmn.min(mn), cmx.max(mx)),
+        None => (mn, mx),
+    })
+}
+
+/// System that handles focusing the camera on all renderable scene content.
+///
+/// Gathers the world-space scene AABB from two sources:
+///
+/// 1. Auto-computed [`Aabb`] components on regular mesh entities
+///    (environment GLB/STL/OBJ/PLY objects).
+/// 2. [`MeshDimensions`] (mesh-local) composed with the entity's
+///    `GlobalTransform` for the sequence mesh — meshlet-path entities get no
+///    auto `Aabb`, so this fallback covers both meshlet and standard paths.
+///
+/// Keeps the camera's current viewing direction and moves it back until the
+/// whole scene fits the view (FOV-based fit math in [`crate::lib::camera_fit`]).
+pub fn handle_focus_scene(
+    mut focus_events: MessageReader<FocusSceneEvent>,
+    mut camera_query: Query<
+        (&mut Transform, &mut FpsCamera, &Projection),
+        (With<Camera3d>, With<FpsCamera>),
+    >,
+    aabb_query: Query<(&Aabb, &GlobalTransform, &InheritedVisibility), Without<SequenceMeshDisplay>>,
+    sequence_query: Query<(&GlobalTransform, &InheritedVisibility), With<SequenceMeshDisplay>>,
+    mesh_dims: Res<MeshDimensions>,
+) {
+    for _event in focus_events.read() {
+        let mut scene: Option<(Vec3, Vec3)> = None;
+
+        // 1. Regular mesh entities with auto-computed Aabbs.
+        for (aabb, global, vis) in aabb_query.iter() {
+            if !vis.get() {
+                continue;
+            }
+            let mn: Vec3 = (aabb.center - aabb.half_extents).into();
+            let mx: Vec3 = (aabb.center + aabb.half_extents).into();
+            let (wmn, wmx) = world_aabb(&global.to_matrix(), mn, mx);
+            scene = merge_aabb(scene, wmn, wmx);
+        }
+
+        // 2. Sequence mesh via MeshDimensions + entity transform.
+        if let (Some(mn), Some(mx)) = (mesh_dims.min, mesh_dims.max) {
+            for (global, vis) in sequence_query.iter() {
+                if !vis.get() {
+                    continue;
+                }
+                let (wmn, wmx) = world_aabb(&global.to_matrix(), mn, mx);
+                scene = merge_aabb(scene, wmn, wmx);
+            }
+        }
+
+        let Some((scene_min, scene_max)) = scene else {
+            warn!("FocusSceneEvent: no scene bounds available yet");
+            continue;
+        };
+
+        let center = (scene_min + scene_max) * 0.5;
+
+        let Ok((mut transform, mut fps_camera, projection)) = camera_query.single_mut() else {
+            warn!("FocusSceneEvent: no camera entity found");
+            return;
+        };
+
+        let eye = transform.translation;
+
+        // FOV-based fit for perspective cameras; fall back to the
+        // 2.5×-radius heuristic otherwise (e.g. orthographic).
+        let (direction, distance) = match projection {
+            Projection::Perspective(persp) => {
+                match compute_fit(scene_min, scene_max, eye, persp.fov, persp.aspect_ratio, FIT_MARGIN) {
+                    Some(fit) => (fit.direction, fit.distance),
+                    None => {
+                        let radius = (scene_max - scene_min).length() * 0.5;
+                        let to_center = center - eye;
+                        let dir = if to_center.length_squared() > 1e-12 {
+                            to_center.normalize()
+                        } else {
+                            Vec3::new(0.75, 0.5, 1.0).normalize()
+                        };
+                        (-dir, (radius * 2.5).max(10.0))
+                    }
+                }
+            }
+            _ => {
+                let radius = (scene_max - scene_min).length() * 0.5;
+                let to_center = center - eye;
+                let dir = if to_center.length_squared() > 1e-12 {
+                    to_center.normalize()
+                } else {
+                    Vec3::new(0.75, 0.5, 1.0).normalize()
+                };
+                (-dir, (radius * 2.5).max(10.0))
+            }
+        };
+
+        // `direction` points from the scene centre towards the camera.
+        transform.translation = center + direction * distance;
+        transform.look_at(center, Vec3::Y);
+
+        // Exit escape mode so the user can immediately control the camera
+        fps_camera.escape_mode = false;
+
+        debug!(
+            "🔍 Scene focused — center: {:?}, size: {:?}, distance: {:.1}, camera: {:?}",
+            center,
+            scene_max - scene_min,
+            distance,
+            transform.translation,
         );
     }
 }
