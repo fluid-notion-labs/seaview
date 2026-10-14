@@ -218,9 +218,31 @@ impl LoadSectionSettings {
 
 // -- Conversions between LoadSectionSettings ↔ LoadSection ----------------
 
+/// `LoadSection` uses `end: usize::MAX` as a sentinel for "whole sequence,
+/// clamp later".  TOML integers are signed 64-bit, so serializing
+/// `usize::MAX` fails ("out-of-range value for u64 type").  We map the
+/// sentinel to `end = 0` on save (an empty section is never a valid real
+/// range) and back to `usize::MAX` on load, where `LoadSection::clamp`
+/// resolves it against the actual frame count.
+fn load_section_end_to_settings(end: usize) -> usize {
+    if end == usize::MAX {
+        0
+    } else {
+        end
+    }
+}
+
+fn load_section_end_from_settings(end: usize) -> usize {
+    if end == 0 {
+        usize::MAX
+    } else {
+        end
+    }
+}
+
 impl From<LoadSectionSettings> for LoadSection {
     fn from(s: LoadSectionSettings) -> Self {
-        let mut ls = LoadSection::new(s.start, s.end);
+        let mut ls = LoadSection::new(s.start, load_section_end_from_settings(s.end));
         ls.active = s.active;
         ls
     }
@@ -228,7 +250,7 @@ impl From<LoadSectionSettings> for LoadSection {
 
 impl From<&LoadSectionSettings> for LoadSection {
     fn from(s: &LoadSectionSettings) -> Self {
-        let mut ls = LoadSection::new(s.start, s.end);
+        let mut ls = LoadSection::new(s.start, load_section_end_from_settings(s.end));
         ls.active = s.active;
         ls
     }
@@ -236,7 +258,7 @@ impl From<&LoadSectionSettings> for LoadSection {
 
 impl From<LoadSection> for LoadSectionSettings {
     fn from(s: LoadSection) -> Self {
-        let mut ls = LoadSectionSettings::new(s.start, s.end);
+        let mut ls = LoadSectionSettings::new(s.start, load_section_end_to_settings(s.end));
         ls.active = s.active;
         ls
     }
@@ -244,7 +266,7 @@ impl From<LoadSection> for LoadSectionSettings {
 
 impl From<&LoadSection> for LoadSectionSettings {
     fn from(s: &LoadSection) -> Self {
-        let mut ls = LoadSectionSettings::new(s.start, s.end);
+        let mut ls = LoadSectionSettings::new(s.start, load_section_end_to_settings(s.end));
         ls.active = s.active;
         ls
     }
@@ -3965,5 +3987,34 @@ end = 200
         // was the deleted one that didn't match)
         let active = mgr.active().unwrap();
         assert_eq!(active.label, "still_here");
+    }
+
+    /// A `LoadSection` with the `end: usize::MAX` sentinel ("whole
+    /// sequence, clamp later") must survive a TOML round-trip.  TOML
+    /// integers are signed i64, so serializing `usize::MAX` used to fail
+    /// with "out-of-range value for u64 type", which made autosave retry
+    /// and error-spam every frame.
+    #[test]
+    fn test_unbounded_load_section_serializes_to_toml() {
+        let unbounded = LoadSection::default();
+        assert_eq!(unbounded.end, usize::MAX);
+
+        let settings_section = LoadSectionSettings::from(&unbounded);
+        assert_eq!(settings_section.end, 0);
+        let toml_str = toml::to_string_pretty(&settings_section).unwrap();
+        assert!(toml_str.contains("end = 0"), "toml: {toml_str}");
+
+        // Round-trip: end = 0 restores the sentinel on the LoadSection side.
+        let back = LoadSection::from(&settings_section);
+        assert_eq!(back.end, usize::MAX);
+        assert_eq!(back.start, unbounded.start);
+        assert_eq!(back.active, unbounded.active);
+
+        // Real (non-sentinel) sections must round-trip unchanged.
+        let real = LoadSection::new(5, 42);
+        let real_settings = LoadSectionSettings::from(&real);
+        assert_eq!(real_settings.end, 42);
+        let real_back = LoadSection::from(&real_settings);
+        assert_eq!(real_back, real);
     }
 }
