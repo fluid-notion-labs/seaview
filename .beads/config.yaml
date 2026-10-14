@@ -65,3 +65,6 @@
 # - linear.api-key
 # - github.org
 # - github.repo
+
+sync:
+    remote: "git+ssh://git@github.com/fluid-notion-labs/seaview.git"
