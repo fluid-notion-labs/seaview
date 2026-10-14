@@ -3153,7 +3153,7 @@ dependencies = [
  "log",
  "rustversion",
  "windows-link 0.2.1",
- "windows-result 0.3.4",
+ "windows-result 0.4.1",
 ]
 
 [[package]]
@@ -3986,8 +3986,9 @@ checksum = "b4ce301924b7887e9d637144fdade93f9dfff9b60981d4ac161db09720d39aa5"
 [[package]]
 name = "loadfu"
 version = "0.1.0"
-source = "git+https://github.com/fluid-notion-labs/loadfu.git?branch=main#c90bad8136548bdb0be32260fa17cedf80a0e0e2"
+source = "git+https://github.com/fluid-notion-labs/loadfu.git?branch=main#965e0f6a66a857cff3c1f8931c66d30d9ade0aa2"
 dependencies = [
+ "base64 0.22.1",
  "bevy",
  "bytemuck",
  "gltf",
@@ -4084,18 +4085,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "488016bfae457b036d996092f6cb448677611ce4449e970ceaf42695203f218a"
 dependencies = [
  "autocfg",
-]
-
-[[package]]
-name = "meshopt"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a0cad96c96b1c198160517f5dc7c247ef36ebb9d49015c0cfca0c0ee8d7d1bbc"
-dependencies = [
- "bitflags 2.10.0",
- "cc",
- "float-cmp",
- "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -5491,7 +5480,6 @@ dependencies = [
  "libc",
  "loadfu",
  "log",
- "meshopt",
  "nalgebra 0.33.2",
  "nvml-wrapper",
  "parry3d",
