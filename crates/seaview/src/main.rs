@@ -162,7 +162,7 @@ fn main() {
     // confirmed stable in Bevy.
     app.add_plugins(DefaultPlugins)
         .add_plugins(WireframePlugin::default())
-        .add_plugins(loadfu::LoadfuPlugin)
+        .add_plugins(polyphase::LoadfuPlugin)
         .add_plugins(FrameTimeDiagnosticsPlugin::default())
         .add_plugins(RenderingDiagnosticsPlugin)
         .add_plugins(SequencePlugin)

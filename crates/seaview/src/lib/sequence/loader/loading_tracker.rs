@@ -3,7 +3,7 @@
 //! This module contains the system that tracks asset loading progress:
 //!
 //! - **[`track_asset_loading`]** — tracks mesh loading via `AssetEvent<Mesh>`
-//!   for **all** formats (STL, OBJ, GLB, glTF).  With loadfu, every format
+//!   for **all** formats (STL, OBJ, GLB, glTF).  With polyphase, every format
 //!   produces `Handle<Mesh>` directly — there is no longer a two-phase glTF
 //!   extraction step.
 //!

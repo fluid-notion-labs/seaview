@@ -10,7 +10,7 @@
 //!
 //! Also contains [`LoadingStats`] (UI-friendly progress snapshot).
 //!
-//! Format detection is now handled by [`loadfu::MeshFormat`] — the old
+//! Format detection is now handled by [`polyphase::MeshFormat`] — the old
 //! `MeshFileFormat` enum has been removed.
 
 use bevy::asset::RenderAssetUsages;
@@ -298,7 +298,7 @@ mod tests {
         store.total_frames = 10;
         store.loaded_count = 5;
         store.loading = true;
-        store.format = Some(SequenceKind::Mesh(loadfu::MeshFormat::Stl));
+        store.format = Some(SequenceKind::Mesh(polyphase::MeshFormat::Stl));
         store.estimated_frame_bytes = 1024;
 
         store.reset();
@@ -359,11 +359,11 @@ mod tests {
         assert_eq!(hi, 100);
     }
 
-    // ── MeshFormat (from loadfu) ──────────────────────────────────────
+    // ── MeshFormat (from polyphase) ──────────────────────────────────────
 
     #[test]
     fn test_mesh_format_from_extension() {
-        use loadfu::MeshFormat;
+        use polyphase::MeshFormat;
         assert_eq!(MeshFormat::from_extension("stl"), Some(MeshFormat::Stl));
         assert_eq!(MeshFormat::from_extension("STL"), Some(MeshFormat::Stl));
         assert_eq!(MeshFormat::from_extension("obj"), Some(MeshFormat::Obj));
@@ -375,7 +375,7 @@ mod tests {
 
     #[test]
     fn test_mesh_format_is_gltf() {
-        use loadfu::MeshFormat;
+        use polyphase::MeshFormat;
         assert!(!MeshFormat::Stl.is_gltf());
         assert!(!MeshFormat::Obj.is_gltf());
         assert!(MeshFormat::Gltf.is_gltf());
@@ -384,7 +384,7 @@ mod tests {
 
     #[test]
     fn test_mesh_format_is_direct_mesh() {
-        use loadfu::MeshFormat;
+        use polyphase::MeshFormat;
         assert!(MeshFormat::Stl.is_direct_mesh());
         assert!(MeshFormat::Obj.is_direct_mesh());
         assert!(!MeshFormat::Gltf.is_direct_mesh());

@@ -17,7 +17,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use loadfu::MeshFormat;
+use polyphase::MeshFormat;
 use seaview::{
     discover_sequences, distribute_sections, estimate_mesh_gpu_bytes, human_bytes, GlobalSettings,
     LoadSection, MemoryBudget, NoVramDetector, NvmlBackend, RamDetector, Sequence,
@@ -172,16 +172,16 @@ fn parse_frame_size(path: &Path) -> Result<u64, String> {
     let (vertex_count, index_count) = match format {
         MeshFormat::Stl => {
             let md =
-                loadfu::parsers::stl::parse(&bytes).map_err(|e| format!("STL parse: {}", e))?;
+                polyphase::parsers::stl::parse(&bytes).map_err(|e| format!("STL parse: {}", e))?;
             (md.vertex_count(), md.indices.len())
         }
         MeshFormat::Obj => {
             let md =
-                loadfu::parsers::obj::parse(&bytes).map_err(|e| format!("OBJ parse: {}", e))?;
+                polyphase::parsers::obj::parse(&bytes).map_err(|e| format!("OBJ parse: {}", e))?;
             (md.vertex_count(), md.indices.len())
         }
         MeshFormat::Glb | MeshFormat::Gltf => {
-            let md = loadfu::parsers::glb::parse_merged(&bytes)
+            let md = polyphase::parsers::glb::parse_merged(&bytes)
                 .map_err(|e| format!("GLB parse: {}", e))?;
             (md.vertex_count(), md.indices.len())
         }

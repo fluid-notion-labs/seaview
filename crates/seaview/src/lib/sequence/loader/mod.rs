@@ -1,11 +1,11 @@
 //! Mesh sequence loading using Bevy's native asset system
 //!
 //! This module provides loading functionality for mesh sequences supporting
-//! multiple file formats via **loadfu**:
+//! multiple file formats via **polyphase**:
 //!
-//! - **STL**: Loaded directly as [`Mesh`] assets via loadfu's `StlLoader`.
-//! - **OBJ**: Loaded directly as [`Mesh`] assets via loadfu's `ObjLoader`.
-//! - **glTF / GLB**: Loaded directly as [`Mesh`] assets via loadfu's
+//! - **STL**: Loaded directly as [`Mesh`] assets via polyphase's `StlLoader`.
+//! - **OBJ**: Loaded directly as [`Mesh`] assets via polyphase's `ObjLoader`.
+//! - **glTF / GLB**: Loaded directly as [`Mesh`] assets via polyphase's
 //!   `GlbLoader`, which merges all primitives into a single mesh by default.
 //! - **Meshlet** (`--features meshlet`): Pre-baked `.meshlet` files produced
 //!   by the `manifold` pipeline.  See below.
@@ -36,7 +36,7 @@
 //! major seam in the loader:
 //!
 //! - **[`SequenceKind`]** — detected from extension; `Meshlet` short-circuits
-//!   before `loadfu::MeshFormat` is consulted.
+//!   before `polyphase::MeshFormat` is consulted.
 //! - **[`FrameStore`] / [`SeriesEntityState`]** — carry a separate
 //!   `meshlet_handles` field (`#[cfg(feature = "meshlet")]`) alongside the
 //!   existing `frame_handles: Vec<Option<Vec<Handle<Mesh>>>>`.  The two are
@@ -110,7 +110,7 @@ pub use spatial_index::SpatialIndex;
 
 use bevy::mesh::Mesh;
 use bevy::prelude::*;
-use loadfu::MeshFormat;
+use polyphase::MeshFormat;
 use std::path::PathBuf;
 
 // ---------------------------------------------------------------------------
@@ -118,7 +118,7 @@ use std::path::PathBuf;
 // ---------------------------------------------------------------------------
 
 /// The kind of a discovered sequence — either a standard mesh format (handled
-/// by loadfu → `Handle<Mesh>`) or a pre-baked meshlet sequence (handled by
+/// by polyphase → `Handle<Mesh>`) or a pre-baked meshlet sequence (handled by
 /// Bevy's virtual geometry renderer → `Handle<MeshletMesh>`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SequenceKind {
@@ -323,8 +323,8 @@ pub struct SequenceMeshDisplay;
 
 /// Load a mesh file as a `Handle<Mesh>` via the asset server.
 ///
-/// With loadfu, **all** formats (STL, OBJ, GLB, glTF) produce `Handle<Mesh>`
-/// directly — the asset server dispatches to the appropriate loadfu loader
+/// With polyphase, **all** formats (STL, OBJ, GLB, glTF) produce `Handle<Mesh>`
+/// directly — the asset server dispatches to the appropriate polyphase loader
 /// based on file extension.  No two-phase loading is needed for any format.
 ///
 /// GLB/glTF files are merged into a single mesh by default

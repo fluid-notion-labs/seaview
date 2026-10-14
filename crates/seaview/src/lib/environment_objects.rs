@@ -14,7 +14,7 @@
 //! environment object state.  The app layer reads it to spawn/despawn scenes
 //! and the UI layer reads/writes it for controls.
 //!
-//! GLB scene loading is intentionally absent here.  When `loadfu` gains
+//! GLB scene loading is intentionally absent here.  When `polyphase` gains
 //! multi-object scene support, only the app-layer spawning code needs to
 //! change — this module stays the same.
 

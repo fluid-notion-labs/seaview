@@ -1,7 +1,7 @@
 //! Environment objects — Bevy integration
 //!
 //! Supports **GLB/glTF** (full scenes with materials) and **STL/OBJ/PLY**
-//! (single meshes loaded via loadfu).  The pure data model is in
+//! (single meshes loaded via polyphase).  The pure data model is in
 //! [`crate::lib::environment_objects`].
 //!
 //! # How it works
@@ -11,7 +11,7 @@
 //! 2. [`spawn_new_objects`] detects the new entry (via generation counter),
 //!    checks the file extension, and starts loading the appropriate asset:
 //!    - **GLB/glTF** → `Handle<Gltf>` via Bevy's built-in `bevy_gltf` loader
-//!    - **STL/OBJ/PLY** → `Handle<Mesh>` via loadfu's asset loaders
+//!    - **STL/OBJ/PLY** → `Handle<Mesh>` via polyphase's asset loaders
 //! 3. For GLB/glTF: [`poll_gltf_assets`] spawns a [`SceneRoot`] once the Gltf
 //!    asset is ready, then [`discover_child_meshes`] walks the entity tree.
 //!    For direct-mesh formats: [`poll_direct_mesh_assets`] spawns a child
@@ -36,7 +36,7 @@ use bevy::mesh::VertexAttributeValues;
 use bevy::prelude::*;
 use bevy::scene::{SceneInstance, SceneRoot};
 
-/// File extensions that go through loadfu's direct-mesh pipeline.
+/// File extensions that go through polyphase's direct-mesh pipeline.
 const DIRECT_MESH_EXTENSIONS: &[&str] = &["stl", "obj", "ply"];
 
 /// File extensions that go through Bevy's Gltf scene pipeline.
@@ -117,7 +117,7 @@ pub struct SpawnedEnvironmentObjects {
 pub enum LoadedAsset {
     /// GLB/glTF: full scene with materials, textures, hierarchy.
     Gltf(Handle<Gltf>),
-    /// STL/OBJ/PLY: single mesh loaded directly via loadfu.
+    /// STL/OBJ/PLY: single mesh loaded directly via polyphase.
     DirectMesh(Handle<Mesh>),
 }
 

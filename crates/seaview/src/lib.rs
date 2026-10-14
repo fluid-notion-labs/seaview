@@ -51,7 +51,7 @@ pub use lib::sequence::{
     discovery::{discover_sequences, SequencePatterns},
     distribute_sections, FrameInfo, LoadSection, Sequence, SpatialIndex, Timeline,
 };
-// Re-export loadfu's MeshFormat so bins and downstream crates can use it
+// Re-export polyphase's MeshFormat so bins and downstream crates can use it
 pub use app::input::{ActionStateRes, InputActionPlugin, InputMap};
 pub use lib::actions::{Action, ActionState};
 pub use lib::environment_objects::{
@@ -64,4 +64,4 @@ pub use lib::series::{SavedSeriesEntry, SeriesId, SeriesManager, SeriesState, Se
 pub use lib::sequence::SeriesManagerRes;
 pub use lib::sequence::discovery::AllSequencesDiscovered;
 pub use lib::toast::{Toast, ToastLevel, ToastQueue};
-pub use loadfu::MeshFormat;
+pub use polyphase::MeshFormat;

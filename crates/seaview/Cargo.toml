@@ -19,7 +19,7 @@ bevy = { workspace = true }
 nalgebra = "0.33.2"
 parry3d = "0.26"
 bytemuck = { version = "1", features = ["extern_crate_alloc"] }
-loadfu = { git = "https://github.com/fluid-notion-labs/loadfu.git", branch = "main", features = ["bevy"] }
+polyphase = { git = "https://github.com/fluid-notion-labs/polyphase.git", branch = "main", features = ["bevy"] }
 clap = { version = "4.5", features = ["derive"] }
 # bevy_brp_extras = { git = "https://github.com/natepiano/bevy_brp.git", rev = "6edff47" }  # TODO: Update for Bevy 0.18
 regex = "1.10"

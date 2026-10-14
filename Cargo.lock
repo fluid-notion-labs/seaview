@@ -3984,21 +3984,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4ce301924b7887e9d637144fdade93f9dfff9b60981d4ac161db09720d39aa5"
 
 [[package]]
-name = "loadfu"
-version = "0.1.0"
-source = "git+https://github.com/fluid-notion-labs/loadfu.git?branch=main#965e0f6a66a857cff3c1f8931c66d30d9ade0aa2"
-dependencies = [
- "base64 0.22.1",
- "bevy",
- "bytemuck",
- "gltf",
- "serde",
- "stl_io",
- "thiserror 2.0.12",
- "tobj",
-]
-
-[[package]]
 name = "lock_api"
 version = "0.4.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4961,6 +4946,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2f3a9f18d041e6d0e102a0a46750538147e5e8992d3b4873aaafee2520b00ce3"
 
 [[package]]
+name = "polyphase"
+version = "0.1.0"
+source = "git+https://github.com/fluid-notion-labs/polyphase.git?branch=main#c218002676e150c453d989458f258d5ba6e002c4"
+dependencies = [
+ "base64 0.22.1",
+ "bevy",
+ "bytemuck",
+ "gltf",
+ "serde",
+ "stl_io",
+ "thiserror 2.0.12",
+ "tobj",
+]
+
+[[package]]
 name = "portable-atomic"
 version = "1.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5478,11 +5478,11 @@ dependencies = [
  "fidget",
  "glob",
  "libc",
- "loadfu",
  "log",
  "nalgebra 0.33.2",
  "nvml-wrapper",
  "parry3d",
+ "polyphase",
  "rayon",
  "regex",
  "rfd",

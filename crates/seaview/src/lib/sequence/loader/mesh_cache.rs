@@ -36,7 +36,7 @@ use std::path::PathBuf;
 /// A single cached mesh file.
 ///
 /// One cache entry may hold multiple `Handle<Mesh>` values because a GLB file
-/// can contain several primitives merged into separate meshes by loadfu.
+/// can contain several primitives merged into separate meshes by polyphase.
 #[derive(Debug)]
 pub struct CacheEntry {
     /// Mesh handles produced by `asset_server.load()`.

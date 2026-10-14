@@ -1,7 +1,7 @@
 //! Headless debug loader for sequence analysis without GPU/window.
 //!
 //! Discovers sequences, parses mesh files directly (STL/OBJ/GLB/glTF) via
-//! loadfu's core parsers, computes memory estimates, applies budget logic,
+//! polyphase's core parsers, computes memory estimates, applies budget logic,
 //! and reports metrics.
 //!
 //! Usage:
@@ -18,7 +18,7 @@ use std::time::Instant;
 
 use nvml_wrapper::Nvml;
 
-use loadfu::MeshFormat;
+use polyphase::MeshFormat;
 use seaview::{
     discover_sequences, estimate_mesh_gpu_bytes, human_bytes, GlobalSettings, MemoryBudget,
     MemorySettings, NoVramDetector, NvmlBackend, RamDetector, Sequence, SequencePatterns,
@@ -136,17 +136,17 @@ fn parse_frame_stats(path: &Path) -> Result<MeshStats, String> {
 
     let (vertex_count, index_count) = match format {
         MeshFormat::Stl => {
-            let md = loadfu::parsers::stl::parse(&bytes)
+            let md = polyphase::parsers::stl::parse(&bytes)
                 .map_err(|e| format!("STL parse error: {}", e))?;
             (md.vertex_count(), md.indices.len())
         }
         MeshFormat::Obj => {
-            let md = loadfu::parsers::obj::parse(&bytes)
+            let md = polyphase::parsers::obj::parse(&bytes)
                 .map_err(|e| format!("OBJ parse error: {}", e))?;
             (md.vertex_count(), md.indices.len())
         }
         MeshFormat::Glb | MeshFormat::Gltf => {
-            let md = loadfu::parsers::glb::parse_merged(&bytes)
+            let md = polyphase::parsers::glb::parse_merged(&bytes)
                 .map_err(|e| format!("GLB parse error: {}", e))?;
             (md.vertex_count(), md.indices.len())
         }
