@@ -315,7 +315,7 @@ pub fn draw_load_section_bar(
             painter.rect_stroke(
                 rect,
                 2.0,
-                egui::Stroke::new(1.0, egui::Color32::from_gray(60)),
+                egui::Stroke::new(1.0_f32, egui::Color32::from_gray(60)),
                 egui::StrokeKind::Outside,
             );
         }

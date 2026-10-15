@@ -894,7 +894,7 @@ mod tests {
     #[test]
     fn manager_summary_includes_visibility() {
         let mut mgr = SeriesManager::new();
-        let id1 = mgr.add(dummy_sequence("alpha", 100), 40);
+        let _id1 = mgr.add(dummy_sequence("alpha", 100), 40);
         let id2 = mgr.add(dummy_sequence("beta", 200), 60);
         mgr.set_visible(id2, false);
 

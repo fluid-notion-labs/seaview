@@ -3354,7 +3354,7 @@ playhead = 5
     #[test]
     fn test_series_state_to_settings_preserves_swizzle() {
         use crate::lib::environment_objects::{
-            AxisMapping, AxisSign, AxisSwizzle, CoordinatePreset, SourceAxis, Transform3D,
+            AxisMapping, AxisSwizzle, CoordinatePreset, SourceAxis,
         };
         use crate::lib::sequence::FrameInfo;
         use crate::lib::series::{SeriesId, SeriesState};

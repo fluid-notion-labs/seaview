@@ -12,7 +12,7 @@ use bevy::prelude::*;
 /// System that applies MaterialConfig changes to the mesh material in real time
 pub fn apply_material_config(
     config: Res<MaterialConfig>,
-    frame_store: Res<crate::lib::sequence::loader::FrameStore>,
+    _frame_store: Res<crate::lib::sequence::loader::FrameStore>,
     mesh_query: Query<&MeshMaterial3d<StandardMaterial>, With<SequenceMeshDisplay>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
@@ -22,7 +22,7 @@ pub fn apply_material_config(
 
     // Meshlet sequences require opaque, single-sided materials.
     #[cfg(feature = "meshlet")]
-    let is_meshlet = frame_store.format == Some(crate::lib::sequence::loader::SequenceKind::Meshlet);
+    let is_meshlet = _frame_store.format == Some(crate::lib::sequence::loader::SequenceKind::Meshlet);
     #[cfg(not(feature = "meshlet"))]
     let is_meshlet = false;
 

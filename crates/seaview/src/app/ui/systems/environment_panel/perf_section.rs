@@ -261,7 +261,7 @@ fn render_frame_time_sparkline(ui: &mut egui::Ui, stats: &RenderingStats) {
             egui::pos2(rect.right(), y_60),
         ],
         egui::Stroke::new(
-            1.0,
+            1.0_f32,
             egui::Color32::from_rgba_premultiplied(100, 255, 100, 100),
         ),
     );
@@ -275,7 +275,7 @@ fn render_frame_time_sparkline(ui: &mut egui::Ui, stats: &RenderingStats) {
                 egui::pos2(rect.right(), y_30),
             ],
             egui::Stroke::new(
-                1.0,
+                1.0_f32,
                 egui::Color32::from_rgba_premultiplied(255, 100, 100, 100),
             ),
         );

@@ -74,7 +74,7 @@ pub fn toast_overlay_system(
             .show(ctx, |ui| {
                 let frame = egui::Frame::new()
                     .fill(bg_color)
-                    .stroke(egui::Stroke::new(1.0, accent_color))
+                    .stroke(egui::Stroke::new(1.0_f32, accent_color))
                     .corner_radius(6.0)
                     .inner_margin(egui::Margin::same(10));
 

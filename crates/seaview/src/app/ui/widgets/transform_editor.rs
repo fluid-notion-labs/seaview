@@ -138,7 +138,7 @@ pub fn drag_vec3(
                 let rect = response.rect;
                 ui.painter().line_segment(
                     [rect.left_bottom(), rect.right_bottom()],
-                    egui::Stroke::new(2.0, AXIS_COLORS[i]),
+                    egui::Stroke::new(2.0_f32, AXIS_COLORS[i]),
                 );
             }
             changed |= response.changed();

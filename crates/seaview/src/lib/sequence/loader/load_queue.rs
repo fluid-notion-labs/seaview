@@ -16,7 +16,7 @@ use std::collections::{HashSet, VecDeque};
 use super::assets::{AssetIndex, FrameStore};
 use super::mesh_cache::{CacheEntry, MeshCache};
 use super::series_frame_store::SeriesFrameStore;
-use super::{load_mesh_handle, rss_mb, SequenceKind, LOADS_PER_FRAME};
+use super::{load_mesh_handle, rss_mb, LOADS_PER_FRAME};
 #[cfg(feature = "meshlet")]
 use super::load_meshlet_handle;
 use crate::lib::sequence::{frames_to_load, SeriesManagerRes, Timeline};

@@ -80,7 +80,7 @@ pub fn draw_timeline_bar(
                     egui::pos2(marker_x, bar_rect.min.y),
                     egui::pos2(marker_x, bar_rect.max.y),
                 ],
-                egui::Stroke::new(1.0, egui::Color32::from_gray(70)),
+                egui::Stroke::new(1.0_f32, egui::Color32::from_gray(70)),
             );
         }
 
@@ -106,7 +106,7 @@ pub fn draw_timeline_bar(
         painter.rect_stroke(
             handle_rect,
             3.0,
-            egui::Stroke::new(1.5, egui::Color32::from_rgb(200, 150, 50)),
+            egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(200, 150, 50)),
             egui::StrokeKind::Outside,
         );
 
@@ -119,7 +119,7 @@ pub fn draw_timeline_bar(
                     egui::pos2(handle_rect.min.x + 3.0, y),
                     egui::pos2(handle_rect.max.x - 3.0, y),
                 ],
-                egui::Stroke::new(1.0, grip_color),
+                egui::Stroke::new(1.0_f32, grip_color),
             );
         }
     }

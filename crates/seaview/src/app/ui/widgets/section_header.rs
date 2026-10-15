@@ -127,7 +127,7 @@ fn draw_header(
                 rect,
                 HEADER_ROUNDING,
                 fill,
-                egui::Stroke::new(1.0, HEADER_STROKE_COLOR),
+                egui::Stroke::new(1.0_f32, HEADER_STROKE_COLOR),
                 egui::StrokeKind::Outside,
             );
 

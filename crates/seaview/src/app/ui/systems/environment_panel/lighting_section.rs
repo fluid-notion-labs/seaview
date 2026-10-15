@@ -637,7 +637,7 @@ fn render_light_map(
         dom_rect,
         1.0,
         egui::Stroke::new(
-            1.5,
+            1.5_f32,
             egui::Color32::from_rgba_unmultiplied(200, 200, 200, 200),
         ),
         egui::StrokeKind::Outside,
@@ -697,7 +697,7 @@ fn render_light_map(
                 center,
                 cone_px,
                 egui::Stroke::new(
-                    0.5,
+                    0.5_f32,
                     egui::Color32::from_rgba_unmultiplied(
                         palette_color.r(),
                         palette_color.g(),
@@ -726,7 +726,7 @@ fn render_light_map(
                 painter.circle_filled(center, dot_radius, dot_color);
             } else {
                 // Hollow ring for hidden lights
-                painter.circle_stroke(center, dot_radius, egui::Stroke::new(1.5, dot_color));
+                painter.circle_stroke(center, dot_radius, egui::Stroke::new(1.5_f32, dot_color));
             }
 
             // Hover highlight ring
@@ -735,7 +735,7 @@ fn render_light_map(
                     center,
                     dot_radius + 3.0,
                     egui::Stroke::new(
-                        1.0,
+                        1.0_f32,
                         egui::Color32::from_rgba_unmultiplied(255, 255, 255, 140),
                     ),
                 );
@@ -758,7 +758,7 @@ fn render_light_map(
     painter.rect_stroke(
         rect,
         4.0,
-        egui::Stroke::new(1.0, egui::Color32::from_gray(50)),
+        egui::Stroke::new(1.0_f32, egui::Color32::from_gray(50)),
         egui::StrokeKind::Outside,
     );
 
