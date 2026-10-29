@@ -208,7 +208,13 @@ fn main() {
         .add_message::<FocusSceneEvent>()
         .add_systems(
             Startup,
-            (setup, handle_input_path, setup_cursor, init_watch_config),
+            (
+                setup,
+                handle_input_path,
+                setup_cursor,
+                init_watch_config,
+                init_add_ingest,
+            ),
         )
         .add_systems(Update, (restore_saved_sections,))
         .add_systems(
@@ -268,6 +274,24 @@ fn init_watch_config(
             debug!("Watch mode enabled via seaview.toml");
         }
         loading_phase.state = LoadingPhaseState::InitialDiscovery;
+    }
+}
+
+/// Initialize `--add <DIR>` ingest and `--formation` from CLI args.
+fn init_add_ingest(
+    args: Res<Args>,
+    mut ingest: ResMut<seaview::app::environment_objects::AddIngestConfig>,
+    mut formation: ResMut<seaview::app::environment_objects::FormationSettings>,
+) {
+    if let Some(dir) = &args.add {
+        let canonical = dir.canonicalize().unwrap_or_else(|_| dir.clone());
+        ingest.dir = Some(canonical.clone());
+        info!("--add ingest watching {} (formation {})", canonical.display(), args.formation);
+    }
+    if let Some(f) = seaview::lib::formation::Formation::parse(&args.formation) {
+        formation.formation = f;
+    } else {
+        warn!("unknown --formation '{}' (grid|line|ring|scatter)", args.formation);
     }
 }
 

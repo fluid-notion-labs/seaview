@@ -32,7 +32,9 @@ use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 
-use crate::app::environment_objects::{EnvironmentObjectStoreRes, ImportEnvironmentObjectEvent};
+use crate::app::environment_objects::{
+    EnvironmentObjectStoreRes, FormationSettings, ImportEnvironmentObjectEvent,
+};
 use crate::app::systems::bvh_gizmos::BvhGizmoConfig;
 use crate::app::systems::diagnostics::RenderingStats;
 use crate::app::ui::state::{MaterialConfig, RenderConfig, SsrConfig, UiState};
@@ -78,6 +80,7 @@ pub struct EnvironmentPanelParams<'w, 's> {
 #[derive(SystemParam)]
 pub struct EnvObjectParams<'w, 's> {
     env_obj_store: ResMut<'w, EnvironmentObjectStoreRes>,
+    formation: ResMut<'w, FormationSettings>,
     import_events: MessageWriter<'w, ImportEnvironmentObjectEvent>,
     file_dialog_rx: Local<'s, Option<FileDialogReceiver>>,
     objects_open: Local<'s, Option<bool>>,
@@ -398,6 +401,7 @@ pub fn environment_panel_system(
                         render_objects_section(
                             ui,
                             &mut env_objs.env_obj_store,
+                            &mut env_objs.formation.formation,
                             open,
                             &mut pending_imports,
                             &mut env_objs.file_dialog_rx,

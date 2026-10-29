@@ -55,6 +55,7 @@ pub struct FileDialogReceiver {
 pub fn render_objects_section(
     ui: &mut egui::Ui,
     store: &mut EnvironmentObjectStoreRes,
+    formation: &mut crate::lib::formation::Formation,
     objects_open: &mut bool,
     pending_imports: &mut Vec<PathBuf>,
     file_dialog_rx: &mut Option<FileDialogReceiver>,
@@ -95,6 +96,25 @@ pub fn render_objects_section(
                         );
                     });
                 }
+            });
+
+            // ── Formation select ───────────────────────────────────
+            ui.horizontal(|ui| {
+                ui.label("Formation");
+                egui::ComboBox::from_id_salt("env_formation")
+                    .selected_text(formation.label())
+                    .show_ui(ui, |ui| {
+                        for f in crate::lib::formation::Formation::ALL {
+                            ui.selectable_value(formation, f, f.label());
+                        }
+                    });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(
+                        egui::RichText::new("layout for imported objects")
+                            .small()
+                            .color(egui::Color32::from_gray(140)),
+                    );
+                });
             });
 
             if store.is_empty() {

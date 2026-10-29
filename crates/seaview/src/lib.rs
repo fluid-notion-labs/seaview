@@ -10,6 +10,7 @@ pub mod lib {
     pub mod coordinates;
     pub mod environment_objects;
     pub mod fade;
+    pub mod formation;
     pub mod global_settings;
     pub mod lighting;
     pub mod memory_budget;

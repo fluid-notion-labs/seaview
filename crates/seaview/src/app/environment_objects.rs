@@ -27,7 +27,7 @@
 //! an `"env"` asset source pointing to the filesystem root (`/`), so any
 //! absolute path can be loaded as `env://absolute/path/to/file.glb`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use bevy::asset::RenderAssetUsages;
@@ -45,6 +45,7 @@ const GLTF_EXTENSIONS: &[&str] = &["glb", "gltf"];
 use crate::lib::environment_objects::{
     EnvironmentObject, EnvironmentObjectId, EnvironmentObjectStore, MaterialOverride, MeshEntry,
 };
+use crate::lib::formation::{placement, Formation, DEFAULT_SPACING};
 
 // ---------------------------------------------------------------------------
 // Plugin
@@ -89,7 +90,119 @@ impl Plugin for EnvironmentObjectPlugin {
                     sync_mesh_visibility,
                     sync_materials,
                 ),
+            )
+            .init_resource::<FormationSettings>()
+            .init_resource::<AddIngestConfig>()
+            .add_systems(
+                Update,
+                (poll_add_ingest_dir, relayout_on_formation_change),
             );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Formation layout & --add directory ingest
+// ---------------------------------------------------------------------------
+
+/// How imported objects are arranged in the scene. UI-editable (objects
+/// section) and CLI-settable (--formation).
+#[derive(Resource, Debug, Clone)]
+pub struct FormationSettings {
+    pub formation: Formation,
+    pub spacing: f32,
+}
+
+impl Default for FormationSettings {
+    fn default() -> Self {
+        Self {
+            formation: Formation::default(),
+            spacing: DEFAULT_SPACING,
+        }
+    }
+}
+
+/// State for the `--add <DIR>` ingest: watch a directory and import new
+/// model files as environment objects.
+#[derive(Resource, Debug, Default)]
+pub struct AddIngestConfig {
+    /// Directory to watch, canonicalized. None = ingest disabled.
+    pub dir: Option<PathBuf>,
+    /// Files already imported (or seen) in the watch dir.
+    pub known: HashSet<PathBuf>,
+    /// Poll timer (poll interval mirrors WatchConfig's 500ms).
+    pub timer: f32,
+}
+
+/// Extensions eligible for --add ingest (union of both loader pipelines).
+const INGEST_EXTENSIONS: &[&str] = &["stl", "obj", "ply", "glb", "gltf"];
+
+/// Polls the --add directory and fires import messages for new stable files.
+fn poll_add_ingest_dir(
+    time: Res<Time>,
+    mut config: ResMut<AddIngestConfig>,
+    mut import_events: MessageWriter<ImportEnvironmentObjectEvent>,
+) {
+    let Some(dir) = config.dir.clone() else {
+        return;
+    };
+
+    config.timer += time.delta_secs();
+    if config.timer < 0.5 {
+        return;
+    }
+    config.timer = 0.0;
+
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        warn!("--add dir unreadable: {}", dir.display());
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() || config.known.contains(&path) {
+            continue;
+        }
+        let ext_ok = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| INGEST_EXTENSIONS.contains(&e.to_ascii_lowercase().as_str()));
+        if !ext_ok {
+            continue;
+        }
+        // Skip files still being written (younger than 1s), like watch mode.
+        let stable = entry
+            .metadata()
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|m| m.elapsed().ok())
+            .is_some_and(|age| age.as_secs_f32() >= 1.0);
+        if !stable {
+            continue;
+        }
+        config.known.insert(path.clone());
+        info!("--add ingest: {}", path.display());
+        import_events.write(ImportEnvironmentObjectEvent { path });
+    }
+}
+
+/// Re-positions every object when the formation setting changes.
+fn relayout_on_formation_change(
+    settings: Res<FormationSettings>,
+    mut store: ResMut<EnvironmentObjectStoreRes>,
+) {
+    if !settings.is_changed() {
+        return;
+    }
+    let n = store.len();
+    if n == 0 {
+        return;
+    }
+    for (i, id) in store.ids().into_iter().enumerate() {
+        if let Some(obj) = store.get_mut(id) {
+            let p = placement(i, n, settings.formation, settings.spacing);
+            obj.transform = crate::lib::environment_objects::Transform3D::default()
+                .with_position(p.x, p.y, p.z);
+        }
     }
 }
 
@@ -177,12 +290,23 @@ pub struct ImportEnvironmentObjectEvent {
 fn handle_import_events(
     mut events: MessageReader<ImportEnvironmentObjectEvent>,
     mut store: ResMut<EnvironmentObjectStoreRes>,
+    formation: Res<FormationSettings>,
 ) {
     for event in events.read() {
-        let obj = EnvironmentObject::new(&event.path);
+        let mut obj = EnvironmentObject::new(&event.path);
+        // Slot the object into the current formation: index = store position
+        // before add, count = batch size including this object.
+        let p = placement(
+            store.len(),
+            store.len() + 1,
+            formation.formation,
+            formation.spacing,
+        );
+        obj.transform = crate::lib::environment_objects::Transform3D::default()
+            .with_position(p.x, p.y, p.z);
         info!(
-            "Importing environment object '{}' from {:?}",
-            obj.name, obj.path
+            "Importing environment object '{}' from {:?} at {:?}",
+            obj.name, obj.path, p
         );
         let id = store.add(obj);
         info!(

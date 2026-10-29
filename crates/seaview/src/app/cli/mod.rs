@@ -32,6 +32,16 @@ pub struct Args {
     /// Load a file as a landscape/environment object (overrides heuristic)
     #[arg(long, value_name = "FILE")]
     pub load_landscape: Option<PathBuf>,
+
+    /// Watch a directory and ingest new files as environment objects
+    /// (models), arranged in the --formation layout. Pairs with external
+    /// tools dropping files in (e.g. modelgrab).
+    #[arg(long, value_name = "DIR")]
+    pub add: Option<PathBuf>,
+
+    /// Formation layout for ingested objects: grid, line, ring, scatter
+    #[arg(long, value_name = "TYPE", default_value = "grid")]
+    pub formation: String,
 }
 
 impl Args {
