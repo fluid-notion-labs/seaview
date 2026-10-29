@@ -129,6 +129,9 @@ pub struct AddIngestConfig {
     pub dir: Option<PathBuf>,
     /// Files already imported (or seen) in the watch dir.
     pub known: HashSet<PathBuf>,
+    /// Unsupported files we've already logged a skip for (log once, not
+    /// every poll).
+    pub warned: HashSet<PathBuf>,
     /// Poll timer (poll interval mirrors WatchConfig's 500ms).
     pub timer: f32,
 }
@@ -162,11 +165,20 @@ fn poll_add_ingest_dir(
         if !path.is_file() || config.known.contains(&path) {
             continue;
         }
-        let ext_ok = path
+        let ext = path
             .extension()
             .and_then(|e| e.to_str())
-            .is_some_and(|e| INGEST_EXTENSIONS.contains(&e.to_ascii_lowercase().as_str()));
-        if !ext_ok {
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if !INGEST_EXTENSIONS.contains(&ext.as_str()) {
+            if config.warned.insert(path.clone()) {
+                debug!(
+                    "--add ingest: skipping {} (unsupported extension '.{}', supported: {:?})",
+                    path.display(),
+                    ext,
+                    INGEST_EXTENSIONS
+                );
+            }
             continue;
         }
         // Skip files still being written (younger than 1s), like watch mode.
@@ -177,6 +189,7 @@ fn poll_add_ingest_dir(
             .and_then(|m| m.elapsed().ok())
             .is_some_and(|age| age.as_secs_f32() >= 1.0);
         if !stable {
+            debug!("--add ingest: {} still being written, waiting", path.display());
             continue;
         }
         config.known.insert(path.clone());
@@ -436,6 +449,7 @@ fn poll_gltf_assets(
     mut pending: ResMut<PendingSceneDiscovery>,
     gltf_assets: Res<Assets<Gltf>>,
     mut commands: Commands,
+    asset_server: Res<AssetServer>,
 ) {
     for (id, state) in spawned.map.iter_mut() {
         // Skip if already discovered or already waiting for scene instantiation.
@@ -448,6 +462,15 @@ fn poll_gltf_assets(
         let LoadedAsset::Gltf(ref gltf_handle) = state.loaded_asset else {
             continue;
         };
+
+        // Surface load failures once instead of looping "still loading" forever.
+        if asset_server.load_state(gltf_handle).is_failed() {
+            error!(
+                "Gltf asset failed to load for env object {id} — giving up on this object"
+            );
+            state.meshes_discovered = true;
+            continue;
+        }
 
         let gltf = match gltf_assets.get(gltf_handle) {
             Some(g) => g,
@@ -500,6 +523,7 @@ fn poll_direct_mesh_assets(
     mut mesh_assets: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut commands: Commands,
+    asset_server: Res<AssetServer>,
 ) {
     for (id, state) in spawned.map.iter_mut() {
         if state.meshes_discovered {
@@ -509,6 +533,20 @@ fn poll_direct_mesh_assets(
         let LoadedAsset::DirectMesh(ref mesh_handle) = state.loaded_asset else {
             continue;
         };
+
+        // Surface load failures once instead of looping "still loading" forever.
+        if asset_server.load_state(mesh_handle).is_failed() {
+            let path = store
+                .get(*id)
+                .map(|o| o.path.display().to_string())
+                .unwrap_or_default();
+            error!(
+                "Direct mesh failed to load for env object {id} ({path}) — \
+                 parse errors are logged by the asset loader; giving up on this object"
+            );
+            state.meshes_discovered = true;
+            continue;
+        }
 
         // Wait until the mesh asset is actually loaded.
         let Some(mesh) = mesh_assets.get(mesh_handle) else {
